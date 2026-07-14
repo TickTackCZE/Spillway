@@ -1,0 +1,18 @@
+[project]
+name = "spillway"
+version = "0.0.1"
+description = "Lokální diktovací nástroj pro macOS: Whisper (lokální přepis) + Claude (úprava) + univerzální vložení do libovolné aplikace."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Spike A (paste) + Spike C (hotkey) — macOS nativní API přes PyObjC
+    "pyobjc-framework-Cocoa>=10.3",
+    "pyobjc-framework-Quartz>=10.3",
+]
+
+# Fáze F1+ přidají: sounddevice, faster-whisper (nebo mlx-whisper), anthropic,
+# keyring, pydantic, tomli/tomllib. Zatím jen to, co potřebují spiky.
+
+[tool.uv]
+# Spike fáze — projekt zatím není instalovatelný balíček, jen skripty.
+package = false

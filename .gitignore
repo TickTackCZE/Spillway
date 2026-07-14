@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenv (NIKDY do gitu; navíc bolí v Google Drive — zvaž venv mimo Drive)
+.venv/
+venv/
+.uv/
+
+# Konfigurace a tajemství — NIKDY do repa
+config.toml
+.env
+*.key
+
+# Lokální data
+history.jsonl
+*.log
+
+# macOS
+.DS_Store
+
+# Whisper modely (stahují se za běhu, ~1,5 GB — nepatří do repa)
+models/
+*.bin
+*.gguf
