@@ -37,8 +37,8 @@ _ALL_SPACES = 1 << 0
 _STATIONARY = 1 << 4
 _FS_AUX = 1 << 8
 
-# Spillway logo (kapka=mikrofon) — mřížka v barvě karty, aby „prořízla" kapku.
-_LOGO = design.logo_svg(fg="#F5F5F7", grille="#262628", width=17, height=19)
+# Spillway logo (roztékající waveform) — světlé sloupce, bez kapek (malá velikost).
+_LOGO = design.logo_svg(color="#C7CCF7", width=17, height=17, drops=False)
 
 _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   * { margin:0; padding:0; box-sizing:border-box; }

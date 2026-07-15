@@ -21,18 +21,29 @@ IDLE = (0x94, 0xA3, 0xB8)
 RADIUS = 10
 
 
-def logo_svg(fg: str = "#E2E8F0", grille: str = "#1A1F2E", width: int = 18, height: int = 20) -> str:
-    """Logo Spillway (koncept A): kapka = mikrofon (mřížka = vlnky vody).
+# Sloupce roztékající waveform (viewBox 100×100): x, top, bottom.
+_WAVE_BARS = (
+    (23, 40, 58), (31, 30, 66), (39, 20, 74), (47, 12, 82),
+    (55, 22, 72), (63, 16, 84), (71, 34, 64), (79, 44, 60),
+)
 
-    `fg` = barva kapky, `grille` = barva mřížky (obvykle barva pozadí, aby
-    linky „prořízly" kapku). Dvojí čtení jako Domovoy (mic ↔ voda).
+
+def logo_svg(color: str = "#818CF8", width: int = 18, height: int = 18, drops: bool = True) -> str:
+    """Logo Spillway: roztékající se zvuková vlna (řeč, která přetéká — „spillway").
+
+    Svislé zaoblené sloupce (waveform) + drobné kapky pod nimi. `drops=False`
+    pro malé velikosti (lišta/HUD), kde by kapky splynuly.
     """
+    bars = "".join(
+        f'<rect x="{x - 3}" y="{t}" width="6" height="{b - t}" rx="3" fill="{color}"/>'
+        for x, t, b in _WAVE_BARS
+    )
+    d = (
+        f'<circle cx="50" cy="90" r="3.4" fill="{color}"/>'
+        f'<circle cx="63" cy="93" r="2.4" fill="{color}" opacity="0.7"/>'
+        f'<circle cx="40" cy="92" r="2" fill="{color}" opacity="0.6"/>'
+    ) if drops else ""
     return (
-        f'<svg viewBox="0 0 64 72" width="{width}" height="{height}" '
-        'xmlns="http://www.w3.org/2000/svg">'
-        f'<path d="M32 5 C45 27 51 35 51 45 A19 19 0 0 1 13 45 C13 35 19 27 32 5 Z" fill="{fg}"/>'
-        f'<line x1="20" y1="42" x2="44" y2="42" stroke="{grille}" stroke-width="3" stroke-linecap="round"/>'
-        f'<line x1="18" y1="50" x2="46" y2="50" stroke="{grille}" stroke-width="3" stroke-linecap="round"/>'
-        f'<line x1="21" y1="58" x2="43" y2="58" stroke="{grille}" stroke-width="3" stroke-linecap="round"/>'
-        "</svg>"
+        f'<svg viewBox="0 0 100 100" width="{width}" height="{height}" '
+        f'xmlns="http://www.w3.org/2000/svg">{bars}{d}</svg>'
     )
