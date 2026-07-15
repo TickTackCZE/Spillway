@@ -102,3 +102,66 @@ def focused_field() -> tuple[str | None, int | None]:
         return (text, caret)
     except Exception:  # noqa: BLE001
         return (None, None)
+
+
+def caret_screen_rect() -> tuple[float, float, float, float] | None:
+    """Obdélník textového kurzoru na obrazovce (x, y, w, h) v AX souřadnicích
+    (počátek vlevo NAHOŘE, y roste dolů). None, když to appka nepodporuje.
+    """
+    try:
+        from ApplicationServices import (
+            AXUIElementCopyAttributeValue,
+            AXUIElementCopyParameterizedAttributeValue,
+            AXUIElementCreateSystemWide,
+            AXValueGetValue,
+            kAXFocusedUIElementAttribute,
+            kAXSelectedTextRangeAttribute,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from ApplicationServices import (
+            kAXBoundsForRangeParameterizedAttribute as bounds_attr,
+        )
+    except Exception:  # noqa: BLE001
+        bounds_attr = "AXBoundsForRange"
+    try:
+        from ApplicationServices import kAXValueCGRectType as cgrect_type
+    except Exception:  # noqa: BLE001
+        try:
+            from ApplicationServices import kAXValueTypeCGRect as cgrect_type
+        except Exception:  # noqa: BLE001
+            cgrect_type = 3
+
+    try:
+        system = AXUIElementCreateSystemWide()
+        err, focused = AXUIElementCopyAttributeValue(
+            system, kAXFocusedUIElementAttribute, None
+        )
+        if err or focused is None:
+            return None
+        err, rng_val = AXUIElementCopyAttributeValue(
+            focused, kAXSelectedTextRangeAttribute, None
+        )
+        if err or rng_val is None:
+            return None
+        err, bounds_val = AXUIElementCopyParameterizedAttributeValue(
+            focused, bounds_attr, rng_val, None
+        )
+        if err or bounds_val is None:
+            return None
+        ok, rect = AXValueGetValue(bounds_val, cgrect_type, None)
+        if not ok:
+            return None
+        try:
+            return (
+                float(rect.origin.x),
+                float(rect.origin.y),
+                float(rect.size.width),
+                float(rect.size.height),
+            )
+        except Exception:  # noqa: BLE001
+            (x, y), (w, h) = rect
+            return (float(x), float(y), float(w), float(h))
+    except Exception:  # noqa: BLE001
+        return None

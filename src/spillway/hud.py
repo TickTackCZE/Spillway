@@ -18,11 +18,12 @@ from AppKit import (
     NSMakePoint,
     NSMakeRect,
     NSPanel,
+    NSScreen,
     NSTextField,
     NSView,
 )
 
-from . import design
+from . import context, design
 
 _BORDERLESS = 0
 _NONACTIVATING = 1 << 7
@@ -88,7 +89,30 @@ class StatusHUD:
         self._visible = False
 
     def _reposition(self) -> None:
-        loc = NSEvent.mouseLocation()  # screen coords, bottom-left origin
+        gap = 10.0
+        rect = context.caret_screen_rect()
+        if rect is not None:
+            cx, cy, cw, ch = rect  # AX coords: počátek vlevo NAHOŘE
+            screens = NSScreen.screens()
+            primary_h = float(screens[0].frame().size.height) if screens else 0.0
+            screen_w = float(screens[0].frame().size.width) if screens else 99999.0
+
+            # Vodorovně: vycentrovat nad kurzor, ořezat na obrazovku.
+            x = cx + cw / 2.0 - self.W / 2.0
+            x = max(4.0, min(x, screen_w - self.W - 4.0))
+
+            # Svisle: AX top-left → Cocoa bottom-left. Umístit NAD kurzor;
+            # když by to bylo mimo horní okraj, dát pod kurzor.
+            caret_top_cocoa = primary_h - cy
+            caret_bottom_cocoa = primary_h - (cy + ch)
+            y = caret_top_cocoa + gap
+            if y + self.H > primary_h - 4.0:
+                y = caret_bottom_cocoa - self.H - gap
+            self.panel.setFrameOrigin_(NSMakePoint(x, y))
+            return
+
+        # Fallback: u myši (appka nepodporuje pozici kurzoru — Electron/web).
+        loc = NSEvent.mouseLocation()
         self.panel.setFrameOrigin_(NSMakePoint(loc.x + 14, loc.y + 18))
 
     def show(self, text: str, dot_rgb) -> None:  # noqa: ANN001
