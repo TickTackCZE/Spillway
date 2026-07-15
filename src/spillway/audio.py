@@ -46,11 +46,17 @@ class Recorder:
         self._stream.start()
 
     def stop(self) -> np.ndarray:
-        """Zastaví nahrávání a vrátí audio jako 1-D float32 pole."""
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        """Zastaví nahrávání, uvolní mikrofon a vrátí audio jako 1-D float32."""
+        stream = self._stream
+        self._stream = None
+        if stream is not None:
+            # stop() dokončí zpracování bufferu (neztratí konec nahrávky),
+            # close() uvolní zařízení, aby macOS zhasnul indikátor mikrofonu.
+            for op in (stream.stop, stream.close):
+                try:
+                    op()
+                except Exception:  # noqa: BLE001
+                    pass
         with self._lock:
             if not self._frames:
                 return np.zeros(0, dtype=np.float32)

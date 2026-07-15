@@ -22,6 +22,7 @@ from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner
 from .paste import paste_text
+from .smart_spacing import leading_space_needed
 from .transcribe import Transcriber
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
@@ -84,6 +85,10 @@ class Controller:
                     print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
                     text = raw
 
+            # Chytrá mezera: když kurzor stojí za nemezerovým znakem, oddělit.
+            if config.auto_space() and leading_space_needed():
+                text = " " + text
+
             paste_text(text)
         except Exception as exc:  # noqa: BLE001
             print(f"❌ chyba v pipeline: {exc}")
@@ -113,6 +118,7 @@ def main() -> None:
             time.sleep(0.2)
     finally:
         listener.stop()
+        controller.recorder.stop()  # uvolnit mikrofon, ať zhasne indikátor
         print("\nKonec.")
 
 

@@ -22,6 +22,12 @@ def get_model() -> str:
     return os.environ.get("SPILLWAY_LLM_MODEL", "claude-haiku-4-5")
 
 
+def auto_space() -> bool:
+    """Zda vkládat mezeru před text, když kurzor stojí za nemezerovým znakem.
+    Vypneš přes env SPILLWAY_AUTO_SPACE=0."""
+    return os.environ.get("SPILLWAY_AUTO_SPACE", "1").lower() not in ("0", "false", "no")
+
+
 def get_api_key() -> str | None:
     """Vrátí Anthropic API klíč z Keychain, nebo z env, nebo None."""
     try:
