@@ -93,8 +93,16 @@ class Controller:
             profile = context.app_profile(bundle, app_name)
             field_text, caret = context.focused_field()  # lokální AX čtení
 
+            # Prohlížeč: doména aktivní karty (AppleScript/Automation) může upřesnit profil.
+            domain = None
+            if config.field_context():
+                browser_profile, domain = context.browser_context(bundle)
+                if browser_profile:
+                    profile = browser_profile
+            app_ctx = f"{app_name} ({domain})" if domain else app_name
+
             secs = len(audio) / 16000.0
-            print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_name} · profil: {profile})")
+            print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_ctx} · profil: {profile})")
             t0 = time.perf_counter()
             raw = self.transcriber.transcribe(audio, language=self.language)
             dt = time.perf_counter() - t0
@@ -117,7 +125,7 @@ class Controller:
                     text = (
                         self.cleaner.clean(
                             raw,
-                            app_name=app_name,
+                            app_name=app_ctx,
                             profile=profile,
                             before_text=before,
                             glossary=self.glossary,

@@ -14,7 +14,7 @@
 |---|---|
 | **Aktuální fáze** | **F3 — Aplikace** (🟨 menu bar + settings okno + logo + perzistence hotové; zbývá `.app`) |
 | **Milník** | Instaluju .app, běží na pozadí, přežije restart |
-| **Blokery** | GUI test settings okna uživatelem; B2 (mikrofon) stále nevyřešen; zabalení do .app |
+| **Blokery** | GUI test klávesy/AI profilu/detekce prohlížeče; zabalení do .app zbývá jako hlavní krok |
 | **Testovací stroj** | iMac M4, 16 GB RAM, 10 jader (Mac16,12, 2024) — **ne** M5 Air; Apple Silicon, faster-whisper poběží CPU-only stejně |
 | **Otevřené otázky k rozhodnutí** | 1 — O1 Whisper backend (rozhodne Spike B); O2–O7 rozhodnuty (viz §8) |
 
@@ -122,6 +122,8 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 - [x] **Konfigurovatelná klávesa v UI** — karta „Klávesa" v nastavení, tlačítko Změnit zachytí příští stisk kdekoliv v systému (`hotkey.start_capture`, `keymap.py` pro čitelný název), uloží se a hned se použije (bez restartu appky). Čeká na GUI test.
 - [x] **[F-b] Profil „ai"** — diktování do Claude/ChatGPT/Perplexity/Gemini teď cíleně formátuje jako prompt (strukturovaná instrukce), ne jen obecná korektura.
 - [x] Karta Vzhled přesunuta na konec nastavení (dle uživatele).
+- [x] **[F-b] Detekce webu v prohlížeči přes AppleScript/Automation** (`context.browser_context`) — NE Screen Recording. Čte jen URL aktivní karty (Safari/Chrome/Brave/Edge/Arc), doména → profil (gmail.com→email, chat.openai.com→ai atd.). Jednorázové schválení systémového dialogu. Nečte obsah stránky (žádná historie e-mailu) — vědomé rozhodnutí, viz O8.
+- [x] **Hlasový metapokyn o formátu** — „toto je e-mail", „piš to formálně" v promptu Claude rozpozná a použije, samotný pokyn do výstupu nezahrne. Bez nutnosti oprávnění.
 - [x] **Perzistence všeho** — settings.json (model, jazyk, téma, slovník, toggly) + Keychain (klíč) + LaunchAgent (autostart); Controller vše načte při startu.
 - [ ] Raleway font zabalit (jinak UI padá na systémový font — funkčně OK).
 - [ ] **Zabalení do `.app`** (PyInstaller, LSUIElement, ikony) + single-instance — aby šlo nainstalovat a spouštět bez terminálu. **Hlavní zbývající krok.**
@@ -152,7 +154,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 | # | Sev | Popis | Stav | Poznámka |
 |---|-----|-------|------|----------|
 | B1 | 🟠 | **AI úprava přepisovala nejasný obsah** — Haiku halucinoval náhrady slov, kterým nerozuměl (`„ten klot s tím mapíčkem"` → `„tu mapu"`), měnil význam | ✅ vyřešeno | Prompt přepsán na striktně minimální úpravy; model konfigurovatelný přes `SPILLWAY_LLM_MODEL`. Uživatel potvrdil, že Haiku teď vypadá dobře. |
-| B2 | 🟠 | **Mikrofon se neuvolní** — oranžový indikátor mikrofonu v liště svítí i po nahrávání | 🟥 fix v1+v2 selhaly | Fix v1 (stop+close) i v2 (restart PortAudia) NEzabraly (uživatel potvrdil). **v3:** + `gc.collect()` + diagnostika (`SPILLWAY_DEBUG_AUDIO=1`). Pokud v3 selže → **přejít na nativní AVFoundation nahrávání** (AVAudioEngine spolehlivě uvolní mikrofon na macOS). Ověřit i, zda stav nepřežije restart appky. |
+| B2 | ✅ | **Mikrofon se neuvolní** — oranžový indikátor mikrofonu v liště svítí i po nahrávání | **Vyřešeno** | Fix v3 (gc.collect + restart PortAudia) zabral — potvrzeno uživatelem. |
 | B3 | 🟡 | **Souběh: co při nahrání během zpracování / překlik pole** — otázka uživatele | ✅ ošetřeno / ⚠️ známé | Nová nahrávka během zpracování se **ignoruje** (žádná fronta — ať se nevloží do špatného pole), s výpisem „zaneprázdněno". Kontext (appka/profil/pole) se snímá při puštění F5; paste jde tam, kam je fokus v okamžiku vložení — **překlik pole během zpracování → vloží se do nového pole, ale formátování dle starého kontextu** (přijatelné; latence ~1–3 s). |
 
 ---
@@ -190,6 +192,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 | O5 | Historie přepisů | **Ukládat**, minimální formát, **nešifrovaně lokálně** na PC. Budoucí odesílání na RPi/DB + analytiky → §10. |
 | O6 | Výpadek API | **Viditelná chyba** (notifikace/badge) — a **raw přepis se přesto vloží**, aby se text neztratil. |
 | O7 | [F-a] Jazykový režim | **Aktualizováno:** primární jazyk je nyní **volitelný v nastavení** (cs/en/sk/de/…), uložený a živě měnitelný. CZ+EN code-switching uvnitř věty řeší Whisper + Claude. |
+| O8 | **Celá historie e-mailového vlákna jako kontext?** Teď se čte jen URL domény (gmail.com → profil), ne obsah stránky. Číst celé vlákno (předchozí zprávy) by šlo přes AppleScript pro Mail.app, nebo procházením celého accessibility stromu webmailu — ale to je výrazně větší privacy dopad (celé vlákno by šlo k Anthropic). Vědomě neimplementováno bez tvého rozhodnutí. | Chceš to? Pokud ano, upřesnit: jen Mail.app, nebo i webmail (Gmail/Outlook v prohlížeči)? |
 
 **Otevřené (rozhodne se během spiků):**
 
@@ -213,6 +216,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 ## 10. Changelog
 
+- **15. 7. 2026** — **B2 vyřešen** (mikrofon, potvrzeno uživatelem). **Detekce prohlížeče přes AppleScript/Automation** (`context.browser_context`) — alternativa ke Screen Recording, čte jen URL aktivní karty (Safari/Chrome/Brave/Edge/Arc) → doména vybírá profil. **Hlasový metapokyn** — „toto je e-mail"/„piš to formálně" v promptu, Claude ho použije a nezahrne do výstupu, bez nutnosti oprávnění. Nová otázka **O8**: číst celé e-mailové vlákno jako kontext? (vědomě neimplementováno, čeká na rozhodnutí uživatele — vyšší privacy dopad).
 - **15. 7. 2026** — **Konfigurovatelná klávesa + profil pro AI chaty.** Nová karta „Klávesa" v nastavení — tlačítko Změnit spustí `HotkeyListener.start_capture()`, zachytí příští stisk kdekoliv v systému, uloží (settings.json) a hned použije (jen se přepíše `listener.keycode`, tap se nerestartuje). `keymap.py` mapuje keycode → čitelný název pro UI. Vzhled přesunut na konec nastavení. Nový profil formátování **„ai"** (Claude/ChatGPT/Perplexity/Gemini) — diktát se teď formátuje jako srozumitelný prompt, ne jen obecná próza. Odpověď na otázku o prohlížeči: bez detekce webu/URL (rozhodnuto v O3 kvůli Screen Recording), formátuje se jako generic próza; SMS (Zprávy) už má profil „chat".
 - **15. 7. 2026** — **Nastavení rozšířeno + logo do lišty.** Settings okno: téma Systém/Světlý/Tmavý (Domovoy palety, „systém" dle OS), výběr primárního jazyka (napojen na Whisper), API klíč vložit→smazat→vložit, slovník na celou šířku. Vše se ukládá (settings.json + Keychain + LaunchAgent) a načítá při startu. Menu bar ikona = Spillway waveform (`baricon.py` template PNG). Obě témata ověřena v náhledu. O7 aktualizováno (jazyk volitelný).
 

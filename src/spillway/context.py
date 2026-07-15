@@ -34,6 +34,25 @@ _FALLBACK_KEYWORDS = {
     "code": ("code", "xcode", "terminal", "iterm", "pycharm", "intellij", "antigravity"),
 }
 
+# Prohlížeče, u kterých umíme AppleScriptem zjistit URL aktivní karty
+# (Automation oprávnění, NE Screen Recording — jednorázový systémový dialog).
+_BROWSER_SCRIPTS = {
+    "com.apple.Safari": 'tell application "Safari" to get URL of front document',
+    "com.google.Chrome": 'tell application "Google Chrome" to get URL of active tab of front window',
+    "com.brave.Browser": 'tell application "Brave Browser" to get URL of active tab of front window',
+    "com.microsoft.edgemac": 'tell application "Microsoft Edge" to get URL of active tab of front window',
+    "company.thebrowser.Browser": 'tell application "Arc" to get URL of active tab of front window',
+}
+# Doména → profil formátování (jen doména, ne obsah stránky).
+_DOMAIN_PROFILES = {
+    "mail.google.com": "email", "outlook.office.com": "email",
+    "outlook.live.com": "email", "outlook.office365.com": "email",
+    "chat.openai.com": "ai", "chatgpt.com": "ai", "claude.ai": "ai",
+    "gemini.google.com": "ai", "perplexity.ai": "ai",
+    "web.whatsapp.com": "chat", "web.telegram.org": "chat",
+    "discord.com": "chat", "slack.com": "chat", "x.com": "chat", "twitter.com": "chat",
+}
+
 
 def frontmost_app() -> tuple[str | None, str | None]:
     """Vrátí (název aplikace, bundle ID) právě aktivní aplikace."""
@@ -41,6 +60,36 @@ def frontmost_app() -> tuple[str | None, str | None]:
     if app is None:
         return (None, None)
     return (app.localizedName(), app.bundleIdentifier())
+
+
+def browser_context(bundle_id: str | None) -> tuple[str | None, str | None]:
+    """(profil dle domény, doména) aktivní karty podporovaného prohlížeče.
+
+    Přes AppleScript/Automation (NE Screen Recording) — přesnější než titulek
+    okna, čte jen URL, ne obsah stránky. Vyžaduje jednorázové schválení
+    systémového dialogu „Spillway chce ovládat <prohlížeč>"; bez povolení,
+    mimo podporovaný prohlížeč, nebo když appka neběží, vrací (None, None).
+    """
+    script_src = _BROWSER_SCRIPTS.get(bundle_id or "")
+    if not script_src:
+        return (None, None)
+    try:
+        from Foundation import NSAppleScript
+
+        script = NSAppleScript.alloc().initWithSource_(script_src)
+        result, error = script.executeAndReturnError_(None)
+        if error or result is None:
+            return (None, None)
+        url = result.stringValue()
+        if not url:
+            return (None, None)
+    except Exception:  # noqa: BLE001
+        return (None, None)
+
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).netloc or "").removeprefix("www.")
+    return (_DOMAIN_PROFILES.get(host), host or None)
 
 
 def app_profile(bundle_id: str | None, app_name: str | None = None) -> str:

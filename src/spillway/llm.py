@@ -45,6 +45,8 @@ _SYSTEM_TEMPLATE = """Jsi asistent, který upravuje a formátuje diktovaný text
 
 {profile}
 
+Pokud diktovaný text obsahuje mluvený METAPOKYN o formátu, tónu nebo cíli (např. „toto je e-mail", „piš to formálně", „to bude prompt pro AI", „neformálně", „krátce", „jako SMS") — řiď se jím místo (nebo navíc k) profilu výše. Metapokyn samotný do výsledného textu NEZAHRNUJ, mluví k tobě, není to obsah.
+
 Vždy platí:
 - Doplň interpunkci, velká písmena a oprav gramatickou shodu (pády, koncovky, rod, číslo).
 - Odstraň výplňová slova a zaškobrtnutí řeči („ehm", „éé", vycpávkové „no", zdvojené začátky vět).
