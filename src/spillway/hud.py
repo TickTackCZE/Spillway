@@ -1,45 +1,87 @@
-"""Plovoucí status okénko u kurzoru (Domovoy design).
+"""Plovoucí status okénko u textového kurzoru — Domovoy design přes WKWebView.
 
-Malý borderless panel u myši, který ukazuje stav: 🔴 Nahrávám / ⏳ Zpracovávám.
-Styl dle Domovoy (Půlnoční surface, accent border, Raleway, radius 10).
+Vzhled je HTML/CSS (přesně dle Domovoy: ghost logo, tmavá karta, accent lem,
+pulzující tečka), takže ho lze ladit a náhledovat v prohlížeči. Okno je
+borderless, průhledné, neaktivní panel; obsah renderuje WKWebView.
 
-Vše musí běžet na hlavním vlákně (volá se z rumps.Timer). Konstrukce i update
-jsou proto v tray na main threadu. Když se HUD nepodaří vytvořit, tray ho tiše
-přeskočí (aplikace běží dál).
+Poloha: nad textovým kurzorem (AX `kAXBoundsForRangeParameterizedAttribute`),
+fallback k myši. `SPILLWAY_DEBUG_HUD=1` vypisuje zjištěné souřadnice.
+
+Vše běží na hlavním vlákně (voláno z rumps.Timer). Když se HUD nepodaří
+vytvořit, tray ho tiše přeskočí.
 """
 
 from __future__ import annotations
+
+import os
 
 from AppKit import (
     NSBackingStoreBuffered,
     NSColor,
     NSEvent,
-    NSFont,
     NSMakePoint,
     NSMakeRect,
     NSPanel,
     NSScreen,
-    NSTextField,
-    NSView,
 )
+from WebKit import WKWebView, WKWebViewConfiguration
 
-from . import context, design
+from . import context
+
+_DEBUG = os.environ.get("SPILLWAY_DEBUG_HUD", "0").lower() not in ("0", "false", "no")
 
 _BORDERLESS = 0
 _NONACTIVATING = 1 << 7
-_STATUS_LEVEL = 25  # NSStatusWindowLevel — nad běžnými okny
+_STATUS_LEVEL = 25
 _ALL_SPACES = 1 << 0
 _STATIONARY = 1 << 4
 _FS_AUX = 1 << 8
 
+# Domovoy ghost logo (dark) — ovál v barvě karty (#1A1F2E), aby splynul s pozadím.
+_LOGO = (
+    '<svg viewBox="0 0 80 88" width="18" height="20">'
+    '<path fill="#E2E8F0" d="M5,4 L5,84 L20,84 C57,84 76,65 76,44 C76,23 57,4 20,4 Z"/>'
+    '<ellipse cx="43" cy="44" rx="18" ry="22" fill="#1A1F2E"/>'
+    '<circle cx="36" cy="33" r="4.5" fill="#E2E8F0"/>'
+    '<circle cx="50" cy="33" r="4.5" fill="#E2E8F0"/></svg>'
+)
 
-def _color(rgb, alpha: float = 1.0):
-    r, g, b = rgb
-    return NSColor.colorWithSRGBRed_green_blue_alpha_(r / 255, g / 255, b / 255, alpha)
+_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { background:transparent; }
+  body { font-family:-apple-system,'Raleway',sans-serif; padding:8px; }
+  .card {
+    display:none; align-items:center; gap:11px;
+    background:#1A1F2E; border:0.5px solid rgba(129,140,248,0.28);
+    border-radius:12px; padding:9px 15px 9px 12px;
+    box-shadow:0 8px 22px rgba(0,0,0,0.38); width:fit-content;
+  }
+  .logo { display:flex; width:18px; height:20px; flex-shrink:0; }
+  .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .dot.rec { background:#E11D48; animation:pulse 1.4s infinite; }
+  .dot.proc { background:#F59E0B; animation:blink 1s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(225,29,72,0.5);} 70%{box-shadow:0 0 0 7px rgba(225,29,72,0);} 100%{box-shadow:0 0 0 0 rgba(225,29,72,0);} }
+  @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.35;} }
+  .label { color:#E2E8F0; font-size:13px; font-weight:500; letter-spacing:0.2px; white-space:nowrap; }
+</style></head><body>
+  <div id="card" class="card">
+    <span class="logo">__LOGO__</span>
+    <span id="dot" class="dot"></span>
+    <span id="label" class="label"></span>
+  </div>
+  <script>
+    function setState(s){
+      var c=document.getElementById('card'),d=document.getElementById('dot'),l=document.getElementById('label');
+      if(s==='rec'){c.style.display='inline-flex';d.className='dot rec';l.textContent='Nahrávám';}
+      else if(s==='proc'){c.style.display='inline-flex';d.className='dot proc';l.textContent='Zpracovávám';}
+      else {c.style.display='none';}
+    }
+  </script>
+</body></html>""".replace("__LOGO__", _LOGO)
 
 
 class StatusHUD:
-    W, H = 172, 42
+    W, H = 210, 48
 
     def __init__(self) -> None:
         rect = NSMakeRect(0, 0, self.W, self.H)
@@ -50,7 +92,7 @@ class StatusHUD:
         self.panel.setBackgroundColor_(NSColor.clearColor())
         self.panel.setLevel_(_STATUS_LEVEL)
         self.panel.setIgnoresMouseEvents_(True)
-        self.panel.setHasShadow_(True)
+        self.panel.setHasShadow_(False)  # stín dělá CSS
         self.panel.setFloatingPanel_(True)
         self.panel.setHidesOnDeactivate_(False)
         try:
@@ -58,72 +100,63 @@ class StatusHUD:
         except Exception:  # noqa: BLE001
             pass
 
-        content = NSView.alloc().initWithFrame_(rect)
-        content.setWantsLayer_(True)
-        layer = content.layer()
-        layer.setBackgroundColor_(_color(design.SURFACE).CGColor())
-        layer.setCornerRadius_(design.RADIUS)
-        layer.setBorderWidth_(1.0)
-        layer.setBorderColor_(_color(design.ACCENT, 0.45).CGColor())
-        self.panel.setContentView_(content)
+        config = WKWebViewConfiguration.alloc().init()
+        self.web = WKWebView.alloc().initWithFrame_configuration_(rect, config)
+        try:
+            self.web.setValue_forKey_(False, "drawsBackground")  # průhledné pozadí
+        except Exception:  # noqa: BLE001
+            pass
+        self.web.loadHTMLString_baseURL_(_HTML, None)
+        self.panel.setContentView_(self.web)
 
-        # Stavová tečka.
-        self.dot = NSView.alloc().initWithFrame_(NSMakeRect(16, self.H / 2 - 4, 8, 8))
-        self.dot.setWantsLayer_(True)
-        self.dot.layer().setCornerRadius_(4)
-        content.addSubview_(self.dot)
-
-        # Popisek.
-        self.label = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(34, 0, self.W - 44, self.H)
-        )
-        self.label.setBezeled_(False)
-        self.label.setDrawsBackground_(False)
-        self.label.setEditable_(False)
-        self.label.setSelectable_(False)
-        self.label.setTextColor_(_color(design.TEXT))
-        font = NSFont.fontWithName_size_(design.FONT, 13.0) or NSFont.systemFontOfSize_(13.0)
-        self.label.setFont_(font)
-        content.addSubview_(self.label)
-
+        self._state = None
         self._visible = False
+
+    def _set_state(self, state: str) -> None:
+        if state != self._state:
+            self._state = state
+            try:
+                self.web.evaluateJavaScript_completionHandler_(
+                    f"setState('{state}')", None
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     def _reposition(self) -> None:
         gap = 10.0
         rect = context.caret_screen_rect()
-        if rect is not None:
-            cx, cy, cw, ch = rect  # AX coords: počátek vlevo NAHOŘE
-            screens = NSScreen.screens()
-            primary_h = float(screens[0].frame().size.height) if screens else 0.0
-            screen_w = float(screens[0].frame().size.width) if screens else 99999.0
+        screens = NSScreen.screens()
+        primary_h = float(screens[0].frame().size.height) if screens else 0.0
+        screen_w = float(screens[0].frame().size.width) if screens else 99999.0
 
-            # Vodorovně: vycentrovat nad kurzor, ořezat na obrazovku.
+        if rect is not None:
+            cx, cy, cw, ch = rect  # AX: počátek vlevo NAHOŘE
+            # karta má 8px odsazení uvnitř okna → posun, aby seděla nad kurzorem
             x = cx + cw / 2.0 - self.W / 2.0
             x = max(4.0, min(x, screen_w - self.W - 4.0))
-
-            # Svisle: AX top-left → Cocoa bottom-left. Umístit NAD kurzor;
-            # když by to bylo mimo horní okraj, dát pod kurzor.
-            caret_top_cocoa = primary_h - cy
-            caret_bottom_cocoa = primary_h - (cy + ch)
-            y = caret_top_cocoa + gap
+            caret_top = primary_h - cy
+            caret_bottom = primary_h - (cy + ch)
+            y = caret_top + gap - 8.0
             if y + self.H > primary_h - 4.0:
-                y = caret_bottom_cocoa - self.H - gap
+                y = caret_bottom - self.H - gap
+            if _DEBUG:
+                print(f"[hud] caret AX=({cx:.0f},{cy:.0f},{cw:.0f},{ch:.0f}) → panel=({x:.0f},{y:.0f})")
             self.panel.setFrameOrigin_(NSMakePoint(x, y))
-            return
+        else:
+            loc = NSEvent.mouseLocation()
+            if _DEBUG:
+                print(f"[hud] bez kurzoru (fallback myš) → ({loc.x:.0f},{loc.y:.0f})")
+            self.panel.setFrameOrigin_(NSMakePoint(loc.x - self.W / 2, loc.y + 24))
 
-        # Fallback: u myši (appka nepodporuje pozici kurzoru — Electron/web).
-        loc = NSEvent.mouseLocation()
-        self.panel.setFrameOrigin_(NSMakePoint(loc.x + 14, loc.y + 18))
-
-    def show(self, text: str, dot_rgb) -> None:  # noqa: ANN001
-        self.dot.layer().setBackgroundColor_(_color(dot_rgb).CGColor())
-        self.label.setStringValue_(text)
+    def show(self, state: str) -> None:
+        self._set_state(state)
         self._reposition()
         if not self._visible:
             self.panel.orderFrontRegardless()
             self._visible = True
 
     def hide(self) -> None:
+        self._set_state("hide")
         if self._visible:
             self.panel.orderOut_(None)
             self._visible = False

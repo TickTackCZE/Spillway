@@ -9,6 +9,7 @@ dependencies = [
     "pyobjc-framework-Cocoa>=10.3",
     "pyobjc-framework-Quartz>=10.3",
     "pyobjc-framework-ApplicationServices>=10.3",  # Accessibility (AXUIElement) — chytrá mezera
+    "pyobjc-framework-WebKit>=10.3",  # WKWebView — HUD v Domovoy stylu
     # F1 pipeline
     "sounddevice>=0.4.6",   # nahrávání mikrofonu (PortAudio)
     "faster-whisper>=1.0",  # lokální přepis (large-v3-turbo, CPU)

@@ -12,7 +12,7 @@ from __future__ import annotations
 import keyring
 import rumps
 
-from . import autostart, config, design, settings
+from . import autostart, config, settings
 from .app import IDLE, PROCESSING, RECORDING
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 
@@ -71,9 +71,9 @@ class SpillwayTray(rumps.App):
         try:
             state = self.controller.state
             if state == RECORDING:
-                self.hud.show("Nahrávám…", design.ERROR)
+                self.hud.show("rec")
             elif state == PROCESSING:
-                self.hud.show("Zpracovávám…", design.WARNING)
+                self.hud.show("proc")
             else:
                 self.hud.hide()
         except Exception:  # noqa: BLE001
