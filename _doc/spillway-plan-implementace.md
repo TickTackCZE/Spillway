@@ -135,7 +135,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 | # | Sev | Popis | Stav | Poznámka |
 |---|-----|-------|------|----------|
-| — | — | *Zatím žádné bugy — přidávej během implementace* | — | — |
+| B1 | 🟠 | **AI úprava přepisovala nejasný obsah** — Haiku halucinoval náhrady slov, kterým nerozuměl (`„ten klot s tím mapíčkem"` → `„tu mapu"`), měnil význam | 🟨 fix nasazen | Prompt přepsán na striktně minimální úpravy (nehádat význam, nepřeformulovávat); model konfigurovatelný přes `SPILLWAY_LLM_MODEL` (zkusit Sonnet). Čeká na re-test uživatelem. |
 
 ---
 
