@@ -12,11 +12,12 @@ from __future__ import annotations
 import keyring
 import rumps
 
-from . import autostart, config, settings
+from . import autostart, config, design, settings
 from .app import IDLE, PROCESSING, RECORDING
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 
-_ICON = {IDLE: "🎙️", RECORDING: "🔴", PROCESSING: "⏳"}
+# Statická ikona appky v liště (placeholder; Domovoy logo přijde s .app bundlem).
+_BAR_ICON = "🎙️"
 _MODELS = [
     ("Haiku (rychlé, levné)", "claude-haiku-4-5"),
     ("Sonnet (chytřejší, dražší)", "claude-sonnet-5"),
@@ -25,8 +26,17 @@ _MODELS = [
 
 class SpillwayTray(rumps.App):
     def __init__(self, controller):  # noqa: ANN001
-        super().__init__("Spillway", title=_ICON[IDLE], quit_button=None)
+        super().__init__("Spillway", title=_BAR_ICON, quit_button=None)
         self.controller = controller
+
+        # Plovoucí status u kurzoru (Domovoy design). Když selže, jedeme bez něj.
+        self.hud = None
+        try:
+            from .hud import StatusHUD
+
+            self.hud = StatusHUD()
+        except Exception as exc:  # noqa: BLE001
+            print(f"(HUD nedostupný: {exc})")
 
         self._model_items = {
             mid: rumps.MenuItem(f"Model: {label}", callback=self._make_model_cb(mid))
@@ -54,11 +64,20 @@ class SpillwayTray(rumps.App):
         self._timer = rumps.Timer(self._tick, 0.15)
         self._timer.start()
 
-    # --- stav ikony -------------------------------------------------------
+    # --- stav (plovoucí HUD u kurzoru) -----------------------------------
     def _tick(self, _sender) -> None:  # noqa: ANN001
-        title = _ICON.get(self.controller.state, _ICON[IDLE])
-        if self.title != title:
-            self.title = title
+        if self.hud is None:
+            return
+        try:
+            state = self.controller.state
+            if state == RECORDING:
+                self.hud.show("Nahrávám…", design.ERROR)
+            elif state == PROCESSING:
+                self.hud.show("Zpracovávám…", design.WARNING)
+            else:
+                self.hud.hide()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _refresh_states(self) -> None:
         current = config.get_model()

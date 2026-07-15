@@ -113,7 +113,12 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 - [ ] **Milník:** CZ+EN diktát vychází čistý (angl. termíny opraveny), změřená cena.
 
 ### F3 — Aplikace 🟨
-- [x] **Menu bar ikona + menu** (`tray.py`, rumps): ikona 🎙️ idle · **🔴 nahrává** · ⏳ zpracovává. Menu: přepnutí modelu (Haiku/Sonnet), slovník, API klíč, autostart, kontext pole, Konec. *Uživatel rozhodl: status = červený mikrofon v liště (NE plovoucí HUD u kurzoru — ten zrušen).*
+> **Design:** uživatel dodal brand manuál **Domovoy** (Půlnoční paleta, Raleway, ploché, tenké 0,5px hrany, accent #818CF8). Vlastní UI Spillway to má napodobit. Tokeny: `src/spillway/design.py`. Viz paměť `domovoy-design-system`.
+- [x] **Menu bar ikona + menu** (`tray.py`, rumps): **statická ikona appky** v liště, klik → menu (model, slovník, API klíč, autostart, kontext pole, Konec).
+- [x] **Plovoucí HUD u kurzoru** (`hud.py`) — Domovoy styl (surface #1A1F2E, accent border, radius 10): 🔴 „Nahrávám" / ⏳ „Zpracovávám" u myši. *(Znovu zaveden dle upřesnění — status patří sem, ne do lišty.)* Čeká na test.
+- [ ] **Vlastní settings popup okno** (klik na ikonu → Domovoy-styled okno místo nativního menu) — WKWebView/NSWindow s Domovoy HTML. Větší krok.
+- [ ] **Ikona appky = Domovoy logo** v liště (přijde s .app bundlem / template obrázkem). Zatím placeholder 🎙️.
+- [ ] Raleway font zabalit (jinak HUD/UI padá na systémový font).
 - [x] **[F-b] Kontextové formátování** — per-app profil (email/chat/code/generic) + čtení obsahu pole (email = celé pole 3000 zn.) jako kontext pro Claude. Pojistka B1 zachována. Čeká na test.
 - [x] **[F-c/F-d] Slovník výrazů** — editovatelný v menu, uložen v `settings.json`, předán do promptu (termíny beze změny + oprava přeslechů k nim).
 - [x] **Přepínání modelu** za běhu z menu (Haiku ↔ Sonnet), perzistováno.
@@ -204,6 +209,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 - **14. 7. 2026** — Založen plán. Architektura rozhodnuta (Python + PyObjC menu bar .app, PyInstaller, SMAppService; Docker zamítnut). Definováno 9 modulů, 5 fází (F0–F4), 8 rizik, 6 otevřených otázek. Návrh ověřen agentem Fable 5.
 - **14. 7. 2026** — Doplněny 4 funkční požadavky uživatele: **F-a** vícejazyčnost (CZ+EN), **F-b** znalost aplikace + per-app profily, **F-c** slovník výrazů (Whisper hint + Claude prompt), **F-d** chráněné výrazy (preserve verbatim). Rozšířeny moduly `transcribe`/`context`/`llm`, konfigurace (glossary, protected_terms, app_profile, language.mode), fáze F2/F4 a přidána otázka O7 (jazykový režim).
+- **15. 7. 2026** — **Domovoy design + HUD.** Uživatel dodal Domovoy brand manuál → uloženo do paměti + `src/spillway/design.py` (Půlnoční paleta, Raleway). Nový `hud.py`: plovoucí status okénko u kurzoru (🔴 Nahrávám / ⏳ Zpracovávám) v Domovoy stylu, poloha u myši. Menu bar ikona teď statická, dynamický status přesunut do HUD. Další: vlastní settings popup okno v Domovoy stylu + Domovoy logo jako ikona v liště.
 - **15. 7. 2026** — **F3 menu naplněno.** `tray.py`: červený mikrofon při nahrávání (HUD zrušen dle uživatele), menu s přepnutím modelu (Haiku↔Sonnet), slovníkem, API klíčem, autostartem, kontextem pole. Nové moduly `settings.py` (perzistence, nahrazuje TOML) a `autostart.py` (LaunchAgent). Slovník (F-c/F-d) zapojen do promptu. E-mail vidí celý obsah pole. Souběh ošetřen (B3). B2 mikrofon: v1+v2 selhaly → v3 (gc + diagnostika), jinak AVFoundation. Domovoy = uživatelův projekt → design se použije až na vlastní okno (menu je nativní).
 - **15. 7. 2026** — **Kontextové formátování (F-b).** `llm.py` přepsán z pouhé korektury na **formátování dle profilu aplikace** (email/chat/code/generic) + volitelný **kontext z obsahu pole** (`context.focused_field` přes AX → Claude naváže na rozepsaný e-mail, tón). Zachována pojistka B1. `smart_spacing.py` sloučen do `context.focused_field` (jedno AX čtení pro mezeru i kontext). Nový toggle `SPILLWAY_FIELD_CONTEXT`. Uživatel navíc chce menu bar jen jako ikonu appky a status do plovoucího HUD u kurzoru → zapsáno do F3.
 - **15. 7. 2026** — **F2 potvrzena + start F3.** F2 kvalita OK (Haiku). B2 mikrofon fix v2 (restart PortAudia po nahrávce). Chytrá mezera: potvrzeno ošetření prázdného pole / pozice 0. **F3 zahájen:** menu bar ikona se stavem (`tray.py`, rumps + Timer), `app.py` běží pod rumps s fallbackem na terminál. Dep `rumps`.
