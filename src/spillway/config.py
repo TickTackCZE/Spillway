@@ -76,6 +76,17 @@ def field_context() -> bool:
     return bool(settings.get("field_context", True))
 
 
+def get_auto_unload_minutes() -> float:
+    """[R5] Po kolika minutách nečinnosti uvolnit Whisper model z paměti
+    (~1,5–2 GB RAM); znovu se lazy-loadne při dalším diktátu (~1,6 s). 0 = nikdy.
+    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 10 minut."""
+    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 10)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 10.0
+
+
 def get_api_key() -> str | None:
     """Vrátí Anthropic API klíč z Keychain, nebo z env, nebo None."""
     try:

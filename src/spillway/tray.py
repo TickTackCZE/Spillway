@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import rumps
 
+from . import config
 from .app import PROCESSING, RECORDING
 
 _BAR_ICON = "🎙️"  # placeholder; Spillway logo přijde s .app bundlem (ikonové assety)
@@ -54,6 +55,20 @@ class SpillwayTray(rumps.App):
 
         self._timer = rumps.Timer(self._tick, 0.15)
         self._timer.start()
+
+        # [R5] Periodicky uvolnit Whisper model po nečinnosti (~1,5–2 GB RAM).
+        self._unload_timer = rumps.Timer(self._check_unload, 30)
+        self._unload_timer.start()
+
+    def _check_unload(self, _sender) -> None:  # noqa: ANN001
+        try:
+            if getattr(self.controller, "state", "IDLE") != "IDLE":
+                return  # neuvolňovat uprostřed nahrávání/zpracování
+            idle_min = config.get_auto_unload_minutes()
+            if self.controller.transcriber.unload_if_idle(idle_min * 60):
+                print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_min:.0f} min).")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _tick(self, _sender) -> None:  # noqa: ANN001
         if self.hud is None:

@@ -137,6 +137,8 @@ class Controller:
             app_ctx = f"{app_name} ({domain})" if domain else app_name
 
             secs = len(audio) / 16000.0
+            if not self.transcriber.is_loaded:
+                print("💤→🔄 model byl uvolněný z paměti, znovu se načítá…")
             print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_ctx} · profil: {profile})")
             t0 = time.perf_counter()
             raw = self.transcriber.transcribe(audio, language=self.language)
