@@ -12,9 +12,9 @@
 
 | Ukazatel | Hodnota |
 |---|---|
-| **Aktuální fáze** | **F3 — Aplikace** (🟨 menu bar nakódován; F2 ověřena — Haiku OK ✅) |
+| **Aktuální fáze** | **F3 — Aplikace** (🟨 menu bar + settings okno + logo + perzistence hotové; zbývá `.app`) |
 | **Milník** | Instaluju .app, běží na pozadí, přežije restart |
-| **Blokery** | Test menu baru (GUI) uživatelem; B2 (mikrofon) re-test fix v2 |
+| **Blokery** | GUI test settings okna uživatelem; B2 (mikrofon) stále nevyřešen; zabalení do .app |
 | **Testovací stroj** | iMac M4, 16 GB RAM, 10 jader (Mac16,12, 2024) — **ne** M5 Air; Apple Silicon, faster-whisper poběží CPU-only stejně |
 | **Otevřené otázky k rozhodnutí** | 1 — O1 Whisper backend (rozhodne Spike B); O2–O7 rozhodnuty (viz §8) |
 
@@ -117,9 +117,11 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 - [x] **Spillway logo** = roztékající waveform (`design.logo_svg`) — dle reference uživatele, v accentu. App ikona / HUD / wordmark.
 - [x] **Menu bar** (`tray.py`): statická ikona, klik → menu „Nastavení…" (otevře okno) + „Konec". Vše nastavení přesunuto do okna.
 - [x] **Plovoucí HUD u kurzoru** (`hud.py`, WKWebView) — neutrální graphite karta + logo + pulzující tečka. Caret nad textem (nativní pole) / u myši (Electron/web). Ověřeno v náhledu.
-- [x] **Settings okno v Domovoy designu** (`settings_window.py`, WKWebView + JS↔Python most): model (Haiku/Sonnet), API klíč (Keychain), slovník, přepínače (autostart, kontext pole, chytrá mezera). Ověřeno v náhledu. **Čeká na GUI test** (okno se otevře, most funguje).
-- [ ] **Ikona appky v liště = Spillway logo** (přijde s .app bundlem — template obrázek z waveform). Zatím placeholder 🎙️.
+- [x] **Settings okno v Domovoy designu** (`settings_window.py`, WKWebView + JS↔Python most): **téma Systém/Světlý/Tmavý** (Ledová/Půlnoční, „systém" dle OS), **výběr primárního jazyka** (Whisper), model (Haiku/Sonnet), **API klíč (vložit→uložit→smazat→vložit)**, slovník (celá šířka), přepínače. Ověřeno v náhledu obou témat. **Čeká na GUI test.**
+- [x] **Ikona v liště = Spillway logo** (`baricon.py` — template PNG z waveform). Fallback emoji.
+- [x] **Perzistence všeho** — settings.json (model, jazyk, téma, slovník, toggly) + Keychain (klíč) + LaunchAgent (autostart); Controller vše načte při startu.
 - [ ] Raleway font zabalit (jinak UI padá na systémový font — funkčně OK).
+- [ ] **Zabalení do `.app`** (PyInstaller, LSUIElement, ikony) + single-instance — aby šlo nainstalovat a spouštět bez terminálu. **Hlavní zbývající krok.**
 - [x] **[F-b] Kontextové formátování** — per-app profil (email/chat/code/generic) + čtení obsahu pole (email = celé pole 3000 zn.) jako kontext pro Claude. Pojistka B1 zachována. Čeká na test.
 - [x] **[F-c/F-d] Slovník výrazů** — editovatelný v menu, uložen v `settings.json`, předán do promptu (termíny beze změny + oprava přeslechů k nim).
 - [x] **Přepínání modelu** za běhu z menu (Haiku ↔ Sonnet), perzistováno.
@@ -184,7 +186,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 | O4 | Podpis aplikace | **Teď ad-hoc** (osobní nástroj). **Do budoucna Developer ID + notarizace** kvůli plánovanému prodeji → nearchitektovat se do kouta (viz §10 Budoucí featury). |
 | O5 | Historie přepisů | **Ukládat**, minimální formát, **nešifrovaně lokálně** na PC. Budoucí odesílání na RPi/DB + analytiky → §10. |
 | O6 | Výpadek API | **Viditelná chyba** (notifikace/badge) — a **raw přepis se přesto vloží**, aby se text neztratil. |
-| O7 | [F-a] Jazykový režim | **`fixed cs`** — jen slova (anglické termíny uvnitř CZ řeší Whisper, celé EN věty se zatím neřeší). |
+| O7 | [F-a] Jazykový režim | **Aktualizováno:** primární jazyk je nyní **volitelný v nastavení** (cs/en/sk/de/…), uložený a živě měnitelný. CZ+EN code-switching uvnitř věty řeší Whisper + Claude. |
 
 **Otevřené (rozhodne se během spiků):**
 
@@ -207,6 +209,8 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 ---
 
 ## 10. Changelog
+
+- **15. 7. 2026** — **Nastavení rozšířeno + logo do lišty.** Settings okno: téma Systém/Světlý/Tmavý (Domovoy palety, „systém" dle OS), výběr primárního jazyka (napojen na Whisper), API klíč vložit→smazat→vložit, slovník na celou šířku. Vše se ukládá (settings.json + Keychain + LaunchAgent) a načítá při startu. Menu bar ikona = Spillway waveform (`baricon.py` template PNG). Obě témata ověřena v náhledu. O7 aktualizováno (jazyk volitelný).
 
 - **14. 7. 2026** — Založen plán. Architektura rozhodnuta (Python + PyObjC menu bar .app, PyInstaller, SMAppService; Docker zamítnut). Definováno 9 modulů, 5 fází (F0–F4), 8 rizik, 6 otevřených otázek. Návrh ověřen agentem Fable 5.
 - **14. 7. 2026** — Doplněny 4 funkční požadavky uživatele: **F-a** vícejazyčnost (CZ+EN), **F-b** znalost aplikace + per-app profily, **F-c** slovník výrazů (Whisper hint + Claude prompt), **F-d** chráněné výrazy (preserve verbatim). Rozšířeny moduly `transcribe`/`context`/`llm`, konfigurace (glossary, protected_terms, app_profile, language.mode), fáze F2/F4 a přidána otázka O7 (jazykový režim).
