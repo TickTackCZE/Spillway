@@ -6,10 +6,14 @@ Audio nikdy neopouští RAM ani se neukládá na disk (privacy). Ve Spike B ově
 
 from __future__ import annotations
 
+import gc
+import os
 import threading
 
 import numpy as np
 import sounddevice as sd
+
+_DEBUG = os.environ.get("SPILLWAY_DEBUG_AUDIO", "0").lower() not in ("0", "false", "no")
 
 SAMPLE_RATE = 16000
 MAX_SECONDS_DEFAULT = 120
@@ -50,22 +54,26 @@ class Recorder:
         stream = self._stream
         self._stream = None
         if stream is not None:
-            # stop() dokončí zpracování bufferu (neztratí konec nahrávky),
-            # close() dovře stream.
-            for op in (stream.stop, stream.close):
+            for name, op in (("stop", stream.stop), ("close", stream.close)):
                 try:
                     op()
-                except Exception:  # noqa: BLE001
-                    pass
-            # Samotný close() na macOS někdy neuvolní CoreAudio zařízení a
-            # oranžový indikátor mikrofonu zůstane svítit. Restart PortAudia
-            # (_terminate + _initialize) zařízení spolehlivě pustí; next start()
-            # otevře stream na čerstvě inicializované knihovně.
+                    if _DEBUG:
+                        print(f"[audio] {name}() OK")
+                except Exception as exc:  # noqa: BLE001
+                    if _DEBUG:
+                        print(f"[audio] {name}() selhal: {exc}")
+            # close() na macOS někdy neuvolní CoreAudio zařízení → oranžový
+            # indikátor zůstane svítit. Uvolníme referenci, GC a restart PortAudia.
+            del stream
+            gc.collect()
             try:
                 sd._terminate()
                 sd._initialize()
-            except Exception:  # noqa: BLE001
-                pass
+                if _DEBUG:
+                    print("[audio] PortAudio restart OK")
+            except Exception as exc:  # noqa: BLE001
+                if _DEBUG:
+                    print(f"[audio] PortAudio restart selhal: {exc}")
         with self._lock:
             if not self._frames:
                 return np.zeros(0, dtype=np.float32)

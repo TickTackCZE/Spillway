@@ -113,12 +113,14 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 - [ ] **Milník:** CZ+EN diktát vychází čistý (angl. termíny opraveny), změřená cena.
 
 ### F3 — Aplikace 🟨
-- [x] **Menu bar ikona se stavem** (`tray.py`, rumps): 🎙️ idle · 🔴 nahrává · ⏳ přepisuje. *Poznámka: uživatel chce místo toho v liště jen ikonu appky a status přesunout do **plovoucího HUD okénka u kurzoru** (viz F4 / další krok).*
-- [ ] **[F-b] Kontextové formátování ✅ nakódováno** — per-app profil (email/chat/code/generic dle bundle ID) + čtení existujícího obsahu pole (`context.focused_field`) jako kontext pro Claude (navázání na e-mail, tón). Vypínatelné `SPILLWAY_FIELD_CONTEXT=0`. Zachována pojistka B1 (nevymýšlet fakta). **Čeká na test uživatelem.**
-- [ ] **Plovoucí HUD status u kurzoru** (nahradí status v liště) — NSPanel u pozice kurzoru přes AX `kAXBoundsForRangeParameterizedAttribute`. GUI, samostatný krok.
-- [ ] Settings okno / menu (raw toggle, model, historie)
-- [ ] config v TOML (hotkey, model, slovník)
-- [ ] PyInstaller .app + podpis + SMAppService autostart + single-instance
+- [x] **Menu bar ikona + menu** (`tray.py`, rumps): ikona 🎙️ idle · **🔴 nahrává** · ⏳ zpracovává. Menu: přepnutí modelu (Haiku/Sonnet), slovník, API klíč, autostart, kontext pole, Konec. *Uživatel rozhodl: status = červený mikrofon v liště (NE plovoucí HUD u kurzoru — ten zrušen).*
+- [x] **[F-b] Kontextové formátování** — per-app profil (email/chat/code/generic) + čtení obsahu pole (email = celé pole 3000 zn.) jako kontext pro Claude. Pojistka B1 zachována. Čeká na test.
+- [x] **[F-c/F-d] Slovník výrazů** — editovatelný v menu, uložen v `settings.json`, předán do promptu (termíny beze změny + oprava přeslechů k nim).
+- [x] **Přepínání modelu** za běhu z menu (Haiku ↔ Sonnet), perzistováno.
+- [x] **Autostart po přihlášení** (`autostart.py`, LaunchAgent) — zap/vyp z menu. *(Ve fázi zabalení nahradí SMAppService.)*
+- [x] **Perzistentní nastavení** (`settings.json` v Application Support) — model, slovník, toggly. *(Nahrazuje plánovaný TOML.)*
+- [x] **API klíč z menu** — dialog uloží do Keychain (+ `set_api_key.py` zůstává).
+- [ ] PyInstaller .app (LSUIElement — jen ikona v liště, bez Docku) + podpis + single-instance
 - [ ] **Milník:** instaluju .app, přežije restart.
 
 ### F4 — Polish ⬜
@@ -139,7 +141,8 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 | # | Sev | Popis | Stav | Poznámka |
 |---|-----|-------|------|----------|
 | B1 | 🟠 | **AI úprava přepisovala nejasný obsah** — Haiku halucinoval náhrady slov, kterým nerozuměl (`„ten klot s tím mapíčkem"` → `„tu mapu"`), měnil význam | ✅ vyřešeno | Prompt přepsán na striktně minimální úpravy; model konfigurovatelný přes `SPILLWAY_LLM_MODEL`. Uživatel potvrdil, že Haiku teď vypadá dobře. |
-| B2 | 🟡 | **Mikrofon se neuvolní** — po nahrávání zůstává oranžový indikátor mikrofonu v liště | 🟨 fix v2 | Fix v1 (stop+close) nestačil → **fix v2:** po zavření streamu restart PortAudia (`sd._terminate()`+`_initialize()`), který CoreAudio zařízení spolehlivě pustí. Čeká na re-test. |
+| B2 | 🟠 | **Mikrofon se neuvolní** — oranžový indikátor mikrofonu v liště svítí i po nahrávání | 🟥 fix v1+v2 selhaly | Fix v1 (stop+close) i v2 (restart PortAudia) NEzabraly (uživatel potvrdil). **v3:** + `gc.collect()` + diagnostika (`SPILLWAY_DEBUG_AUDIO=1`). Pokud v3 selže → **přejít na nativní AVFoundation nahrávání** (AVAudioEngine spolehlivě uvolní mikrofon na macOS). Ověřit i, zda stav nepřežije restart appky. |
+| B3 | 🟡 | **Souběh: co při nahrání během zpracování / překlik pole** — otázka uživatele | ✅ ošetřeno / ⚠️ známé | Nová nahrávka během zpracování se **ignoruje** (žádná fronta — ať se nevloží do špatného pole), s výpisem „zaneprázdněno". Kontext (appka/profil/pole) se snímá při puštění F5; paste jde tam, kam je fokus v okamžiku vložení — **překlik pole během zpracování → vloží se do nového pole, ale formátování dle starého kontextu** (přijatelné; latence ~1–3 s). |
 
 ---
 
@@ -201,6 +204,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 - **14. 7. 2026** — Založen plán. Architektura rozhodnuta (Python + PyObjC menu bar .app, PyInstaller, SMAppService; Docker zamítnut). Definováno 9 modulů, 5 fází (F0–F4), 8 rizik, 6 otevřených otázek. Návrh ověřen agentem Fable 5.
 - **14. 7. 2026** — Doplněny 4 funkční požadavky uživatele: **F-a** vícejazyčnost (CZ+EN), **F-b** znalost aplikace + per-app profily, **F-c** slovník výrazů (Whisper hint + Claude prompt), **F-d** chráněné výrazy (preserve verbatim). Rozšířeny moduly `transcribe`/`context`/`llm`, konfigurace (glossary, protected_terms, app_profile, language.mode), fáze F2/F4 a přidána otázka O7 (jazykový režim).
+- **15. 7. 2026** — **F3 menu naplněno.** `tray.py`: červený mikrofon při nahrávání (HUD zrušen dle uživatele), menu s přepnutím modelu (Haiku↔Sonnet), slovníkem, API klíčem, autostartem, kontextem pole. Nové moduly `settings.py` (perzistence, nahrazuje TOML) a `autostart.py` (LaunchAgent). Slovník (F-c/F-d) zapojen do promptu. E-mail vidí celý obsah pole. Souběh ošetřen (B3). B2 mikrofon: v1+v2 selhaly → v3 (gc + diagnostika), jinak AVFoundation. Domovoy = uživatelův projekt → design se použije až na vlastní okno (menu je nativní).
 - **15. 7. 2026** — **Kontextové formátování (F-b).** `llm.py` přepsán z pouhé korektury na **formátování dle profilu aplikace** (email/chat/code/generic) + volitelný **kontext z obsahu pole** (`context.focused_field` přes AX → Claude naváže na rozepsaný e-mail, tón). Zachována pojistka B1. `smart_spacing.py` sloučen do `context.focused_field` (jedno AX čtení pro mezeru i kontext). Nový toggle `SPILLWAY_FIELD_CONTEXT`. Uživatel navíc chce menu bar jen jako ikonu appky a status do plovoucího HUD u kurzoru → zapsáno do F3.
 - **15. 7. 2026** — **F2 potvrzena + start F3.** F2 kvalita OK (Haiku). B2 mikrofon fix v2 (restart PortAudia po nahrávce). Chytrá mezera: potvrzeno ošetření prázdného pole / pozice 0. **F3 zahájen:** menu bar ikona se stavem (`tray.py`, rumps + Timer), `app.py` běží pod rumps s fallbackem na terminál. Dep `rumps`.
 - **15. 7. 2026** — **Ladění F2 dle testů uživatele.** B1 vyřešen (konzervativní prompt — Haiku teď OK). B2 (mikrofon se neuvolňoval) — zpřísněn `audio.stop()` + uvolnění při shutdown. Nová featura: **chytrá mezera** (`smart_spacing.py`) — přes Accessibility zjistí znak před kurzorem a vloží mezeru, když slova hrozí splynout (best-effort, vypínatelné `SPILLWAY_AUTO_SPACE=0`). Přidán dep `pyobjc-framework-ApplicationServices`.

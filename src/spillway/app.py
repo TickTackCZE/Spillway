@@ -34,20 +34,41 @@ class Controller:
         self.state = IDLE
         self._lock = threading.Lock()
 
-        # [F2] AI úprava přes Claude — jen pokud je klíč a není raw režim.
+        # [F2/F3] AI úprava přes Claude — konfigurovatelná za běhu z menu.
+        self.raw_mode = raw_mode
+        self.api_key = None if raw_mode else config.get_api_key()
+        self.model = config.get_model()
+        self.glossary = config.glossary()
         self.cleaner: Cleaner | None = None
-        if not raw_mode:
-            api_key = config.get_api_key()
-            if api_key:
-                model = config.get_model()
-                self.cleaner = Cleaner(api_key, model=model)
-                print(f"🤖 AI úprava zapnuta ({model}).")
-            else:
-                print("ℹ️  Bez API klíče → raw režim. Klíč nastav: uv run python set_api_key.py")
+        self._build_cleaner()
+
+    def _build_cleaner(self) -> None:
+        if self.api_key:
+            self.cleaner = Cleaner(self.api_key, model=self.model)
+            print(f"🤖 AI úprava zapnuta ({self.model}).")
+        else:
+            self.cleaner = None
+            if not self.raw_mode:
+                print("ℹ️  Bez API klíče → raw režim. Klíč vlož v menu (ikona 🎙️).")
+
+    def set_model(self, model: str) -> None:
+        self.model = model
+        self._build_cleaner()
+
+    def set_api_key(self, key: str) -> None:
+        self.api_key = key
+        self.raw_mode = False
+        self._build_cleaner()
+
+    def set_glossary(self, terms: list[str]) -> None:
+        self.glossary = terms
 
     def on_press(self) -> None:
         with self._lock:
             if self.state != IDLE:
+                # Souběh: předchozí nahrávka se ještě zpracovává → nová se ignoruje
+                # (žádná fronta — ať se nevloží text do špatného pole). Zkus po chvíli.
+                print(f"⏳ zaneprázdněno ({self.state}) — počkej na dokončení.")
                 return
             self.state = RECORDING
         print("🔴 nahrávám… (drž F5)")
@@ -80,14 +101,22 @@ class Controller:
 
             text = raw
             if self.cleaner is not None:
-                # Existující text pole před kurzorem jako kontext (jen když povoleno).
+                # Existující obsah pole jako kontext (jen když povoleno).
+                # E-mail → celé pole (cap 3000); jinak okno před kurzorem.
                 before = None
-                if config.field_context() and field_text and caret and caret > 0:
-                    before = field_text[:caret][-600:]
+                if config.field_context() and field_text:
+                    if profile == "email":
+                        before = field_text[:3000]
+                    elif caret and caret > 0:
+                        before = field_text[:caret][-800:]
                 try:
                     text = (
                         self.cleaner.clean(
-                            raw, app_name=app_name, profile=profile, before_text=before
+                            raw,
+                            app_name=app_name,
+                            profile=profile,
+                            before_text=before,
+                            glossary=self.glossary,
                         )
                         or raw
                     )

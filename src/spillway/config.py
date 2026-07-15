@@ -12,14 +12,20 @@ from __future__ import annotations
 
 import os
 
+from . import settings
+
 KEYRING_SERVICE = "spillway"
 KEYRING_ACCOUNT = "anthropic"
 
 
 def get_model() -> str:
-    """Model pro AI úpravu. Přepíšeš přes env SPILLWAY_LLM_MODEL.
-    Např.: SPILLWAY_LLM_MODEL=claude-sonnet-5 (vyšší kvalita, dražší)."""
-    return os.environ.get("SPILLWAY_LLM_MODEL", "claude-haiku-4-5")
+    """Model pro AI úpravu (z nastavení v liště). Env SPILLWAY_LLM_MODEL má přednost."""
+    return os.environ.get("SPILLWAY_LLM_MODEL") or settings.get("model", "claude-haiku-4-5")
+
+
+def glossary() -> list[str]:
+    """Uživatelský slovník termínů (zůstanou beze změny)."""
+    return settings.get("glossary", []) or []
 
 
 def _flag(name: str, default: str = "1") -> bool:
@@ -27,15 +33,18 @@ def _flag(name: str, default: str = "1") -> bool:
 
 
 def auto_space() -> bool:
-    """Zda vkládat mezeru před text, když kurzor stojí za nemezerovým znakem.
-    Vypneš přes env SPILLWAY_AUTO_SPACE=0."""
-    return _flag("SPILLWAY_AUTO_SPACE")
+    """Mezera před textem, když kurzor stojí za nemezerovým znakem. Env přebíjí nastavení."""
+    if "SPILLWAY_AUTO_SPACE" in os.environ:
+        return _flag("SPILLWAY_AUTO_SPACE")
+    return bool(settings.get("auto_space", True))
 
 
 def field_context() -> bool:
-    """Zda posílat Claudeovi existující obsah pole jako kontext (formátování,
-    navázání na e-mail). Odesílá text pole k Anthropic → vypni SPILLWAY_FIELD_CONTEXT=0."""
-    return _flag("SPILLWAY_FIELD_CONTEXT")
+    """Posílat Claudeovi existující obsah pole jako kontext (odchází k Anthropic).
+    Env SPILLWAY_FIELD_CONTEXT přebíjí nastavení v liště."""
+    if "SPILLWAY_FIELD_CONTEXT" in os.environ:
+        return _flag("SPILLWAY_FIELD_CONTEXT")
+    return bool(settings.get("field_context", True))
 
 
 def get_api_key() -> str | None:
