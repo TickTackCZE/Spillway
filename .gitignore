@@ -3,8 +3,12 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .eggs/
-build/
-dist/
+
+# PyInstaller výstupy (viz build/spillway.spec) — build/*.py, *.spec, icon.icns
+# jsou SOUČÁST repa, jen samotné sestavené artefakty ne.
+build/dist/
+build/work/
+build/icon.iconset/
 
 # Virtualenv (NIKDY do gitu; navíc bolí v Google Drive — zvaž venv mimo Drive)
 .venv/

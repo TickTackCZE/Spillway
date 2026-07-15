@@ -23,6 +23,10 @@ def acquire():  # -> file object | None
     try:
         os.makedirs(_DIR, exist_ok=True)
         handle = open(_LOCK, "w")
+        # FD_CLOEXEC: kdyby proces ještě někdy prošel execve (i mimo náš
+        # multiprocessing.freeze_support() fix), ať zámek nepřežije do dalšího
+        # obrazu procesu a nekoliduje sám se sebou.
+        fcntl.fcntl(handle.fileno(), fcntl.F_SETFD, fcntl.FD_CLOEXEC)
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         handle.write(str(os.getpid()))
         handle.flush()
