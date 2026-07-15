@@ -22,10 +22,20 @@ def get_model() -> str:
     return os.environ.get("SPILLWAY_LLM_MODEL", "claude-haiku-4-5")
 
 
+def _flag(name: str, default: str = "1") -> bool:
+    return os.environ.get(name, default).lower() not in ("0", "false", "no")
+
+
 def auto_space() -> bool:
     """Zda vkládat mezeru před text, když kurzor stojí za nemezerovým znakem.
     Vypneš přes env SPILLWAY_AUTO_SPACE=0."""
-    return os.environ.get("SPILLWAY_AUTO_SPACE", "1").lower() not in ("0", "false", "no")
+    return _flag("SPILLWAY_AUTO_SPACE")
+
+
+def field_context() -> bool:
+    """Zda posílat Claudeovi existující obsah pole jako kontext (formátování,
+    navázání na e-mail). Odesílá text pole k Anthropic → vypni SPILLWAY_FIELD_CONTEXT=0."""
+    return _flag("SPILLWAY_FIELD_CONTEXT")
 
 
 def get_api_key() -> str | None:

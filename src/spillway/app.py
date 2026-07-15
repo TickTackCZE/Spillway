@@ -22,7 +22,6 @@ from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner
 from .paste import paste_text
-from .smart_spacing import leading_space_needed
 from .transcribe import Transcriber
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
@@ -64,10 +63,13 @@ class Controller:
 
     def _process(self, audio) -> None:  # noqa: ANN001
         try:
-            # [F2] kontext = název aktivní aplikace (zachytit před vložením).
-            app_name, _bundle = context.frontmost_app()
+            # [F2/F3] kontext: aktivní aplikace, profil formátování, obsah pole.
+            app_name, bundle = context.frontmost_app()
+            profile = context.app_profile(bundle, app_name)
+            field_text, caret = context.focused_field()  # lokální AX čtení
+
             secs = len(audio) / 16000.0
-            print(f"⏳ přepisuji {secs:.1f} s audia…  (aktivní: {app_name})")
+            print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_name} · profil: {profile})")
             t0 = time.perf_counter()
             raw = self.transcriber.transcribe(audio)
             dt = time.perf_counter() - t0
@@ -78,15 +80,30 @@ class Controller:
 
             text = raw
             if self.cleaner is not None:
+                # Existující text pole před kurzorem jako kontext (jen když povoleno).
+                before = None
+                if config.field_context() and field_text and caret and caret > 0:
+                    before = field_text[:caret][-600:]
                 try:
-                    text = self.cleaner.clean(raw, app_name=app_name) or raw
+                    text = (
+                        self.cleaner.clean(
+                            raw, app_name=app_name, profile=profile, before_text=before
+                        )
+                        or raw
+                    )
                     print(f"✨ upraveno: {text!r}")
                 except Exception as exc:  # noqa: BLE001 — [O6] chyba, ale text neztratit
                     print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
                     text = raw
 
-            # Chytrá mezera: když kurzor stojí za nemezerovým znakem, oddělit.
-            if config.auto_space() and leading_space_needed():
+            # Chytrá mezera: kurzor za nemezerovým znakem (a ne první text v poli).
+            if (
+                config.auto_space()
+                and field_text
+                and caret
+                and 0 < caret <= len(field_text)
+                and not field_text[caret - 1].isspace()
+            ):
                 text = " " + text
 
             paste_text(text)
