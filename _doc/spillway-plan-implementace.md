@@ -12,9 +12,9 @@
 
 | Ukazatel | Hodnota |
 |---|---|
-| **Aktuální fáze** | **F3 — Aplikace** (🟨 menu bar + settings okno + logo + perzistence hotové; zbývá `.app`) |
-| **Milník** | Instaluju .app, běží na pozadí, přežije restart |
-| **Blokery** | Zabalení do `.app` (hlavní krok); GUI test opraveného zachytávání klávesy + settings okna. Bugy: 15/18 opraveno, zbývá B18/B20 (F4). |
+| **Aktuální fáze** | **F3 dokončena** ✅ — `.app` sestavena a spustitelně ověřena. Přechod na F4/polish. |
+| **Milník** | Instaluju .app, běží na pozadí, přežije restart — **build hotový**, čeká funkční test na uživateli (mikrofon/hotkey/oprávnění pro novou appku) |
+| **Blokery** | Uživatel musí spustit `build/dist/Spillway.app`, udělit oprávnění (Microphone/Accessibility/Input Monitoring — nová appka = nová TCC identita), otestovat naživo. Bugy: 16/18 opraveno, zbývá B18/B20 (F4, nízká priorita). |
 | **Testovací stroj** | iMac M4, 16 GB RAM, 10 jader (Mac16,12, 2024) — **ne** M5 Air; Apple Silicon, faster-whisper poběží CPU-only stejně |
 | **Otevřené otázky k rozhodnutí** | 1 — O1 Whisper backend (rozhodne Spike B); O2–O7 rozhodnuty (viz §8) |
 
@@ -126,7 +126,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 - [x] **Hlasový metapokyn o formátu** — „toto je e-mail", „piš to formálně" v promptu Claude rozpozná a použije, samotný pokyn do výstupu nezahrne. Bez nutnosti oprávnění.
 - [x] **Perzistence všeho** — settings.json (model, jazyk, téma, slovník, toggly) + Keychain (klíč) + LaunchAgent (autostart); Controller vše načte při startu.
 - [ ] Raleway font zabalit (jinak UI padá na systémový font — funkčně OK).
-- [ ] **Zabalení do `.app`** (PyInstaller, LSUIElement, ikony) + single-instance — aby šlo nainstalovat a spouštět bez terminálu. **Hlavní zbývající krok.**
+- [x] **Zabalení do `.app`** ✅ **HOTOVO 16. 7.** (`build/spillway.spec`, PyInstaller) — `LSUIElement=true`, ad-hoc podpis, vlastní ikona (`build/make_icon.py` — waveform na Domovoy zaobleném čtverci, `.icns`). Whisper model NEBALÍ (stahuje se za běhu). **Cestou objeven a opraven skutečný bug:** `multiprocessing` ve frozen appce na macOS („spawn" metoda) bez `multiprocessing.freeze_support()` znovu spouští celý `run_spillway.py` pro každý worker proces (spawnutý zevnitř faster_whisper/ctranslate2/tokenizers) — appka tak omylem startovala sama sebe jako dítě a B5 zámek to (správně) odchytil jako „už běží", i když šlo o child-proces sebe sama. Opraveno (`run_spillway.py` volá `freeze_support()` před `main()`). Ověřeno: čistý build, stabilní běh 8 s jako jediný proces. **Funkční test (mikrofon/hotkey/settings/oprávnění) čeká na uživatele** — nová `.app` má jiný podpis/cestu → macOS se znovu zeptá na Microphone/Accessibility/Input Monitoring.
 - [x] **[F-b] Kontextové formátování** — per-app profil (email/chat/code/generic) + čtení obsahu pole (email = celé pole 3000 zn.) jako kontext pro Claude. Pojistka B1 zachována. Čeká na test.
 - [x] **[F-c/F-d] Slovník výrazů** — editovatelný v menu, uložen v `settings.json`, předán do promptu (termíny beze změny + oprava přeslechů k nim).
 - [x] **Přepínání modelu** za běhu z menu (Haiku ↔ Sonnet), perzistováno.
@@ -139,11 +139,12 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 ### F4 — Polish ⬜
 - [ ] Onboarding wizard oprávnění (mikrofon / Accessibility / Input Monitoring, live detekce + deep-linky) + **[O2]** krok pro vypnutí/přemapování macOS diktování
 - [ ] **[O5]** modul `history` — ukládání do JSONL + historie posledních N přepisů v menu
-- [ ] Zvuky start/stop, floating HUD (waveform)
-- [ ] **[F-c]** editor slovníku a **[F-d]** chráněných výrazů v Settings UI
-- [ ] **[F-b]** editor per-app profilů v Settings UI
-- [ ] **[F-a]** UI pro přepínání jazyka (dle zvoleného režimu O7)
-- [ ] Auto-unload modelu po nečinnosti
+- [ ] Zvuky start/stop
+- [x] **[F-c]** editor slovníku v Settings UI *(chráněné výrazy F-d jsou podmnožina slovníku, řeší se stejným polem)*
+- [ ] **[F-b]** editor per-app profilů v Settings UI (teď pevná mapa v kódu)
+- [x] **[F-a]** UI pro přepínání jazyka — hotovo v F3 (select v nastavení)
+- [x] **Auto-unload modelu po nečinnosti** ✅ **HOTOVO 16. 7.** (R5) — `Transcriber` lazy-reload, `tray.py` kontroluje každých 30 s, výchozí 10 min, `SPILLWAY_AUTO_UNLOAD_MIN` override. Ověřeno end-to-end.
+- [ ] Multi-monitor HUD (B18), HUD race při doload HTML (B20)
 
 ---
 
@@ -193,7 +194,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 | R2 | 🟢 | **faster-whisper CPU-only** — na M4 ale **RTF ~0,30** (dost rychlé), RAM ~1,9 GB. mlx-whisper by byl rychlejší/šetrnější k baterii, ale neblokuje | **Sníženo (Spike B):** faster-whisper `large-v3-turbo` int8 je pro v1 dostačující. Backend zůstává abstrahovaný pro pozdější mlx | vyřešeno pro v1 |
 | R3 | 🟠 | **TCC vs. rebuildy** — bez stabilního podpisu se povolení resetují po každém buildu | Stabilní ad-hoc podpis + stabilní Bundle ID; dev wrapper | Spike D / F3 |
 | R4 | 🟠 | **Hotkey race conditions** — ztracený key-up (přepnutí Space, spánek, lock) → věčné nahrávání; event tap se tiše zakáže při pomalém callbacku | Max-duration watchdog; reset stavu při sleep/lock; naslouchat `kCGEventTapDisabledByTimeout` a re-enablovat | Spike C / F1 |
-| R5 | 🟡 | **Paměť** — model rezidentně ~1,5–2 GB RAM | Na 16GB Airu OK; auto-unload po nečinnosti | F4 |
+| R5 | 🟢 | **Paměť** — model rezidentně ~1,5–2 GB RAM | **Vyřešeno:** auto-unload po nečinnosti (výchozí 10 min) implementován a ověřen, viz F4 | vyřešeno |
 | R6 | 🟡 | **Privacy** — přepis + titulek okna odchází k Anthropic; titulky umí obsahovat citlivé věci | Titulek okna opt-in; audio nikdy neopouští stroj (komunikovat v UI); Keychain pro klíč | F2 |
 | R7 | ⚪ | **Konflikt hotkey** s Raycast/Alfred (drží vlastní event tapy) | Konfigurovatelnost = nutnost | F1 |
 | R8 | 🟢 | **Náklady** — potvrzeno odhadem (`spikes/spend_estimate.py`): Haiku ~$0,8–4/měs typicky, s e-mail kontextem ~2×, Sonnet ~2–3×. Vše pod Wispr Flow ($12–15) | Systémový prompt (~600 tok) je pod minimem cache (Haiku 4096) → caching nepomůže; kontext pole je vypínatelný | vyřešeno |
@@ -240,6 +241,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 ## 10. Changelog
 
+- **16. 7. 2026** — **`.app` sestavena (F3 dokončena) + auto-unload modelu + GitHub push.** Auto-unload Whisperu po nečinnosti (R5, výchozí 10 min) — reakce na dotaz uživatele o 2GB RAM. Repo napojeno na [github.com/TickTackCZE/Spillway](https://github.com/TickTackCZE/Spillway) (bezpečně sloučeno s existujícím placeholder README, bez force push). **Zabalení do `.app`** přes PyInstaller (`build/spillway.spec`) + vlastní ikona z waveform loga (`build/make_icon.py` → `.icns`). Při buildu odhalen a opraven skutečný bug: chybějící `multiprocessing.freeze_support()` způsoboval, že se frozen appka na macOS sama znovu spouštěla jako vlastní dítě (worker proces knihoven faster_whisper/ctranslate2) — B5 single-instance zámek to správně, ale matoucně, odchytával jako „už běží". Opraveno, ověřeno stabilním 8s během jako jediný proces.
 - **16. 7. 2026** — **Opraveno 15/18 bugů z review + testy + ukázky + predikce spendu.** Opravy B4–B17, B19 (commit `6fcbe4f`; nový modul `lifecycle.py` — single-instance flock). **Testy:** `tests/test_logic.py` (pytest, 19 testů čisté logiky — B8 filtr, B14/B15 prompt, B17 odolnost, profily, perzistence, keymap) — všechny procházejí, `uv run pytest`. **Ukázky formátování:** `spikes/demo_formatting.py` — vzorové diktáty × profily (email/SMS/ai/code + hlasový metapokyn), pustí se s API klíčem. **Predikce spendu:** `spikes/spend_estimate.py` — Haiku ~$0,80–4/měs (typicky), Sonnet ~2–3×, s e-mail kontextem ~2× víc; vše hluboko pod Wispr Flow ($12–15). Whisper lokálně = 0 $. Řeší otevřenou položku R8 (náklady).
 - **15. 7. 2026** — **Code review agentem Fable 5 → 18 nových bugů (B4–B21) v §6.** Dostal celý plán + zdrojáky, hledal race conditions/resource leaky/porušení invariantů. Dva kritické: **B4** (zachytávání klávesy nemá timeout/zrušení — může tiše převzít libovolnou klávesu jako hotkey), **B5** (`autostart.enable()` spustí druhou instanci appky souběžně s první). Tři nálezy ověřeny přímo čtením kódu (B4, B5, B9) — sedí přesně. Doporučená priorita: B4/B5 před `.app`, B6/B7/B9/B10 (hotkey/tap stabilita) hned potom, zbytek do F4.
 - **15. 7. 2026** — **B2 vyřešen** (mikrofon, potvrzeno uživatelem). **Detekce prohlížeče přes AppleScript/Automation** (`context.browser_context`) — alternativa ke Screen Recording, čte jen URL aktivní karty (Safari/Chrome/Brave/Edge/Arc) → doména vybírá profil. **Hlasový metapokyn** — „toto je e-mail"/„piš to formálně" v promptu, Claude ho použije a nezahrne do výstupu, bez nutnosti oprávnění. Nová otázka **O8**: číst celé e-mailové vlákno jako kontext? (vědomě neimplementováno, čeká na rozhodnutí uživatele — vyšší privacy dopad).
