@@ -150,6 +150,10 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     document.getElementById('hotkeyBtn').disabled = false;
     document.getElementById('hotkeyLabel').textContent = h.label;
   }
+  function cancelHotkey(){
+    document.getElementById('hotkeyBtn').textContent = 'Změnit';
+    document.getElementById('hotkeyBtn').disabled = false;
+  }
   function applyTheme(t){
     if(t==='system'){ document.documentElement.removeAttribute('data-theme'); }
     else { document.documentElement.setAttribute('data-theme', t); }
@@ -224,8 +228,13 @@ class _Bridge(NSObject):
                 self.controller.set_glossary(terms)
             elif action == "record_hotkey":
                 listener = getattr(self.controller, "hotkey_listener", None)
-                if listener is not None:
-                    listener.start_capture(self._on_hotkey_captured)
+                started = False
+                if listener is not None and getattr(self.controller, "state", "IDLE") == "IDLE":
+                    started = listener.start_capture(
+                        self._on_hotkey_captured, self._on_hotkey_cancelled
+                    )
+                if not started:  # [B6] nahrává se / capture už běží → reset UI
+                    self._on_hotkey_cancelled()
             elif action == "toggle":
                 key = str(body.get("key", ""))
                 val = bool(body.get("value"))
@@ -237,18 +246,26 @@ class _Bridge(NSObject):
             print(f"[settings] bridge error: {exc}")
 
     def _on_hotkey_captured(self, keycode: int) -> None:
-        # Voláno z vlákna event tapu — vlastní klávesu i UI update přehodit na main thread.
+        # Voláno z vlákna event tapu → VŠE (i zápis settings [B16]) přehodit na main thread.
         label = keymap.label_for(keycode)
-        settings.set("hotkey_keycode", keycode)
-        settings.set("hotkey_label", label)
 
         def _apply() -> None:
+            settings.set("hotkey_keycode", keycode)
+            settings.set("hotkey_label", label)
             listener = getattr(self.controller, "hotkey_listener", None)
             if listener is not None:
                 listener.keycode = keycode
             if self.webview is not None:
                 js = "applyHotkey(" + json.dumps({"keycode": keycode, "label": label}, ensure_ascii=False) + ")"
                 self.webview.evaluateJavaScript_completionHandler_(js, None)
+
+        AppHelper.callAfter(_apply)
+
+    def _on_hotkey_cancelled(self) -> None:
+        # [B4] Timeout / zrušené zachytávání → jen resetuj tlačítko v UI.
+        def _apply() -> None:
+            if self.webview is not None:
+                self.webview.evaluateJavaScript_completionHandler_("cancelHotkey()", None)
 
         AppHelper.callAfter(_apply)
 
@@ -272,7 +289,21 @@ class _Bridge(NSObject):
 
 
 class _WinDelegate(NSObject):
+    def initWithController_(self, controller):  # noqa: N802
+        self = objc.super(_WinDelegate, self).init()
+        if self is None:
+            return None
+        self.controller = controller
+        return self
+
     def windowWillClose_(self, notification):  # noqa: N802
+        # [B4] Zruš probíhající zachytávání klávesy, ať nezůstane „ozbrojené".
+        try:
+            listener = getattr(self.controller, "hotkey_listener", None)
+            if listener is not None:
+                listener.cancel_capture()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         except Exception:  # noqa: BLE001
@@ -301,7 +332,7 @@ class SettingsWindow:
         self.window.setTitle_("Spillway")
         self.window.setContentView_(self.web)
         self.window.setReleasedWhenClosed_(False)
-        self._delegate = _WinDelegate.alloc().init()
+        self._delegate = _WinDelegate.alloc().initWithController_(controller)
         self.window.setDelegate_(self._delegate)
 
     def show(self) -> None:

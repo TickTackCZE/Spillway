@@ -44,5 +44,11 @@ def set(key: str, value) -> None:  # noqa: A003
         data = _load()
         data[key] = value
         os.makedirs(_DIR, exist_ok=True)
-        with open(_PATH, "w", encoding="utf-8") as f:
+        # [B11] Atomický zápis: do .tmp a os.replace(), ať pád uprostřed zápisu
+        # nepoškodí settings.json (poškozený JSON → tiché ztracení všech nastavení).
+        tmp = _PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, _PATH)

@@ -27,6 +27,17 @@ from .transcribe import Transcriber
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
 
 
+def notify(title: str, message: str) -> None:
+    """[B12] Viditelná chyba i bez terminálu (pod LaunchAgentem). Tichý no-op,
+    když nejsme pod běžící rumps app."""
+    try:
+        import rumps
+
+        rumps.notification("Spillway", title, message)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class Controller:
     def __init__(self, *, raw_mode: bool = False) -> None:
         self.recorder = Recorder()
@@ -77,17 +88,41 @@ class Controller:
             self.state = RECORDING
         print("🔴 nahrávám… (drž F5)")
         self.recorder.start()
+        # [B7] Watchdog: kdyby se ztratil key-up (spánek, lock, Secure Input),
+        # po max_seconds nahrávání vynuceně ukončíme, ať appka nezůstane v RECORDING.
+        self._arm_watchdog()
+
+    def _arm_watchdog(self) -> None:
+        self._cancel_watchdog()
+        timeout = float(self.recorder.max_frames) / 16000.0 + 2.0
+        self._watchdog = threading.Timer(timeout, self._on_watchdog)
+        self._watchdog.daemon = True
+        self._watchdog.start()
+
+    def _cancel_watchdog(self) -> None:
+        wd = getattr(self, "_watchdog", None)
+        if wd is not None:
+            wd.cancel()
+            self._watchdog = None
+
+    def _on_watchdog(self) -> None:
+        print("⚠️  watchdog: ztracený key-up → vynucené ukončení nahrávky.")
+        self.on_release()
 
     def on_release(self) -> None:
         with self._lock:
             if self.state != RECORDING:
                 return
             self.state = PROCESSING
-        audio = self.recorder.stop()
-        threading.Thread(target=self._process, args=(audio,), daemon=True).start()
+        self._cancel_watchdog()
+        # [B9] recorder.stop() dělá gc.collect() + restart PortAudia (stovky ms).
+        # Nesmí běžet na vlákně event tapu (timeout tapu → nepotlačené F5). Přesuň
+        # ho celý na worker vlákno; on_release tak zůstane triviální.
+        threading.Thread(target=self._process, daemon=True).start()
 
-    def _process(self, audio) -> None:  # noqa: ANN001
+    def _process(self) -> None:
         try:
+            audio = self.recorder.stop()  # [B9] těžké volání až tady, na workeru
             # [F2/F3] kontext: aktivní aplikace, profil formátování, obsah pole.
             app_name, bundle = context.frontmost_app()
             profile = context.app_profile(bundle, app_name)
@@ -135,6 +170,7 @@ class Controller:
                     print(f"✨ upraveno: {text!r}")
                 except Exception as exc:  # noqa: BLE001 — [O6] chyba, ale text neztratit
                     print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
+                    notify("AI úprava selhala", "Vložen syrový přepis. Zkontroluj API klíč / kredit.")
                     text = raw
 
             # Chytrá mezera: kurzor za nemezerovým znakem (a ne první text v poli).
@@ -150,6 +186,7 @@ class Controller:
             paste_text(text)
         except Exception as exc:  # noqa: BLE001
             print(f"❌ chyba v pipeline: {exc}")
+            notify("Chyba při vkládání", "Diktát se nepodařilo zpracovat/vložit.")
         finally:
             with self._lock:
                 self.state = IDLE
@@ -157,6 +194,15 @@ class Controller:
 
 def main() -> None:
     import sys
+
+    from . import lifecycle
+
+    # [B5] Single-instance zámek — druhá instance by měla dva event tapy,
+    # dva mikrofony a 2× Whisper model. Když už běží, skonči.
+    lock = lifecycle.acquire()
+    if lock is None:
+        print("Spillway už běží (jiná instance). Končím.")
+        return
 
     raw_mode = "--raw" in sys.argv
     print(f"Spillway — načítám model (chvíli to trvá)…{'  [raw režim]' if raw_mode else ''}")

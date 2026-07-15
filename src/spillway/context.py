@@ -73,17 +73,21 @@ def browser_context(bundle_id: str | None) -> tuple[str | None, str | None]:
     script_src = _BROWSER_SCRIPTS.get(bundle_id or "")
     if not script_src:
         return (None, None)
+    # [B10] `osascript` v subprocessu (ne NSAppleScript, který je main-thread-only) —
+    # tohle běží na worker vlákně. Timeout, ať se nezasekne na TCC dialogu.
     try:
-        from Foundation import NSAppleScript
+        import subprocess
 
-        script = NSAppleScript.alloc().initWithSource_(script_src)
-        result, error = script.executeAndReturnError_(None)
-        if error or result is None:
+        proc = subprocess.run(
+            ["osascript", "-e", script_src],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        url = proc.stdout.strip()
+        if proc.returncode != 0 or not url:
             return (None, None)
-        url = result.stringValue()
-        if not url:
-            return (None, None)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 (vč. TimeoutExpired)
         return (None, None)
 
     from urllib.parse import urlparse

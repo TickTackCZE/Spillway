@@ -49,7 +49,7 @@ class SpillwayTray(rumps.App):
         self.menu = [
             rumps.MenuItem("Nastavení…", callback=self.open_settings),
             None,
-            rumps.MenuItem("Konec", callback=lambda _: rumps.quit_application()),
+            rumps.MenuItem("Konec", callback=self.quit_app),
         ]
 
         self._timer = rumps.Timer(self._tick, 0.15)
@@ -78,3 +78,15 @@ class SpillwayTray(rumps.App):
             self._settings.show()
         except Exception as exc:  # noqa: BLE001
             rumps.alert("Nastavení nelze otevřít", str(exc))
+
+    def quit_app(self, _sender) -> None:  # noqa: ANN001
+        # [B19] Uvolnit event tap a mikrofon PŘED ukončením — rumps.quit_application()
+        # ukončí proces uvnitř run(), takže finally v app.main() se nespustí.
+        try:
+            listener = getattr(self.controller, "hotkey_listener", None)
+            if listener is not None:
+                listener.stop()
+            self.controller.recorder.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        rumps.quit_application()

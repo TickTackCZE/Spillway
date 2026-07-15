@@ -21,11 +21,16 @@ from Quartz import (
     CFRunLoopGetCurrent,
     CFRunLoopRun,
     CFRunLoopStop,
+    CGEventGetFlags,
     CGEventGetIntegerValueField,
     CGEventMaskBit,
     CGEventTapCreate,
     CGEventTapEnable,
     kCFRunLoopCommonModes,
+    kCGEventFlagMaskAlternate,
+    kCGEventFlagMaskCommand,
+    kCGEventFlagMaskControl,
+    kCGEventFlagMaskShift,
     kCGEventKeyDown,
     kCGEventKeyUp,
     kCGEventTapDisabledByTimeout,
@@ -37,6 +42,13 @@ from Quartz import (
 )
 
 F5_DICTATION_KEYCODE = 176
+_CAPTURE_TIMEOUT_S = 6.0
+_MODIFIER_MASK = (
+    kCGEventFlagMaskCommand
+    | kCGEventFlagMaskAlternate
+    | kCGEventFlagMaskControl
+    | kCGEventFlagMaskShift
+)
 
 
 class HotkeyListener:
@@ -58,13 +70,46 @@ class HotkeyListener:
         self._thread: threading.Thread | None = None
         self._capturing = False
         self._capture_cb: Callable[[int], None] | None = None
+        self._cancel_cb: Callable[[], None] | None = None
+        self._capture_lock = threading.Lock()
+        self._capture_timer: threading.Timer | None = None
 
-    def start_capture(self, on_captured: Callable[[int], None]) -> None:
-        """Zachytí příští stisknutou klávesu (kdekoliv v systému) a zavolá
-        `on_captured(keycode)` — pro nastavení nové hotkey v UI. Jednorázové,
-        volané z vlákna tapu; volající si musí přehodit výsledek na main thread."""
-        self._capture_cb = on_captured
-        self._capturing = True
+    def start_capture(
+        self,
+        on_captured: Callable[[int], None],
+        on_cancel: Callable[[], None] | None = None,
+    ) -> bool:
+        """Zachytí příští „čistý" stisk (bez modifikátorů) a zavolá
+        `on_captured(keycode)`. [B4] Po `_CAPTURE_TIMEOUT_S` bez stisku se zruší
+        a zavolá `on_cancel`. [B6] Odmítne se, když se právě nahrává (vrátí False).
+        Callbacky běží z vlákna tapu/časovače — volající je přehodí na main thread."""
+        with self._capture_lock:
+            if self._pressed or self._capturing:
+                return False
+            self._capturing = True
+            self._capture_cb = on_captured
+            self._cancel_cb = on_cancel
+            self._capture_timer = threading.Timer(_CAPTURE_TIMEOUT_S, self._capture_timeout)
+            self._capture_timer.daemon = True
+            self._capture_timer.start()
+        return True
+
+    def cancel_capture(self) -> None:
+        """Zruší probíhající zachytávání (např. při zavření okna nastavení)."""
+        with self._capture_lock:
+            if not self._capturing:
+                return
+            self._capturing = False
+            self._capture_cb = None
+            cancel, self._cancel_cb = self._cancel_cb, None
+            if self._capture_timer is not None:
+                self._capture_timer.cancel()
+                self._capture_timer = None
+        if cancel is not None:
+            cancel()
+
+    def _capture_timeout(self) -> None:
+        self.cancel_capture()
 
     def _callback(self, proxy, type_, event, refcon):  # noqa: ANN001
         if type_ in (kCGEventTapDisabledByTimeout, kCGEventTapDisabledByUserInput):
@@ -72,14 +117,25 @@ class HotkeyListener:
             return event
 
         if self._capturing:
-            if type_ == kCGEventKeyDown:
+            if type_ != kCGEventKeyDown:
+                return event
+            # [B4] Ignoruj klávesu se stisknutým modifikátorem (⌘C by jinak
+            # zachytilo jen „C" a potlačilo všechno psaní C). Čekej dál na čistý stisk.
+            if CGEventGetFlags(event) & _MODIFIER_MASK:
+                return event
+            with self._capture_lock:
+                if not self._capturing:
+                    return event
                 captured = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
                 self._capturing = False
                 cb, self._capture_cb = self._capture_cb, None
-                if cb is not None:
-                    cb(captured)
-                return None  # spolknout tenhle stisk, ať nic nenapíše/nespustí
-            return event
+                self._cancel_cb = None
+                if self._capture_timer is not None:
+                    self._capture_timer.cancel()
+                    self._capture_timer = None
+            if cb is not None:
+                cb(captured)
+            return None  # spolknout tenhle stisk, ať nic nenapíše/nespustí
 
         keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
         if keycode != self.keycode:

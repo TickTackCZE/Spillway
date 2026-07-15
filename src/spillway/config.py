@@ -24,8 +24,14 @@ def get_model() -> str:
 
 
 def glossary() -> list[str]:
-    """Uživatelský slovník termínů (zůstanou beze změny)."""
-    return settings.get("glossary", []) or []
+    """Uživatelský slovník termínů (zůstanou beze změny). [B17] odolné vůči
+    špatnému typu v settings.json."""
+    g = settings.get("glossary", [])
+    if isinstance(g, str):
+        return [t.strip() for t in g.split(",") if t.strip()]
+    if isinstance(g, list):
+        return [str(t) for t in g]
+    return []
 
 
 def get_language() -> str:
@@ -39,11 +45,16 @@ def get_theme() -> str:
 
 
 def get_hotkey() -> tuple[int, str]:
-    """(keycode, čitelný název) klávesy pro hold-to-talk."""
-    return (
-        int(settings.get("hotkey_keycode", 176)),
-        str(settings.get("hotkey_label", "F5 (diktování)")),
-    )
+    """(keycode, čitelný název) klávesy pro hold-to-talk. [B17] Odolné vůči
+    poškozené/špatně typované hodnotě v settings.json — fallback na F5 (176)."""
+    try:
+        keycode = int(settings.get("hotkey_keycode", 176))
+    except (TypeError, ValueError):
+        keycode = 176
+    label = settings.get("hotkey_label", "F5 (diktování)")
+    if not isinstance(label, str):
+        label = "F5 (diktování)"
+    return (keycode, label)
 
 
 def _flag(name: str, default: str = "1") -> bool:

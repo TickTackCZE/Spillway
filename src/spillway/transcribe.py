@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import numpy as np
 
-# Známé halucinace na tichu/krátkém audiu (R10) — zahodit, pokud je to celý výstup.
+# Známé halucinace na tichu/krátkém audiu (R10). Pozor: [B8] filtr smí zahodit
+# jen KRÁTKÝ výstup (jinak zahodí legitimní diktát začínající „Titulky…"/„Překlad…").
 _HALLUCINATION_MARKERS = (
     "titulky vytvořil",
     "titulky pro",
-    "překlad ",
+    "překlad titulků",
+    "www.",
+    ".cz",
 )
+_HALLUCINATION_MAX_LEN = 45
 
 
 class Transcriber:
@@ -43,7 +47,11 @@ class Transcriber:
 
 
 def _drop_hallucination(text: str) -> str:
+    # [B8] Zahoď jen krátký výstup, který je celý halucinační marker — u delšího
+    # diktátu (i když náhodou začíná „Překlad…") text ponech, ať se neztratí.
+    if len(text) > _HALLUCINATION_MAX_LEN:
+        return text
     low = text.lower()
-    if any(low.startswith(m) or low == m.strip() for m in _HALLUCINATION_MARKERS):
+    if any(m in low for m in _HALLUCINATION_MARKERS):
         return ""
     return text

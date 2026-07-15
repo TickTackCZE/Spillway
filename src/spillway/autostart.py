@@ -53,9 +53,9 @@ def enable() -> None:
     os.makedirs(os.path.dirname(_PLIST), exist_ok=True)
     with open(_PLIST, "w", encoding="utf-8") as f:
         f.write(plist)
-    # Načíst hned (jinak by se spustil až po dalším přihlášení).
-    subprocess.run(["launchctl", "unload", _PLIST], capture_output=True)
-    subprocess.run(["launchctl", "load", _PLIST], capture_output=True)
+    # [B5] NEnačítat hned přes `launchctl load` — spustilo by to DRUHOU instanci
+    # souběžně s běžící (dva event tapy, dva mikrofony, 2× Whisper model).
+    # `RunAtLoad` zajistí start až po příštím přihlášení; teď už appka běží.
 
 
 def disable() -> None:
