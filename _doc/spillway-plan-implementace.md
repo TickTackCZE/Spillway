@@ -114,11 +114,12 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 ### F3 — Aplikace 🟨
 > **Design:** uživatel dodal brand manuál **Domovoy** (Půlnoční paleta, Raleway, ploché, tenké 0,5px hrany, accent #818CF8). Vlastní UI Spillway to má napodobit. Tokeny: `src/spillway/design.py`. Viz paměť `domovoy-design-system`.
-- [x] **Menu bar ikona + menu** (`tray.py`, rumps): **statická ikona appky** v liště, klik → menu (model, slovník, API klíč, autostart, kontext pole, Konec).
-- [x] **Plovoucí HUD u kurzoru** (`hud.py`) — Domovoy styl (surface #1A1F2E, accent border, radius 10): 🔴 „Nahrávám" / ⏳ „Zpracovávám" u myši. *(Znovu zaveden dle upřesnění — status patří sem, ne do lišty.)* Čeká na test.
-- [ ] **Vlastní settings popup okno** (klik na ikonu → Domovoy-styled okno místo nativního menu) — WKWebView/NSWindow s Domovoy HTML. Větší krok.
-- [ ] **Ikona appky = Domovoy logo** v liště (přijde s .app bundlem / template obrázkem). Zatím placeholder 🎙️.
-- [ ] Raleway font zabalit (jinak HUD/UI padá na systémový font).
+- [x] **Spillway logo** = roztékající waveform (`design.logo_svg`) — dle reference uživatele, v accentu. App ikona / HUD / wordmark.
+- [x] **Menu bar** (`tray.py`): statická ikona, klik → menu „Nastavení…" (otevře okno) + „Konec". Vše nastavení přesunuto do okna.
+- [x] **Plovoucí HUD u kurzoru** (`hud.py`, WKWebView) — neutrální graphite karta + logo + pulzující tečka. Caret nad textem (nativní pole) / u myši (Electron/web). Ověřeno v náhledu.
+- [x] **Settings okno v Domovoy designu** (`settings_window.py`, WKWebView + JS↔Python most): model (Haiku/Sonnet), API klíč (Keychain), slovník, přepínače (autostart, kontext pole, chytrá mezera). Ověřeno v náhledu. **Čeká na GUI test** (okno se otevře, most funguje).
+- [ ] **Ikona appky v liště = Spillway logo** (přijde s .app bundlem — template obrázek z waveform). Zatím placeholder 🎙️.
+- [ ] Raleway font zabalit (jinak UI padá na systémový font — funkčně OK).
 - [x] **[F-b] Kontextové formátování** — per-app profil (email/chat/code/generic) + čtení obsahu pole (email = celé pole 3000 zn.) jako kontext pro Claude. Pojistka B1 zachována. Čeká na test.
 - [x] **[F-c/F-d] Slovník výrazů** — editovatelný v menu, uložen v `settings.json`, předán do promptu (termíny beze změny + oprava přeslechů k nim).
 - [x] **Přepínání modelu** za běhu z menu (Haiku ↔ Sonnet), perzistováno.
