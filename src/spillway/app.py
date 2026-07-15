@@ -39,8 +39,9 @@ class Controller:
         if not raw_mode:
             api_key = config.get_api_key()
             if api_key:
-                self.cleaner = Cleaner(api_key)
-                print("🤖 AI úprava zapnuta (Claude Haiku).")
+                model = config.get_model()
+                self.cleaner = Cleaner(api_key, model=model)
+                print(f"🤖 AI úprava zapnuta ({model}).")
             else:
                 print("ℹ️  Bez API klíče → raw režim. Klíč nastav: uv run python set_api_key.py")
 

@@ -16,6 +16,12 @@ KEYRING_SERVICE = "spillway"
 KEYRING_ACCOUNT = "anthropic"
 
 
+def get_model() -> str:
+    """Model pro AI úpravu. Přepíšeš přes env SPILLWAY_LLM_MODEL.
+    Např.: SPILLWAY_LLM_MODEL=claude-sonnet-5 (vyšší kvalita, dražší)."""
+    return os.environ.get("SPILLWAY_LLM_MODEL", "claude-haiku-4-5")
+
+
 def get_api_key() -> str | None:
     """Vrátí Anthropic API klíč z Keychain, nebo z env, nebo None."""
     try:
