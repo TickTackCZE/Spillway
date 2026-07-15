@@ -12,9 +12,12 @@ dependencies = [
     "sounddevice>=0.4.6",   # nahrávání mikrofonu (PortAudio)
     "faster-whisper>=1.0",  # lokální přepis (large-v3-turbo, CPU)
     "numpy>=1.26",
+    # F2 AI úprava
+    "anthropic>=0.40",      # Claude API (Haiku 4.5 cleanup)
+    "keyring>=25.0",        # API klíč v macOS Keychain
 ]
 
-# Fáze F2+ přidají: anthropic, keyring, pydantic.
+# Fáze F3+ přidají: pydantic (validace configu).
 
 [tool.uv]
 # Zatím není instalovatelný balíček (běží přes run_spillway.py); přepneme ve F3.

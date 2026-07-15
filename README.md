@@ -5,17 +5,28 @@ Lokální diktovací nástroj pro macOS: **Whisper** (lokální přepis) → **C
 - 📄 Plán a stav implementace: [`_doc/spillway-plan-implementace.md`](_doc/spillway-plan-implementace.md)
 - 📄 Původní analýza: [`_doc/spillway-analyza.md`](_doc/spillway-analyza.md)
 
-Stav: **fáze F1 — MVP pipeline** (F0 spiky ověřeny; viz plán).
+Stav: **fáze F2 — AI úprava + kontext** (F0 spiky + F1 pipeline ověřeny; viz plán).
 
-## Spuštění (F1 MVP)
+## Spuštění
 
 ```bash
-uv run python run_spillway.py
+uv run python run_spillway.py          # s AI úpravou (pokud je nastaven API klíč)
+uv run python run_spillway.py --raw    # jen syrový přepis, bez Claude
 ```
-Podrž **F5**, mluv česky, pusť → přepsaný text se vloží do aktivní aplikace.
-Ctrl+C ukončí. **Oprávnění:** Microphone + Input Monitoring + Accessibility
-(pro aplikaci, ze které spouštíš — Terminal / VS Code). Model se při prvním
-běhu stáhne (~1,5 GB) do HuggingFace cache.
+Podrž **F5**, mluv česky, pusť → přepsaný a upravený text se vloží do aktivní
+aplikace. Ctrl+C ukončí. **Oprávnění:** Microphone + Input Monitoring +
+Accessibility (pro aplikaci, ze které spouštíš). Model se při prvním běhu stáhne
+(~1,5 GB) do HuggingFace cache.
+
+### AI úprava (F2) — nastavení API klíče
+
+Claude (Haiku 4.5) opraví interpunkci, gramatiku a zkomolené anglické termíny.
+Vyžaduje Anthropic API klíč — uloží se do macOS Keychain, **nikdy do repa**:
+
+```bash
+uv run python set_api_key.py     # klíč zadáš skrytě (getpass)
+```
+Bez klíče nástroj běží v raw režimu (jen přepis). Cena ~1–3 $/měsíc.
 
 ---
 

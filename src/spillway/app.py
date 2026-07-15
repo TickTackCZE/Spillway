@@ -17,8 +17,10 @@ import signal
 import threading
 import time
 
+from . import config, context
 from .audio import Recorder
 from .hotkey import HotkeyListener
+from .llm import Cleaner
 from .paste import paste_text
 from .transcribe import Transcriber
 
@@ -26,11 +28,21 @@ IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
 
 
 class Controller:
-    def __init__(self) -> None:
+    def __init__(self, *, raw_mode: bool = False) -> None:
         self.recorder = Recorder()
         self.transcriber = Transcriber()  # načte model (chvíli trvá)
         self.state = IDLE
         self._lock = threading.Lock()
+
+        # [F2] AI úprava přes Claude — jen pokud je klíč a není raw režim.
+        self.cleaner: Cleaner | None = None
+        if not raw_mode:
+            api_key = config.get_api_key()
+            if api_key:
+                self.cleaner = Cleaner(api_key)
+                print("🤖 AI úprava zapnuta (Claude Haiku).")
+            else:
+                print("ℹ️  Bez API klíče → raw režim. Klíč nastav: uv run python set_api_key.py")
 
     def on_press(self) -> None:
         with self._lock:
@@ -50,16 +62,28 @@ class Controller:
 
     def _process(self, audio) -> None:  # noqa: ANN001
         try:
+            # [F2] kontext = název aktivní aplikace (zachytit před vložením).
+            app_name, _bundle = context.frontmost_app()
             secs = len(audio) / 16000.0
-            print(f"⏳ přepisuji {secs:.1f} s audia…")
+            print(f"⏳ přepisuji {secs:.1f} s audia…  (aktivní: {app_name})")
             t0 = time.perf_counter()
-            text = self.transcriber.transcribe(audio)
+            raw = self.transcriber.transcribe(audio)
             dt = time.perf_counter() - t0
-            if text:
-                print(f"✅ ({dt:.1f} s): {text!r}")
-                paste_text(text)
-            else:
+            if not raw:
                 print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")
+                return
+            print(f"📝 přepis ({dt:.1f} s): {raw!r}")
+
+            text = raw
+            if self.cleaner is not None:
+                try:
+                    text = self.cleaner.clean(raw, app_name=app_name) or raw
+                    print(f"✨ upraveno: {text!r}")
+                except Exception as exc:  # noqa: BLE001 — [O6] chyba, ale text neztratit
+                    print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
+                    text = raw
+
+            paste_text(text)
         except Exception as exc:  # noqa: BLE001
             print(f"❌ chyba v pipeline: {exc}")
         finally:
@@ -68,8 +92,11 @@ class Controller:
 
 
 def main() -> None:
-    print("Spillway F1 — načítám model (chvíli to trvá)…")
-    controller = Controller()
+    import sys
+
+    raw_mode = "--raw" in sys.argv
+    print(f"Spillway — načítám model (chvíli to trvá)…{'  [raw režim]' if raw_mode else ''}")
+    controller = Controller(raw_mode=raw_mode)
     listener = HotkeyListener(
         on_press=controller.on_press,
         on_release=controller.on_release,
