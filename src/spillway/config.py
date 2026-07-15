@@ -38,6 +38,14 @@ def get_theme() -> str:
     return settings.get("theme", "system")
 
 
+def get_hotkey() -> tuple[int, str]:
+    """(keycode, čitelný název) klávesy pro hold-to-talk."""
+    return (
+        int(settings.get("hotkey_keycode", 176)),
+        str(settings.get("hotkey_label", "F5 (diktování)")),
+    )
+
+
 def _flag(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no")
 

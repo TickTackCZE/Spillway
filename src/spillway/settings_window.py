@@ -26,7 +26,9 @@ from AppKit import (
 )
 from WebKit import WKWebView, WKWebViewConfiguration
 
-from . import autostart, config, design, settings
+from PyObjCTools import AppHelper
+
+from . import autostart, config, design, keymap, settings
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 
 _LOGO = design.logo_svg(color="#818CF8", width=30, height=30, drops=False)
@@ -84,12 +86,12 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 </style></head><body>
   <div class="head">__LOGO__<div><div class="name">SPILLWAY</div><div class="sub">Nastavení</div></div></div>
 
-  <div class="card"><h3>Vzhled</h3>
-    <div class="seg" id="seg">
-      <button data-theme="system" onclick="setTheme('system')">Systém</button>
-      <button data-theme="light" onclick="setTheme('light')">Světlý</button>
-      <button data-theme="dark" onclick="setTheme('dark')">Tmavý</button>
+  <div class="card"><h3>Klávesa (hold-to-talk)</h3>
+    <div class="rowt" style="border:none;padding:0;">
+      <div class="l" id="hotkeyLabel">F5</div>
+      <button class="btn" id="hotkeyBtn" onclick="recordHotkey()">Změnit</button>
     </div>
+    <div class="hint">Podrž klávesu, mluv a pusť ji. Klikni na Změnit a stiskni novou klávesu (funguje kdekoliv v systému).</div>
   </div>
 
   <div class="card"><h3>Model úpravy</h3>
@@ -125,10 +127,29 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="rowt"><div class="l">Chytrá mezera<small>Mezera před textem, když jsi na konci slova</small></div><div class="sw" data-key="auto_space" onclick="tog(this)"></div></div>
   </div>
 
-  <div class="foot">Spillway · v0.1 · klávesa F5</div>
+  <div class="card"><h3>Vzhled</h3>
+    <div class="seg" id="seg">
+      <button data-theme="system" onclick="setTheme('system')">Systém</button>
+      <button data-theme="light" onclick="setTheme('light')">Světlý</button>
+      <button data-theme="dark" onclick="setTheme('dark')">Tmavý</button>
+    </div>
+  </div>
+
+  <div class="foot">Spillway · v0.1</div>
 
 <script>
   function send(m){ try{ window.webkit.messageHandlers.spillway.postMessage(m); }catch(e){} }
+  function recordHotkey(){
+    document.getElementById('hotkeyBtn').textContent = 'Stiskni klávesu…';
+    document.getElementById('hotkeyBtn').disabled = true;
+    document.getElementById('hotkeyLabel').textContent = '…';
+    send({action:'record_hotkey'});
+  }
+  function applyHotkey(h){
+    document.getElementById('hotkeyBtn').textContent = 'Změnit';
+    document.getElementById('hotkeyBtn').disabled = false;
+    document.getElementById('hotkeyLabel').textContent = h.label;
+  }
   function applyTheme(t){
     if(t==='system'){ document.documentElement.removeAttribute('data-theme'); }
     else { document.documentElement.setAttribute('data-theme', t); }
@@ -140,6 +161,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   function saveGloss(){ send({action:'glossary',value:document.getElementById('gloss').value}); }
   function tog(el){ var on=!el.classList.contains('on'); el.classList.toggle('on',on); send({action:'toggle',key:el.dataset.key,value:on}); }
   function applyState(s){
+    document.getElementById('hotkeyLabel').textContent = s.hotkey_label || 'F5';
     applyTheme(s.theme||'system');
     document.querySelectorAll('.pill').forEach(p=>p.classList.toggle('active', p.dataset.model===s.model));
     document.getElementById('lang').value = s.language || 'cs';
@@ -200,6 +222,10 @@ class _Bridge(NSObject):
                 terms = [t.strip() for t in text.split(",") if t.strip()]
                 settings.set("glossary", terms)
                 self.controller.set_glossary(terms)
+            elif action == "record_hotkey":
+                listener = getattr(self.controller, "hotkey_listener", None)
+                if listener is not None:
+                    listener.start_capture(self._on_hotkey_captured)
             elif action == "toggle":
                 key = str(body.get("key", ""))
                 val = bool(body.get("value"))
@@ -210,10 +236,28 @@ class _Bridge(NSObject):
         except Exception as exc:  # noqa: BLE001
             print(f"[settings] bridge error: {exc}")
 
+    def _on_hotkey_captured(self, keycode: int) -> None:
+        # Voláno z vlákna event tapu — vlastní klávesu i UI update přehodit na main thread.
+        label = keymap.label_for(keycode)
+        settings.set("hotkey_keycode", keycode)
+        settings.set("hotkey_label", label)
+
+        def _apply() -> None:
+            listener = getattr(self.controller, "hotkey_listener", None)
+            if listener is not None:
+                listener.keycode = keycode
+            if self.webview is not None:
+                js = "applyHotkey(" + json.dumps({"keycode": keycode, "label": label}, ensure_ascii=False) + ")"
+                self.webview.evaluateJavaScript_completionHandler_(js, None)
+
+        AppHelper.callAfter(_apply)
+
     def _push_state(self) -> None:
         if self.webview is None:
             return
+        _keycode, hotkey_label = config.get_hotkey()
         state = {
+            "hotkey_label": hotkey_label,
             "theme": config.get_theme(),
             "model": config.get_model(),
             "language": config.get_language(),

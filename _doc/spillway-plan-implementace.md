@@ -119,6 +119,9 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 - [x] **Plovoucí HUD u kurzoru** (`hud.py`, WKWebView) — neutrální graphite karta + logo + pulzující tečka. Caret nad textem (nativní pole) / u myši (Electron/web). Ověřeno v náhledu.
 - [x] **Settings okno v Domovoy designu** (`settings_window.py`, WKWebView + JS↔Python most): **téma Systém/Světlý/Tmavý** (Ledová/Půlnoční, „systém" dle OS), **výběr primárního jazyka** (Whisper), model (Haiku/Sonnet), **API klíč (vložit→uložit→smazat→vložit)**, slovník (celá šířka), přepínače. Ověřeno v náhledu obou témat. **Čeká na GUI test.**
 - [x] **Ikona v liště = Spillway logo** (`baricon.py` — template PNG z waveform). Fallback emoji.
+- [x] **Konfigurovatelná klávesa v UI** — karta „Klávesa" v nastavení, tlačítko Změnit zachytí příští stisk kdekoliv v systému (`hotkey.start_capture`, `keymap.py` pro čitelný název), uloží se a hned se použije (bez restartu appky). Čeká na GUI test.
+- [x] **[F-b] Profil „ai"** — diktování do Claude/ChatGPT/Perplexity/Gemini teď cíleně formátuje jako prompt (strukturovaná instrukce), ne jen obecná korektura.
+- [x] Karta Vzhled přesunuta na konec nastavení (dle uživatele).
 - [x] **Perzistence všeho** — settings.json (model, jazyk, téma, slovník, toggly) + Keychain (klíč) + LaunchAgent (autostart); Controller vše načte při startu.
 - [ ] Raleway font zabalit (jinak UI padá na systémový font — funkčně OK).
 - [ ] **Zabalení do `.app`** (PyInstaller, LSUIElement, ikony) + single-instance — aby šlo nainstalovat a spouštět bez terminálu. **Hlavní zbývající krok.**
@@ -210,6 +213,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 ## 10. Changelog
 
+- **15. 7. 2026** — **Konfigurovatelná klávesa + profil pro AI chaty.** Nová karta „Klávesa" v nastavení — tlačítko Změnit spustí `HotkeyListener.start_capture()`, zachytí příští stisk kdekoliv v systému, uloží (settings.json) a hned použije (jen se přepíše `listener.keycode`, tap se nerestartuje). `keymap.py` mapuje keycode → čitelný název pro UI. Vzhled přesunut na konec nastavení. Nový profil formátování **„ai"** (Claude/ChatGPT/Perplexity/Gemini) — diktát se teď formátuje jako srozumitelný prompt, ne jen obecná próza. Odpověď na otázku o prohlížeči: bez detekce webu/URL (rozhodnuto v O3 kvůli Screen Recording), formátuje se jako generic próza; SMS (Zprávy) už má profil „chat".
 - **15. 7. 2026** — **Nastavení rozšířeno + logo do lišty.** Settings okno: téma Systém/Světlý/Tmavý (Domovoy palety, „systém" dle OS), výběr primárního jazyka (napojen na Whisper), API klíč vložit→smazat→vložit, slovník na celou šířku. Vše se ukládá (settings.json + Keychain + LaunchAgent) a načítá při startu. Menu bar ikona = Spillway waveform (`baricon.py` template PNG). Obě témata ověřena v náhledu. O7 aktualizováno (jazyk volitelný).
 
 - **14. 7. 2026** — Založen plán. Architektura rozhodnuta (Python + PyObjC menu bar .app, PyInstaller, SMAppService; Docker zamítnut). Definováno 9 modulů, 5 fází (F0–F4), 8 rizik, 6 otevřených otázek. Návrh ověřen agentem Fable 5.

@@ -23,8 +23,12 @@ _PROFILES = {
     "com.apple.Terminal": "code",
     "com.googlecode.iterm2": "code",
     "com.jetbrains.pycharm": "code",
+    "com.anthropic.claudefordesktop": "ai",
+    "com.openai.chat": "ai",
 }
+# Pořadí je důležité — "ai" před "chat", ať "gpt"/"claude" nespadne do obecného chatu.
 _FALLBACK_KEYWORDS = {
+    "ai": ("claude", "chatgpt", "gpt", "perplexity", "gemini"),
     "email": ("mail", "outlook"),
     "chat": ("slack", "discord", "zpráv", "message", "teams", "whatsapp"),
     "code": ("code", "xcode", "terminal", "iterm", "pycharm", "intellij", "antigravity"),

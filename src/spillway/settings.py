@@ -22,6 +22,8 @@ _DEFAULTS: dict = {
     "glossary": [],
     "theme": "system",   # system | light | dark
     "language": "cs",    # primární jazyk diktování
+    "hotkey_keycode": 176,           # nativní diktovací klávesa (viz keymap.py)
+    "hotkey_label": "F5 (diktování)",
 }
 
 

@@ -56,10 +56,29 @@ class HotkeyListener:
         self._tap = None
         self._runloop = None
         self._thread: threading.Thread | None = None
+        self._capturing = False
+        self._capture_cb: Callable[[int], None] | None = None
+
+    def start_capture(self, on_captured: Callable[[int], None]) -> None:
+        """Zachytí příští stisknutou klávesu (kdekoliv v systému) a zavolá
+        `on_captured(keycode)` — pro nastavení nové hotkey v UI. Jednorázové,
+        volané z vlákna tapu; volající si musí přehodit výsledek na main thread."""
+        self._capture_cb = on_captured
+        self._capturing = True
 
     def _callback(self, proxy, type_, event, refcon):  # noqa: ANN001
         if type_ in (kCGEventTapDisabledByTimeout, kCGEventTapDisabledByUserInput):
             CGEventTapEnable(self._tap, True)
+            return event
+
+        if self._capturing:
+            if type_ == kCGEventKeyDown:
+                captured = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+                self._capturing = False
+                cb, self._capture_cb = self._capture_cb, None
+                if cb is not None:
+                    cb(captured)
+                return None  # spolknout tenhle stisk, ať nic nenapíše/nespustí
             return event
 
         keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)

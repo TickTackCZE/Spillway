@@ -153,13 +153,16 @@ def main() -> None:
     raw_mode = "--raw" in sys.argv
     print(f"Spillway — načítám model (chvíli to trvá)…{'  [raw režim]' if raw_mode else ''}")
     controller = Controller(raw_mode=raw_mode)
+    keycode, key_label = config.get_hotkey()
     listener = HotkeyListener(
+        keycode=keycode,
         on_press=controller.on_press,
         on_release=controller.on_release,
         suppress=True,
     )
+    controller.hotkey_listener = listener  # settings okno k němu potřebuje přístup
     listener.start()
-    print("✅ Připraveno. Drž F5, mluv česky, pusť → text se vloží.")
+    print(f"✅ Připraveno. Drž {key_label}, mluv česky, pusť → text se vloží.")
 
     try:
         # [F3] menu bar ikona se stavem (🎙️/🔴/⏳). run() blokuje na main threadu.

@@ -32,6 +32,12 @@ _PROFILE_GUIDANCE = {
         "Cíl je pole v EDITORU/TERMINÁLU — nejspíš prompt, komentář nebo poznámka. Uprav do "
         "jasné souvislé prózy. Technické termíny zachovej přesně a nepřekládej je."
     ),
+    "ai": (
+        "Cíl je PROMPT DO AI ASISTENTA (Claude/ChatGPT). Zformuluj to jako jasnou, "
+        "srozumitelnou instrukci nebo dotaz — strukturuj, pokud diktovaný text obsahuje "
+        "více oddělených požadavků nebo kroků. Zachovej všechna zadaná fakta a požadavky "
+        "beze změny významu, jen je uspořádej srozumitelněji."
+    ),
     "generic": "Uprav do čisté souvislé prózy se správnou interpunkcí.",
 }
 
