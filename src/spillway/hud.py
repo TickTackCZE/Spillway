@@ -26,7 +26,7 @@ from AppKit import (
 )
 from WebKit import WKWebView, WKWebViewConfiguration
 
-from . import context
+from . import context, design
 
 _DEBUG = os.environ.get("SPILLWAY_DEBUG_HUD", "0").lower() not in ("0", "false", "no")
 
@@ -37,32 +37,26 @@ _ALL_SPACES = 1 << 0
 _STATIONARY = 1 << 4
 _FS_AUX = 1 << 8
 
-# Domovoy ghost logo (dark) — ovál v barvě karty (#1A1F2E), aby splynul s pozadím.
-_LOGO = (
-    '<svg viewBox="0 0 80 88" width="18" height="20">'
-    '<path fill="#E2E8F0" d="M5,4 L5,84 L20,84 C57,84 76,65 76,44 C76,23 57,4 20,4 Z"/>'
-    '<ellipse cx="43" cy="44" rx="18" ry="22" fill="#1A1F2E"/>'
-    '<circle cx="36" cy="33" r="4.5" fill="#E2E8F0"/>'
-    '<circle cx="50" cy="33" r="4.5" fill="#E2E8F0"/></svg>'
-)
+# Spillway logo (kapka=mikrofon) — mřížka v barvě karty, aby „prořízla" kapku.
+_LOGO = design.logo_svg(fg="#F5F5F7", grille="#262628", width=17, height=19)
 
 _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { background:transparent; }
   body { font-family:-apple-system,'Raleway',sans-serif; padding:8px; }
   .card {
-    display:none; align-items:center; gap:11px;
-    background:#1A1F2E; border:0.5px solid rgba(129,140,248,0.28);
+    display:none; align-items:center; gap:10px;
+    background:rgba(38,38,40,0.96); border:0.5px solid rgba(255,255,255,0.15);
     border-radius:12px; padding:9px 15px 9px 12px;
-    box-shadow:0 8px 22px rgba(0,0,0,0.38); width:fit-content;
+    box-shadow:0 8px 22px rgba(0,0,0,0.4); width:fit-content;
   }
-  .logo { display:flex; width:18px; height:20px; flex-shrink:0; }
+  .logo { display:flex; width:17px; height:19px; flex-shrink:0; }
   .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-  .dot.rec { background:#E11D48; animation:pulse 1.4s infinite; }
-  .dot.proc { background:#F59E0B; animation:blink 1s infinite; }
-  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(225,29,72,0.5);} 70%{box-shadow:0 0 0 7px rgba(225,29,72,0);} 100%{box-shadow:0 0 0 0 rgba(225,29,72,0);} }
-  @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.35;} }
-  .label { color:#E2E8F0; font-size:13px; font-weight:500; letter-spacing:0.2px; white-space:nowrap; }
+  .dot.rec { background:#FF453A; animation:pulse 1.5s infinite; }
+  .dot.proc { background:#FF9F0A; animation:blink 1s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(255,69,58,0.5);} 70%{box-shadow:0 0 0 6px rgba(255,69,58,0);} 100%{box-shadow:0 0 0 0 rgba(255,69,58,0);} }
+  @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+  .label { color:#F5F5F7; font-size:13px; font-weight:500; letter-spacing:0.2px; white-space:nowrap; }
 </style></head><body>
   <div id="card" class="card">
     <span class="logo">__LOGO__</span>

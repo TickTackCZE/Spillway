@@ -154,14 +154,15 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
         if not ok:
             return None
         try:
-            return (
-                float(rect.origin.x),
-                float(rect.origin.y),
-                float(rect.size.width),
-                float(rect.size.height),
-            )
+            x, y = float(rect.origin.x), float(rect.origin.y)
+            w, h = float(rect.size.width), float(rect.size.height)
         except Exception:  # noqa: BLE001
             (x, y), (w, h) = rect
-            return (float(x), float(y), float(w), float(h))
+            x, y, w, h = float(x), float(y), float(w), float(h)
+        # Degenerovaný obdélník (typicky Electron/web vrací (0, výška, 0, 0)) →
+        # neplatné; kurzor má vždy nenulovou výšku řádku.
+        if h <= 1.0:
+            return None
+        return (x, y, w, h)
     except Exception:  # noqa: BLE001
         return None
