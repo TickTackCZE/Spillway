@@ -29,12 +29,12 @@ class Transcriber:
         self.language = language
         self.model = WhisperModel(model_name, device="cpu", compute_type=compute_type)
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def transcribe(self, audio: np.ndarray, language: str | None = None) -> str:
         if audio is None or audio.size == 0:
             return ""
         segments, _info = self.model.transcribe(
             audio,
-            language=self.language,
+            language=language or self.language,
             vad_filter=True,
             beam_size=1,
         )

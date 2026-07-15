@@ -39,6 +39,7 @@ class Controller:
         self.api_key = None if raw_mode else config.get_api_key()
         self.model = config.get_model()
         self.glossary = config.glossary()
+        self.language = config.get_language()
         self.cleaner: Cleaner | None = None
         self._build_cleaner()
 
@@ -62,6 +63,9 @@ class Controller:
 
     def set_glossary(self, terms: list[str]) -> None:
         self.glossary = terms
+
+    def set_language(self, language: str) -> None:
+        self.language = language
 
     def on_press(self) -> None:
         with self._lock:
@@ -92,7 +96,7 @@ class Controller:
             secs = len(audio) / 16000.0
             print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_name} · profil: {profile})")
             t0 = time.perf_counter()
-            raw = self.transcriber.transcribe(audio)
+            raw = self.transcriber.transcribe(audio, language=self.language)
             dt = time.perf_counter() - t0
             if not raw:
                 print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")

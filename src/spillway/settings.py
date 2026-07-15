@@ -20,6 +20,8 @@ _DEFAULTS: dict = {
     "field_context": True,
     "auto_space": True,
     "glossary": [],
+    "theme": "system",   # system | light | dark
+    "language": "cs",    # primární jazyk diktování
 }
 
 

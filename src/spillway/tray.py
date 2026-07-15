@@ -22,6 +22,18 @@ class SpillwayTray(rumps.App):
         super().__init__("Spillway", title=_BAR_ICON, quit_button=None)
         self.controller = controller
 
+        # Spillway logo (waveform) jako template ikona v liště; fallback = emoji.
+        try:
+            from . import baricon
+
+            path = baricon.icon_path()
+            if path:
+                self.template = True
+                self.icon = path
+                self.title = None
+        except Exception:  # noqa: BLE001
+            pass
+
         # Plovoucí status HUD u kurzoru (když selže, jedeme bez něj).
         self.hud = None
         try:

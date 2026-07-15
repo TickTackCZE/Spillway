@@ -28,6 +28,16 @@ def glossary() -> list[str]:
     return settings.get("glossary", []) or []
 
 
+def get_language() -> str:
+    """Primární jazyk diktování (Whisper). Env SPILLWAY_LANGUAGE má přednost."""
+    return os.environ.get("SPILLWAY_LANGUAGE") or settings.get("language", "cs")
+
+
+def get_theme() -> str:
+    """Vzhled okna: system | light | dark."""
+    return settings.get("theme", "system")
+
+
 def _flag(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no")
 
