@@ -55,6 +55,7 @@ from Quartz import (
 # --- konfigurace spiku ---------------------------------------------------
 RIGHT_OPTION_KEYCODE = 61   # pravý ⌥ (levý = 58)
 SUPPRESS_HOTKEY = False     # True = zkusit "spolknout" hotkey event (R9 test)
+VERBOSE = True              # vypisovat KAŽDOU událost (diagnostika oprávnění/kláves)
 # ------------------------------------------------------------------------
 
 _recording = False
@@ -81,6 +82,15 @@ def _tap_callback(proxy, type_, event, refcon):
         print("⚠️  Tap zakázán systémem — re-enable.")
         CGEventTapEnable(_tap, True)
         return event
+
+    if VERBOSE and type_ in (kCGEventKeyDown, kCGEventKeyUp, kCGEventFlagsChanged):
+        keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+        name = {
+            kCGEventKeyDown: "keyDown",
+            kCGEventKeyUp: "keyUp",
+            kCGEventFlagsChanged: "flagsChanged",
+        }[type_]
+        print(f"   · událost {name}, keycode={keycode}")
 
     if type_ == kCGEventFlagsChanged:
         keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
