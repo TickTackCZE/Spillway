@@ -26,3 +26,8 @@ dependencies = [
 [tool.uv]
 # Zatím není instalovatelný balíček (běží přes run_spillway.py); přepneme ve F3.
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

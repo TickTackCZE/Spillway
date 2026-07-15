@@ -74,6 +74,14 @@ Zatím nezahájeny — viz plán §5.
 
 ---
 
+## Testy a ukázky
+
+```bash
+uv run pytest                              # testy čisté logiky (bez GUI/API)
+uv run python spikes/demo_formatting.py    # ukázky formátování (email/SMS/ai…) — nutný API klíč
+uv run python spikes/spend_estimate.py     # predikce měsíčního spendu Claude API
+```
+
 ## Výsledky spiků
 
 Zapisuj do bug trackeru / poznámek v plánu (`_doc/spillway-plan-implementace.md`,
