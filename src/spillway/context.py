@@ -164,7 +164,18 @@ def focused_field() -> tuple[str | None, int | None]:
 def caret_screen_rect() -> tuple[float, float, float, float] | None:
     """Obdélník textového kurzoru na obrazovce (x, y, w, h) v AX souřadnicích
     (počátek vlevo NAHOŘE, y roste dolů). None, když to appka nepodporuje.
-    """
+
+    Ladění: `SPILLWAY_DEBUG_HUD=1` vypíše, na kterém kroku AX selhal (appka
+    prostě nemusí `kAXBoundsForRangeParameterizedAttribute` implementovat —
+    i u „nativních" appek to není univerzální)."""
+    import os
+
+    debug = os.environ.get("SPILLWAY_DEBUG_HUD", "0").lower() not in ("0", "false", "no")
+
+    def _dbg(msg: str) -> None:
+        if debug:
+            print(f"[caret] {msg}")
+
     try:
         from ApplicationServices import (
             AXUIElementCopyAttributeValue,
@@ -196,19 +207,23 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
             system, kAXFocusedUIElementAttribute, None
         )
         if err or focused is None:
+            _dbg(f"žádný focused element (err={err})")
             return None
         err, rng_val = AXUIElementCopyAttributeValue(
             focused, kAXSelectedTextRangeAttribute, None
         )
         if err or rng_val is None:
+            _dbg(f"appka nevrací kAXSelectedTextRangeAttribute (err={err})")
             return None
         err, bounds_val = AXUIElementCopyParameterizedAttributeValue(
             focused, bounds_attr, rng_val, None
         )
         if err or bounds_val is None:
+            _dbg(f"appka nepodporuje {bounds_attr} (err={err})")
             return None
         ok, rect = AXValueGetValue(bounds_val, cgrect_type, None)
         if not ok:
+            _dbg("AXValueGetValue selhalo")
             return None
         try:
             x, y = float(rect.origin.x), float(rect.origin.y)
@@ -219,7 +234,10 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
         # Degenerovaný obdélník (typicky Electron/web vrací (0, výška, 0, 0)) →
         # neplatné; kurzor má vždy nenulovou výšku řádku.
         if h <= 1.0:
+            _dbg(f"degenerovaný rect (0,{y},0,0) — appka to jen předstírá")
             return None
+        _dbg(f"OK rect=({x:.0f},{y:.0f},{w:.0f},{h:.0f})")
         return (x, y, w, h)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _dbg(f"výjimka: {type(exc).__name__}: {exc}")
         return None

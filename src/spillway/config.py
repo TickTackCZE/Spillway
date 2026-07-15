@@ -79,22 +79,42 @@ def field_context() -> bool:
 def get_auto_unload_minutes() -> float:
     """[R5] Po kolika minutách nečinnosti uvolnit Whisper model z paměti
     (~1,5–2 GB RAM); znovu se lazy-loadne při dalším diktátu (~1,6 s). 0 = nikdy.
-    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 10 minut."""
-    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 10)
+    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 1 minuta (reload je levný)."""
+    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 1)
     try:
         return float(raw)
     except (TypeError, ValueError):
-        return 10.0
+        return 1.0
+
+
+_UNSET = object()
+_api_key_cache = _UNSET  # cache napříč voláními — Keychain se dotážeme JEDNOU za běh appky
 
 
 def get_api_key() -> str | None:
-    """Vrátí Anthropic API klíč z Keychain, nebo z env, nebo None."""
+    """Vrátí Anthropic API klíč z Keychain, nebo z env, nebo None. Výsledek se
+    cachuje v paměti procesu — opakovaná volání (settings okno, Controller,
+    kontrola stavu) NESMÍ znovu a znovu otravovat Keychain dialogem (ad-hoc
+    podpis appky nemá stabilní identitu napříč rebuildy, takže si to macOS
+    "nepamatuje" mezi verzemi appky — v jednom běhu se ale ptát stačí jednou)."""
+    global _api_key_cache
+    if _api_key_cache is not _UNSET:
+        return _api_key_cache
+    key = None
     try:
         import keyring
 
         key = keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
-        if key:
-            return key
     except Exception:  # noqa: BLE001 — keyring může selhat (zamčený Keychain apod.)
         pass
-    return os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        key = os.environ.get("ANTHROPIC_API_KEY")
+    _api_key_cache = key
+    return key
+
+
+def set_api_key_cache(key: str | None) -> None:
+    """Nastaví cache přímo (po uložení/smazání klíče v UI) — ať se hned neptá
+    Keychain znovu, jen aby potvrdil to, co jsme sami právě zapsali."""
+    global _api_key_cache
+    _api_key_cache = key

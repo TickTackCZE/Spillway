@@ -212,6 +212,7 @@ class _Bridge(NSObject):
                 key = str(body.get("value", "")).strip()
                 if key:
                     keyring.set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, key)
+                    config.set_api_key_cache(key)  # ať se hned neptá Keychain znovu
                     self.controller.set_api_key(key)
                     self._push_state()
             elif action == "delkey":
@@ -219,6 +220,7 @@ class _Bridge(NSObject):
                     keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
                 except Exception:  # noqa: BLE001
                     pass
+                config.set_api_key_cache(None)
                 self.controller.set_api_key(None)
                 self._push_state()
             elif action == "glossary":
