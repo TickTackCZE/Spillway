@@ -16,6 +16,8 @@ dependencies = [
     # F2 AI úprava
     "anthropic>=0.40",      # Claude API (Haiku 4.5 cleanup)
     "keyring>=25.0",        # API klíč v macOS Keychain
+    # F3 menu bar
+    "rumps>=0.4",           # menu bar ikona se stavem
 ]
 
 # Fáze F3+ přidají: pydantic (validace configu).

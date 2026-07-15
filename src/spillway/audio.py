@@ -51,12 +51,21 @@ class Recorder:
         self._stream = None
         if stream is not None:
             # stop() dokončí zpracování bufferu (neztratí konec nahrávky),
-            # close() uvolní zařízení, aby macOS zhasnul indikátor mikrofonu.
+            # close() dovře stream.
             for op in (stream.stop, stream.close):
                 try:
                     op()
                 except Exception:  # noqa: BLE001
                     pass
+            # Samotný close() na macOS někdy neuvolní CoreAudio zařízení a
+            # oranžový indikátor mikrofonu zůstane svítit. Restart PortAudia
+            # (_terminate + _initialize) zařízení spolehlivě pustí; next start()
+            # otevře stream na čerstvě inicializované knihovně.
+            try:
+                sd._terminate()
+                sd._initialize()
+            except Exception:  # noqa: BLE001
+                pass
         with self._lock:
             if not self._frames:
                 return np.zeros(0, dtype=np.float32)

@@ -109,11 +109,18 @@ def main() -> None:
         suppress=True,
     )
     listener.start()
-    print("✅ Připraveno. Drž F5, mluv česky, pusť → text se vloží. Ctrl+C = konec.")
+    print("✅ Připraveno. Drž F5, mluv česky, pusť → text se vloží.")
 
-    stop = threading.Event()
-    signal.signal(signal.SIGINT, lambda *_: stop.set())
     try:
+        # [F3] menu bar ikona se stavem (🎙️/🔴/⏳). run() blokuje na main threadu.
+        from .tray import SpillwayTray
+
+        print("   Stav najdeš v horní liště (ikona 🎙️). Ukončíš přes menu → Konec.")
+        SpillwayTray(controller).run()
+    except Exception as exc:  # noqa: BLE001 — fallback bez menu baru
+        print(f"(menu bar nedostupný: {exc}) — běžím v terminálu, Ctrl+C = konec.")
+        stop = threading.Event()
+        signal.signal(signal.SIGINT, lambda *_: stop.set())
         while not stop.is_set():
             time.sleep(0.2)
     finally:

@@ -12,9 +12,9 @@
 
 | Ukazatel | Hodnota |
 |---|---|
-| **Aktuální fáze** | **F2 — LLM + kontext** (🟨 moduly nakódované; F1 pipeline ověřena naživo ✅) |
-| **Milník** | CZ+EN diktát vychází čistý (Claude opraví angl. termíny), změřená cena |
-| **Blokery** | F2 test vyžaduje nastavení Anthropic API klíče uživatelem (`set_api_key.py`) |
+| **Aktuální fáze** | **F3 — Aplikace** (🟨 menu bar nakódován; F2 ověřena — Haiku OK ✅) |
+| **Milník** | Instaluju .app, běží na pozadí, přežije restart |
+| **Blokery** | Test menu baru (GUI) uživatelem; B2 (mikrofon) re-test fix v2 |
 | **Testovací stroj** | iMac M4, 16 GB RAM, 10 jader (Mac16,12, 2024) — **ne** M5 Air; Apple Silicon, faster-whisper poběží CPU-only stejně |
 | **Otevřené otázky k rozhodnutí** | 1 — O1 Whisper backend (rozhodne Spike B); O2–O7 rozhodnuty (viz §8) |
 
@@ -112,9 +112,10 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 - [ ] **[F-c]** slovník výrazů + **[F-d]** chráněné výrazy → odloženo do F3 (potřebují TOML config s uživatelským vstupem).
 - [ ] **Milník:** CZ+EN diktát vychází čistý (angl. termíny opraveny), změřená cena.
 
-### F3 — Aplikace ⬜
-- [ ] NSStatusItem + stavy ikony
-- [ ] Settings okno / menu
+### F3 — Aplikace 🟨
+- [x] **Menu bar ikona se stavem** (`tray.py`, rumps): 🎙️ idle · 🔴 nahrává · ⏳ přepisuje. Aktualizace přes `rumps.Timer` (thread-safe). `app.py` běží pod rumps, fallback na terminál. Čeká na test uživatelem (GUI).
+- [ ] Settings okno / menu (raw toggle, model, historie)
+- [ ] config v TOML (hotkey, model, slovník)
 - [ ] PyInstaller .app + podpis + SMAppService autostart + single-instance
 - [ ] **Milník:** instaluju .app, přežije restart.
 
@@ -136,7 +137,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 | # | Sev | Popis | Stav | Poznámka |
 |---|-----|-------|------|----------|
 | B1 | 🟠 | **AI úprava přepisovala nejasný obsah** — Haiku halucinoval náhrady slov, kterým nerozuměl (`„ten klot s tím mapíčkem"` → `„tu mapu"`), měnil význam | ✅ vyřešeno | Prompt přepsán na striktně minimální úpravy; model konfigurovatelný přes `SPILLWAY_LLM_MODEL`. Uživatel potvrdil, že Haiku teď vypadá dobře. |
-| B2 | 🟡 | **Mikrofon se neuvolní** — po nahrávání zůstává oranžový indikátor mikrofonu v liště | 🟨 fix nasazen | `audio.stop()` zpřísněn (stop+close s ošetřením), mikrofon se uvolní i při ukončení appky. Čeká na ověření, zda indikátor zhasne (macOS ho pár sekund drží i normálně). |
+| B2 | 🟡 | **Mikrofon se neuvolní** — po nahrávání zůstává oranžový indikátor mikrofonu v liště | 🟨 fix v2 | Fix v1 (stop+close) nestačil → **fix v2:** po zavření streamu restart PortAudia (`sd._terminate()`+`_initialize()`), který CoreAudio zařízení spolehlivě pustí. Čeká na re-test. |
 
 ---
 
@@ -198,6 +199,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 - **14. 7. 2026** — Založen plán. Architektura rozhodnuta (Python + PyObjC menu bar .app, PyInstaller, SMAppService; Docker zamítnut). Definováno 9 modulů, 5 fází (F0–F4), 8 rizik, 6 otevřených otázek. Návrh ověřen agentem Fable 5.
 - **14. 7. 2026** — Doplněny 4 funkční požadavky uživatele: **F-a** vícejazyčnost (CZ+EN), **F-b** znalost aplikace + per-app profily, **F-c** slovník výrazů (Whisper hint + Claude prompt), **F-d** chráněné výrazy (preserve verbatim). Rozšířeny moduly `transcribe`/`context`/`llm`, konfigurace (glossary, protected_terms, app_profile, language.mode), fáze F2/F4 a přidána otázka O7 (jazykový režim).
+- **15. 7. 2026** — **F2 potvrzena + start F3.** F2 kvalita OK (Haiku). B2 mikrofon fix v2 (restart PortAudia po nahrávce). Chytrá mezera: potvrzeno ošetření prázdného pole / pozice 0. **F3 zahájen:** menu bar ikona se stavem (`tray.py`, rumps + Timer), `app.py` běží pod rumps s fallbackem na terminál. Dep `rumps`.
 - **15. 7. 2026** — **Ladění F2 dle testů uživatele.** B1 vyřešen (konzervativní prompt — Haiku teď OK). B2 (mikrofon se neuvolňoval) — zpřísněn `audio.stop()` + uvolnění při shutdown. Nová featura: **chytrá mezera** (`smart_spacing.py`) — přes Accessibility zjistí znak před kurzorem a vloží mezeru, když slova hrozí splynout (best-effort, vypínatelné `SPILLWAY_AUTO_SPACE=0`). Přidán dep `pyobjc-framework-ApplicationServices`.
 - **15. 7. 2026** — **F1 milník ✅ splněn** (diktát naživo funguje) + **F2 nakódována.** Moduly `context` (NSWorkspace frontmost app, ověřeno), `llm` (Claude `claude-haiku-4-5` cleanup, prompt pro CZ+EN code-switching), `config` (Keychain/env), `set_api_key.py` (getpass). Wiring v `app.py`: kontext → přepis → **[O6]** Claude úprava s fallbackem na raw + viditelná chyba; `--raw` toggle. Deps `anthropic`, `keyring`. Ověřen správný model ID přes claude-api skill. Čeká na test uživatelem (API klíč).
 - **15. 7. 2026** — **F1 pipeline nakódována.** Moduly `src/spillway/{hotkey,audio,transcribe,paste,app}.py` + `run_spillway.py`. Přidány deps `sounddevice`, `faster-whisper`, `numpy` do pyproject. Smoke-test OK (importy, konstrukce, přepis přes moduly). Čeká na end-to-end test uživatelem (mikrofon). Halucinace R10 řešeny filtrem v `transcribe`.
