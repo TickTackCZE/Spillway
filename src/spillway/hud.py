@@ -50,13 +50,14 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     border-radius:12px; padding:9px 15px 9px 12px;
     box-shadow:0 8px 22px rgba(0,0,0,0.4); width:fit-content;
   }
-  .logo { display:flex; width:17px; height:19px; flex-shrink:0; }
+  .logo { display:flex; align-items:center; width:17px; height:19px; flex-shrink:0; }
+  .logo svg { display:block; }
   .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
   .dot.rec { background:#FF453A; animation:pulse 1.5s infinite; }
   .dot.proc { background:#FF9F0A; animation:blink 1s infinite; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(255,69,58,0.5);} 70%{box-shadow:0 0 0 6px rgba(255,69,58,0);} 100%{box-shadow:0 0 0 0 rgba(255,69,58,0);} }
   @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
-  .label { color:#F5F5F7; font-size:13px; font-weight:500; letter-spacing:0.2px; white-space:nowrap; }
+  .label { color:#F5F5F7; font-size:13px; font-weight:500; letter-spacing:0.2px; white-space:nowrap; line-height:1; }
 </style></head><body>
   <div id="card" class="card">
     <span class="logo">__LOGO__</span>
