@@ -5,14 +5,17 @@ description = "Lokální diktovací nástroj pro macOS: Whisper (lokální přep
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # Spike A (paste) + Spike C (hotkey) — macOS nativní API přes PyObjC
+    # macOS nativní API (hotkey, paste, kontext)
     "pyobjc-framework-Cocoa>=10.3",
     "pyobjc-framework-Quartz>=10.3",
+    # F1 pipeline
+    "sounddevice>=0.4.6",   # nahrávání mikrofonu (PortAudio)
+    "faster-whisper>=1.0",  # lokální přepis (large-v3-turbo, CPU)
+    "numpy>=1.26",
 ]
 
-# Fáze F1+ přidají: sounddevice, faster-whisper (nebo mlx-whisper), anthropic,
-# keyring, pydantic, tomli/tomllib. Zatím jen to, co potřebují spiky.
+# Fáze F2+ přidají: anthropic, keyring, pydantic.
 
 [tool.uv]
-# Spike fáze — projekt zatím není instalovatelný balíček, jen skripty.
+# Zatím není instalovatelný balíček (běží přes run_spillway.py); přepneme ve F3.
 package = false

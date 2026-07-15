@@ -12,9 +12,9 @@
 
 | Ukazatel | Hodnota |
 |---|---|
-| **Aktuální fáze** | F0 hotová (✅ paste, ✅ hotkey/F5, ✅ backend) → připraveno na **F1** |
-| **Milník** | ✅ Rozhodnutý Whisper backend + paste strategie — **F0 milník splněn** |
-| **Blokery** | Žádné. Spike D (bundle) odložen do F3. Volitelně: reálná CZ nahrávka pro ostré WER |
+| **Aktuální fáze** | **F1 — MVP pipeline** (🟨 moduly nakódované, čeká end-to-end test s mikrofonem) |
+| **Milník** | Diktuju do libovolné appky, raw text se vloží |
+| **Blokery** | End-to-end test vyžaduje spuštění uživatelem (Microphone oprávnění) |
 | **Testovací stroj** | iMac M4, 16 GB RAM, 10 jader (Mac16,12, 2024) — **ne** M5 Air; Apple Silicon, faster-whisper poběží CPU-only stejně |
 | **Otevřené otázky k rozhodnutí** | 1 — O1 Whisper backend (rozhodne Spike B); O2–O7 rozhodnuty (viz §8) |
 
@@ -97,9 +97,11 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 **Milník F0:** ✅ backend vybraný, paste strategie ověřená → jde se stavět.
 
-### F1 — MVP pipeline (bez LLM, bez UI) ⬜
-- [ ] hotkey → audio → transcribe → paste
-- [ ] config v TOML, spouštění z terminálu
+### F1 — MVP pipeline (bez LLM, bez UI) 🟨
+- [x] **Moduly nakódovány** (`src/spillway/`): `hotkey` (F5 tap na vlastním vlákně), `audio` (sounddevice, RAM-only), `transcribe` (faster-whisper singleton + filtr halucinací R10), `paste` (ze Spike A), `app` (stavový automat IDLE→RECORDING→PROCESSING). Spouštěč `run_spillway.py`.
+- [x] Smoke-test: importy + konstrukce + přepisová cesta přes moduly OK.
+- [ ] **End-to-end test uživatelem** (mikrofon + hotkey + paste naživo) — čeká na spuštění (potřebuje Microphone oprávnění).
+- [ ] config v TOML (zatím natvrdo výchozí hodnoty) → dodělat.
 - [ ] **Milník:** diktuju do libovolné appky, raw text se vloží.
 
 ### F2 — LLM + kontext ⬜
@@ -196,6 +198,7 @@ Cíl: rozhodnout Whisper backend a paste strategii, než se napíše zbytek.
 
 - **14. 7. 2026** — Založen plán. Architektura rozhodnuta (Python + PyObjC menu bar .app, PyInstaller, SMAppService; Docker zamítnut). Definováno 9 modulů, 5 fází (F0–F4), 8 rizik, 6 otevřených otázek. Návrh ověřen agentem Fable 5.
 - **14. 7. 2026** — Doplněny 4 funkční požadavky uživatele: **F-a** vícejazyčnost (CZ+EN), **F-b** znalost aplikace + per-app profily, **F-c** slovník výrazů (Whisper hint + Claude prompt), **F-d** chráněné výrazy (preserve verbatim). Rozšířeny moduly `transcribe`/`context`/`llm`, konfigurace (glossary, protected_terms, app_profile, language.mode), fáze F2/F4 a přidána otázka O7 (jazykový režim).
+- **15. 7. 2026** — **F1 pipeline nakódována.** Moduly `src/spillway/{hotkey,audio,transcribe,paste,app}.py` + `run_spillway.py`. Přidány deps `sounddevice`, `faster-whisper`, `numpy` do pyproject. Smoke-test OK (importy, konstrukce, přepis přes moduly). Čeká na end-to-end test uživatelem (mikrofon). Halucinace R10 řešeny filtrem v `transcribe`.
 - **15. 7. 2026** — **Spike B ✅ / O1 rozhodnuto / F0 milník splněn.** faster-whisper `large-v3-turbo` int8 na M4: RTF ~0,30, teplé načtení 1,6 s, RAM ~1,9 GB, CZ kvalita výborná (jediná code-switching chyba půjde opravit v F2). Backend = faster-whisper. R2 sníženo na 🟢, R5 potvrzeno (auto-unload reálný). **F0 odrizikováno (paste + hotkey + backend) → připraveno na F1.** Přidán `spikes/spike_b_whisper.py`. faster-whisper nainstalován jen do venv (ne do pyproject).
 - **14. 7. 2026** — **Spike C2 ✅ / R9 vyřešeno.** F5 (diktovací klávesa) chodí jako normální keyDown/keyUp **keycode 176** a `return None` ji potlačí → **nativní diktování nenaskočí bez jakéhokoli zásahu do Nastavení**. Výchozí hotkey = F5 (176). Pozn.: keycode 176 může být specifický pro tuto klávesnici → hotkey zůstává plně konfigurovatelný (O2). **Hotkey část F0 kompletní** (paste ✅ + hotkey ✅). Další: Spike B (benchmark Whisperu na M4).
 - **14. 7. 2026** — **Spike C ✅ dokončen** (pravý ⌥ / keycode 61 → hold-to-talk START/STOP funguje). Uživatel zvolil **F5 jako výchozí klávesu** (obchází R12) → přidán `spikes/spike_c_fkey.py` (Spike C2) na ověření, zda lze přebít nativní diktování/Siri na F5 (R9 aktualizováno na F5).

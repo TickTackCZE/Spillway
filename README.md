@@ -5,7 +5,17 @@ Lokální diktovací nástroj pro macOS: **Whisper** (lokální přepis) → **C
 - 📄 Plán a stav implementace: [`_doc/spillway-plan-implementace.md`](_doc/spillway-plan-implementace.md)
 - 📄 Původní analýza: [`_doc/spillway-analyza.md`](_doc/spillway-analyza.md)
 
-Stav: **fáze F0 — spiky** (ověřování nejrizikovějších částí, viz plán §5).
+Stav: **fáze F1 — MVP pipeline** (F0 spiky ověřeny; viz plán).
+
+## Spuštění (F1 MVP)
+
+```bash
+uv run python run_spillway.py
+```
+Podrž **F5**, mluv česky, pusť → přepsaný text se vloží do aktivní aplikace.
+Ctrl+C ukončí. **Oprávnění:** Microphone + Input Monitoring + Accessibility
+(pro aplikaci, ze které spouštíš — Terminal / VS Code). Model se při prvním
+běhu stáhne (~1,5 GB) do HuggingFace cache.
 
 ---
 
