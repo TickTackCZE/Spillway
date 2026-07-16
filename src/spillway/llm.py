@@ -33,10 +33,18 @@ _PROFILE_GUIDANCE = {
         "jasné souvislé prózy. Technické termíny zachovej přesně a nepřekládej je."
     ),
     "ai": (
-        "Cíl je PROMPT DO AI ASISTENTA (Claude/ChatGPT). Zformuluj to jako jasnou, "
-        "srozumitelnou instrukci nebo dotaz — strukturuj, pokud diktovaný text obsahuje "
-        "více oddělených požadavků nebo kroků. Zachovej všechna zadaná fakta a požadavky "
-        "beze změny významu, jen je uspořádej srozumitelněji."
+        "Cíl je PROMPT PRO AI ASISTENTA (Claude/ChatGPT). Tvým úkolem je vylepšit STRUKTURU "
+        "a čitelnost promptu, NE ho přepsat, zkrátit ani shrnout. "
+        "ZACHOVEJ všechny nadiktované informace, požadavky, podmínky, příklady, čísla a detaily "
+        "— nic nevynechávej, negeneralizuj ani neshrnuj; význam, přesnost a specifičnost musí "
+        "zůstat plně zachované. "
+        "Formátuj pro přehlednost: rozděl do logických odstavců oddělených prázdným řádkem; "
+        "když text obsahuje víc požadavků, kroků nebo bodů, udělej z nich odrážky nebo "
+        "číslovaný seznam. "
+        "Úspornost = odstraň JEN skutečné doslovné opakování téže věci a řečové vycpávky/"
+        "zaškobrtnutí; když uživatel řekne totéž dvakrát, nech to jednou. Nikdy neškrtej obsah. "
+        "Drž se uživatelových formulací — nepřeformulovávej věty do „hezčích“ slov, která mění "
+        "tón nebo ubírají na přesnosti."
     ),
     "generic": "Uprav do čisté souvislé prózy se správnou interpunkcí.",
 }
