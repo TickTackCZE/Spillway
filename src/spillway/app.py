@@ -210,11 +210,26 @@ def main() -> None:
     print(f"Spillway — načítám model (chvíli to trvá)…{'  [raw režim]' if raw_mode else ''}")
     controller = Controller(raw_mode=raw_mode)
     keycode, key_label = config.get_hotkey()
+
+    def _on_tap_failed(msg: str) -> None:
+        # Volané z vlákna tapu, dřív než main run loop běží — přehodit na main
+        # thread a počkat, ať notifikace fakt naskočí (viditelná chyba, O6/B12).
+        def _notify() -> None:
+            notify("Klávesa nefunguje", "Chybí Input Monitoring/Accessibility — otevři Nastavení systému.")
+        try:
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(_notify)
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"❌ {msg}")
+
     listener = HotkeyListener(
         keycode=keycode,
         on_press=controller.on_press,
         on_release=controller.on_release,
         suppress=True,
+        on_tap_failed=_on_tap_failed,
     )
     controller.hotkey_listener = listener  # settings okno k němu potřebuje přístup
     listener.start()

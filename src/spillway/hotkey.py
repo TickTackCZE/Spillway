@@ -59,11 +59,16 @@ class HotkeyListener:
         on_press: Callable[[], None],
         on_release: Callable[[], None],
         suppress: bool = True,
+        on_tap_failed: Callable[[str], None] | None = None,
     ):
         self.keycode = keycode
         self.on_press = on_press
         self.on_release = on_release
         self.suppress = suppress
+        # Selhání vytvoření tapu (chybějící Input Monitoring) se dělo tiše ve
+        # vlastním vlákně — nikdo to neviděl. Zavolá se na tomtéž vlákně;
+        # volající si to musí přehodit na main thread (stejně jako u capture).
+        self.on_tap_failed = on_tap_failed
         self._pressed = False
         self._tap = None
         self._runloop = None
@@ -161,10 +166,16 @@ class HotkeyListener:
             None,
         )
         if self._tap is None:
-            raise RuntimeError(
+            msg = (
                 "Nepodařilo se vytvořit event tap — povol Input Monitoring "
-                "(a pro potlačení klávesy Accessibility) pro tuto aplikaci."
+                "(a pro potlačení klávesy Accessibility) pro tuto aplikaci. "
+                "Po přestavění appky (nový podpis) je nutné povolit znovu."
             )
+            if self.on_tap_failed is not None:
+                self.on_tap_failed(msg)
+            else:
+                print(f"❌ {msg}")
+            return  # bez tapu nemá smysl pokračovat do CFRunLoopRun()
         source = CFMachPortCreateRunLoopSource(None, self._tap, 0)
         self._runloop = CFRunLoopGetCurrent()
         CFRunLoopAddSource(self._runloop, source, kCFRunLoopCommonModes)
