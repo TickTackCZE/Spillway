@@ -79,12 +79,13 @@ def field_context() -> bool:
 def get_auto_unload_minutes() -> float:
     """[R5] Po kolika minutách nečinnosti uvolnit Whisper model z paměti
     (~1,5–2 GB RAM); znovu se lazy-loadne při dalším diktátu (~1,6 s). 0 = nikdy.
-    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 1 minuta (reload je levný)."""
-    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 1)
+    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 0,25 min (15 s) — nejde na
+    0 s (viz plán): krátká pauza mezi větami by pak platila 1,6s reload pokaždé."""
+    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 0.25)
     try:
         return float(raw)
     except (TypeError, ValueError):
-        return 1.0
+        return 0.25
 
 
 _UNSET = object()

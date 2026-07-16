@@ -57,7 +57,8 @@ class SpillwayTray(rumps.App):
         self._timer.start()
 
         # [R5] Periodicky uvolnit Whisper model po nečinnosti (~1,5–2 GB RAM).
-        self._unload_timer = rumps.Timer(self._check_unload, 30)
+        # Kontrola po 5s, ať uvolnění nezpozdí víc, než samotný idle práh sám o sobě.
+        self._unload_timer = rumps.Timer(self._check_unload, 5)
         self._unload_timer.start()
 
     def _check_unload(self, _sender) -> None:  # noqa: ANN001
@@ -66,7 +67,7 @@ class SpillwayTray(rumps.App):
                 return  # neuvolňovat uprostřed nahrávání/zpracování
             idle_min = config.get_auto_unload_minutes()
             if self.controller.transcriber.unload_if_idle(idle_min * 60):
-                print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_min:.0f} min).")
+                print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_min * 60:.0f} s).")
         except Exception:  # noqa: BLE001
             pass
 
