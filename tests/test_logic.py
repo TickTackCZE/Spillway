@@ -92,7 +92,7 @@ def test_settings_corrupt_json_falls_back_to_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "_DIR", str(tmp_path))
     monkeypatch.setattr(settings, "_PATH", str(path))
 
-    assert settings.get("model") == "claude-haiku-4-5"  # default, ne pád
+    assert settings.get("model") == "claude-sonnet-5"  # default, ne pád
 
 
 # --- keymap -----------------------------------------------------------------
@@ -135,6 +135,7 @@ def _cleaner_with_fake():
     c = Cleaner.__new__(Cleaner)  # obejít __init__ (nechceme anthropic klient)
     c.model = "claude-haiku-4-5"
     c.client = _FakeClient()
+    c._supports_temperature = False  # fake klient neřeší sampling parametry
     return c
 
 

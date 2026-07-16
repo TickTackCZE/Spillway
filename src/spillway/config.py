@@ -20,7 +20,7 @@ KEYRING_ACCOUNT = "anthropic"
 
 def get_model() -> str:
     """Model pro AI úpravu (z nastavení v liště). Env SPILLWAY_LLM_MODEL má přednost."""
-    return os.environ.get("SPILLWAY_LLM_MODEL") or settings.get("model", "claude-haiku-4-5")
+    return os.environ.get("SPILLWAY_LLM_MODEL") or settings.get("model", "claude-sonnet-5")
 
 
 def glossary() -> list[str]:

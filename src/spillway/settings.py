@@ -16,7 +16,7 @@ _PATH = os.path.join(_DIR, "settings.json")
 _lock = threading.Lock()
 
 _DEFAULTS: dict = {
-    "model": "claude-haiku-4-5",
+    "model": "claude-sonnet-5",
     "field_context": True,
     "auto_space": True,
     "glossary": [],
