@@ -19,6 +19,9 @@ venv/
 config.toml
 .env
 *.key
+*.p12
+*.crt
+codesign-identity.*
 
 # Lokální data
 history.jsonl

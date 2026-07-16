@@ -69,6 +69,11 @@ class HotkeyListener:
         # vlastním vlákně — nikdo to neviděl. Zavolá se na tomtéž vlákně;
         # volající si to musí přehodit na main thread (stejně jako u capture).
         self.on_tap_failed = on_tap_failed
+        # Stav vytvoření tapu, aby ho šlo zjistit AŽ po startu run loopu (dřív se
+        # notifikace posílala z vlákna tapu před během NSApplication a tiše zmizela).
+        # None = ještě nevíme, True = tap běží, False = selhalo (chybí oprávnění).
+        self.tap_ok: bool | None = None
+        self.tap_error: str | None = None
         self._pressed = False
         self._tap = None
         self._runloop = None
@@ -167,10 +172,12 @@ class HotkeyListener:
         )
         if self._tap is None:
             msg = (
-                "Nepodařilo se vytvořit event tap — povol Input Monitoring "
-                "(a pro potlačení klávesy Accessibility) pro tuto aplikaci. "
-                "Po přestavění appky (nový podpis) je nutné povolit znovu."
+                "Nepodařilo se vytvořit event tap — povol Zpřístupnění (Accessibility) "
+                "a Monitorování vstupu (Input Monitoring) pro Spillway v Nastavení "
+                "systému → Soukromí a zabezpečení, pak appku restartuj."
             )
+            self.tap_ok = False
+            self.tap_error = msg
             if self.on_tap_failed is not None:
                 self.on_tap_failed(msg)
             else:
@@ -180,6 +187,8 @@ class HotkeyListener:
         self._runloop = CFRunLoopGetCurrent()
         CFRunLoopAddSource(self._runloop, source, kCFRunLoopCommonModes)
         CGEventTapEnable(self._tap, True)
+        self.tap_ok = True
+        print("✅ event tap aktivní (klávesa se odchytává).")
         CFRunLoopRun()
 
     def start(self) -> None:

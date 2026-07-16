@@ -47,6 +47,10 @@ class SpillwayTray(rumps.App):
         # Okno nastavení (Domovoy design) — vytvoří se líně při prvním otevření.
         self._settings = None
 
+        # Varovná položka (skrytá, dokud nezjistíme mrtvý event tap — B23).
+        self._warn_item = rumps.MenuItem(
+            "⚠️ Klávesa nefunguje — povol oprávnění", callback=self._open_privacy
+        )
         self.menu = [
             rumps.MenuItem("Nastavení…", callback=self.open_settings),
             None,
@@ -55,6 +59,45 @@ class SpillwayTray(rumps.App):
 
         self._timer = rumps.Timer(self._tick, 0.15)
         self._timer.start()
+
+        # [B23] Jednorázová kontrola stavu event tapu AŽ po startu run loopu —
+        # dřív se notifikace o mrtvém tapu posílala moc brzy a tiše mizela.
+        self._tap_checked = False
+        self._tapcheck_timer = rumps.Timer(self._check_tap, 1.0)
+        self._tapcheck_timer.start()
+
+    def _check_tap(self, _sender) -> None:  # noqa: ANN001
+        listener = getattr(self.controller, "hotkey_listener", None)
+        if listener is None or listener.tap_ok is None:
+            return  # ještě nevíme (tap se zakládá na jiném vlákně) — zkusíme za 1 s
+        self._tap_checked = True
+        self._tapcheck_timer.stop()
+        if listener.tap_ok is False:
+            # Trvale viditelné: notifikace + položka v menu + vykřičník v liště.
+            rumps.notification(
+                "Spillway", "Klávesa nefunguje",
+                "Chybí Zpřístupnění / Monitorování vstupu. Klikni v menu na ⚠️.",
+            )
+            if self._warn_item.title not in self.menu:
+                self.menu.insert_before("Nastavení…", self._warn_item)
+            try:
+                if not getattr(self, "template", False):
+                    self.title = "🎙️⚠️"
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"⚠️ {listener.tap_error}")
+
+    def _open_privacy(self, _sender) -> None:  # noqa: ANN001
+        """Otevře přímo Nastavení systému → Soukromí → Zpřístupnění."""
+        import subprocess
+
+        try:
+            subprocess.Popen([
+                "open",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            ])
+        except Exception:  # noqa: BLE001
+            pass
 
         # [R5] Periodicky uvolnit Whisper model po nečinnosti (~1,5–2 GB RAM).
         # Kontrola po 5s, ať uvolnění nezpozdí víc, než samotný idle práh sám o sobě.

@@ -14,6 +14,7 @@ Vyžaduje oprávnění: Microphone, Input Monitoring, Accessibility.
 from __future__ import annotations
 
 import signal
+import sys
 import threading
 import time
 
@@ -25,6 +26,40 @@ from .paste import paste_text
 from .transcribe import Transcriber
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
+
+
+def _setup_logging() -> str | None:
+    """Ve zabalené .app (bez terminálu) není kam psát print() — přesměruj
+    stdout/stderr do logu, ať je appka diagnostikovatelná. Vrátí cestu k logu."""
+    import os
+
+    log_dir = os.path.expanduser("~/Library/Logs/Spillway")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "spillway.log")
+        # line-buffered, ať se zápisy objeví hned (ne až po pádu)
+        f = open(log_path, "a", buffering=1, encoding="utf-8")
+        # Přesměruj jen ve frozen buildu; při vývoji chceme vidět terminál.
+        if getattr(sys, "frozen", False):
+            sys.stdout = f
+            sys.stderr = f
+        import datetime
+
+        print(f"\n===== Spillway start {datetime.datetime.now():%Y-%m-%d %H:%M:%S} =====")
+        return log_path
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _log_permission_diagnostics() -> None:
+    """Zapiš do logu, jestli má proces Accessibility a jaká je jeho identita —
+    ground truth pro ladění mrtvého event tapu (B23)."""
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+
+        print(f"🔐 AXIsProcessTrusted (Zpřístupnění): {AXIsProcessTrusted()}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"🔐 AXIsProcessTrusted nelze zjistit: {exc}")
 
 
 def notify(title: str, message: str) -> None:
@@ -195,9 +230,9 @@ class Controller:
 
 
 def main() -> None:
-    import sys
-
     from . import lifecycle
+
+    log_path = _setup_logging()
 
     # [B5] Single-instance zámek — druhá instance by měla dva event tapy,
     # dva mikrofony a 2× Whisper model. Když už běží, skonči.
@@ -206,22 +241,17 @@ def main() -> None:
         print("Spillway už běží (jiná instance). Končím.")
         return
 
+    _log_permission_diagnostics()
+
     raw_mode = "--raw" in sys.argv
     print(f"Spillway — načítám model (chvíli to trvá)…{'  [raw režim]' if raw_mode else ''}")
     controller = Controller(raw_mode=raw_mode)
     keycode, key_label = config.get_hotkey()
 
     def _on_tap_failed(msg: str) -> None:
-        # Volané z vlákna tapu, dřív než main run loop běží — přehodit na main
-        # thread a počkat, ať notifikace fakt naskočí (viditelná chyba, O6/B12).
-        def _notify() -> None:
-            notify("Klávesa nefunguje", "Chybí Input Monitoring/Accessibility — otevři Nastavení systému.")
-        try:
-            from PyObjCTools import AppHelper
-
-            AppHelper.callAfter(_notify)
-        except Exception:  # noqa: BLE001
-            pass
+        # POZOR: tohle běží na vlákně tapu JEŠTĚ NEŽ naběhne NSApplication run loop,
+        # takže rumps.notification by tady tiše zmizela (to byl původní bug B23).
+        # Uživateli to proto ukáže až tray přes `listener.tap_ok` po startu run loopu.
         print(f"❌ {msg}")
 
     listener = HotkeyListener(
