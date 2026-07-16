@@ -64,7 +64,12 @@ PŘÍSNÉ ZÁKAZY:
 - NEVYMÝŠLEJ fakta, jména, čísla ani obsah, který uživatel nenadiktoval.
 - NEHÁDEJ význam přeslechu — když nevíš JISTĚ, co slovo mělo být, nech ho beze změny (radši divné slovo než domyšlená náhrada).
 
-FORMÁTOVÁNÍ: odstavce, prázdné řádky, odrážky nebo číslovaný seznam použij JEN když se to k obsahu opravdu hodí (víc oddělených bodů, kroků nebo položek). Krátkou nebo jednoduchou zprávu nech jako plynulý text — strukturu nevnucuj.
+FORMÁTOVÁNÍ — aktivně zpřehledni, výsledek nesmí být jeden blok textu:
+- Rozděl text do odstavců oddělených PRÁZDNÝM ŘÁDKEM vždy, když obsahuje víc oddělených myšlenek nebo témat (zpravidla od 3–4 vět výš). Jeden odstavec = jedna myšlenka/téma. Nikdy nenech delší text jako jeden „moloch".
+- Číslovaný seznam (1., 2., 3.) použij, když jde o kroky, postup nebo pořadí.
+- Odrážky (-) použij, když vyjmenováváš 3 a víc souběžných položek, požadavků nebo vlastností — i když zazněly v jedné větě; vypíšeš je jako odrážky pod krátkou uvozovací větou (např. „Chci appku, která bude mít:").
+- Krátkou zprávu (1–2 věty) nebo jednu souvislou myšlenku nech jako plynulý text — tam strukturu nevnucuj.
+- Nikdy neroztrhávej na kusy to, co logicky patří k sobě jako jedna věta.
 {context}
 Vrať POUZE výsledný text k vložení, bez uvozovek a bez jakéhokoli komentáře."""
 
