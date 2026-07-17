@@ -169,3 +169,55 @@ def test_glossary_stays_in_system():
     c.clean("commitnul jsem to", glossary=["commit", "repository"])
     call = c.client.messages.last
     assert "commit" in call["system"]
+
+
+# --- Vzdálená Windows plocha (RDP/AVD): Ctrl+V místo ⌘+V ---------------------
+
+
+def test_windows_target_detects_rdp_clients():
+    from spillway.context import is_windows_target
+
+    # Ověřeno na stroji uživatele: „Windows App" = com.microsoft.rdc.macos.
+    assert is_windows_target("com.microsoft.rdc.macos", "Windows App")
+    assert is_windows_target("com.citrix.receiver.icaviewer.mac", "Citrix Workspace")
+    # Neznámé bundle ID, ale název sedí → fallback přes klíčová slova.
+    assert is_windows_target("com.unknown.thing", "Microsoft Remote Desktop")
+
+
+def test_windows_target_false_for_native_apps():
+    from spillway.context import is_windows_target
+
+    assert not is_windows_target("com.apple.mail", "Mail")
+    assert not is_windows_target("com.tinyspeck.slackmacgap", "Slack")
+    assert not is_windows_target(None, None)
+
+
+def test_paste_uses_ctrl_for_windows_target_and_cmd_otherwise():
+    # Regrese k bugu „do AVD se vloží jen 'v'": RDP klient nepřeloží ⌘ na Ctrl.
+    from Quartz import kCGEventFlagMaskCommand, kCGEventFlagMaskControl
+
+    from spillway import paste
+
+    seen = []
+    orig = paste.CGEventSetFlags
+    paste.CGEventSetFlags = lambda ev, flags: seen.append(flags)
+    try:
+        paste._paste_keystroke(windows_target=True)
+        assert set(seen) == {kCGEventFlagMaskControl}
+        seen.clear()
+        paste._paste_keystroke(windows_target=False)
+        assert set(seen) == {kCGEventFlagMaskCommand}
+    finally:
+        paste.CGEventSetFlags = orig
+
+
+# --- Slovník → Whisper hotwords (biasuje samotný přepis) ---------------------
+
+
+def test_hotwords_str_joins_terms_and_handles_empty():
+    from spillway.transcribe import _hotwords_str
+
+    assert _hotwords_str(["pull request", "Domovoy"]) == "pull request, Domovoy"
+    assert _hotwords_str([]) is None
+    assert _hotwords_str(None) is None
+    assert _hotwords_str(["  ", ""]) is None  # samé prázdné → žádný bias

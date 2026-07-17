@@ -26,8 +26,8 @@ Osobní diktovací nástroj pro macOS. Lokální přepis řeči (faster-whisper)
 
 - **Python 3.12 + PyObjC** (AppKit / Quartz / WebKit / ApplicationServices). Menu-bar app (`LSUIElement`), bundle přes **PyInstaller**.
 - **CGEventTap** na vlastním vlákně/CFRunLoop, callback triviální. F5 = keycode **176**, `return None` potlačí nativní diktování. Watchdog na ztracený key-up, re-enable po timeoutu.
-- **Přepis:** faster-whisper `large-v3-turbo` int8, CPU (RTF ~0,30 na M-čipu, reload ~1,6 s). `vad_filter=True` (Silero VAD asset se balí přes `collect_data_files`).
-- **Paste:** zápis do schránky (+ Transient/Concealed typy) → Cmd+V přes CGEvent → fixní delay ~250 ms → obnova schránky.
+- **Přepis:** faster-whisper `large-v3-turbo` int8, CPU (RTF ~0,30 na M-čipu, reload ~1,6 s). `vad_filter=True` (Silero VAD asset se balí přes `collect_data_files`). `beam_size=5` (přebitelné `SPILLWAY_BEAM_SIZE`); **uživatelský slovník jde do Whisperu jako `hotwords`** → biasuje samotný přepis, ne až Claudeovu opravu.
+- **Paste:** zápis do schránky (+ Transient/Concealed typy) → ⌘+V přes CGEvent → fixní delay ~250 ms → obnova schránky. **Vzdálená Windows plocha (RDP/AVD/VDI, `context.is_windows_target`) → Ctrl+V** místo ⌘+V a delší čekání (~0,6 s) na síťovou synchronizaci schránky přes rdpclip — RDP klienti syntetické ⌘ nepřeloží na Ctrl a do session dorazí holé „V".
 - **Moduly** `src/spillway/`: hotkey, audio, transcribe, context, llm, paste, tray, hud, settings(_window), config, lifecycle, autostart, baricon, keymap, design.
 - **⚠️ Podpis je kritický:** TCC granty (Accessibility/Input Monitoring) i Keychain ACL se vážou na code signature. Ad-hoc podpis se mění každým buildem → resetoval by oprávnění. Řeší **stabilní self-signed cert „Spillway Self-Signed"** — DR = `identifier "com.spillway.app" and certificate root = H"…"` je konstantní napříč rebuildy. Privátní klíč v login keychainu + záloha `~/Library/Application Support/Spillway/codesign-identity.p12` (mimo git).
 
@@ -92,6 +92,7 @@ Log běhu: `~/Library/Logs/Spillway/spillway.log` (obsahuje `AXIsProcessTrusted`
 ## Známá omezení
 
 - **Paste:** počítat s ~1 % selhání ve secure-input polích (hesla, Terminal secure entry). Při aktivním Secure Keyboard Entry event tap nedostává eventy → hotkey dočasně mrtvý.
+- **Uvnitř RDP/AVD** nefunguje čtení kontextu pole ani pozice kurzoru (vzdálená plocha je pro Accessibility jen obrázek) → HUD u myši, žádný kontext pole, žádná chytrá mezera. Vkládání samo funguje (Ctrl+V).
 - **HUD ve web/Electron appkách** sedí nad polem (ne přesně u kurzoru) — Chromium/Electron neposkytuje pozici kurzoru přes Accessibility.
 - **`.app` je self-signed, ne notarizovaná** → první spuštění: pravý klik → Otevřít (nebo Nastavení → Soukromí → Otevřít i tak).
 - **Náklady Claude:** Sonnet ~2–3× Haiku, typicky jednotky $/měsíc, hluboko pod komerčními nástroji (Wispr Flow $12–15).

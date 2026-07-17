@@ -34,6 +34,39 @@ _FALLBACK_KEYWORDS = {
     "code": ("code", "xcode", "terminal", "iterm", "pycharm", "intellij", "antigravity"),
 }
 
+# Aplikace, ve kterých je cílem vzdálená/virtuální WINDOWS plocha (RDP/VDI/VM).
+# Vkládání v nich musí použít Ctrl+V, ne ⌘+V — klient nepřeloží ⌘ na Ctrl a do
+# session dorazí holé „V" (napíše se „v" místo vložení). Viz `paste.paste_text`.
+_WINDOWS_TARGET_BUNDLES = {
+    "com.microsoft.rdc.macos",       # Windows App (dřív Microsoft Remote Desktop) / AVD
+    "com.microsoft.rdc.osx",         # starší Microsoft Remote Desktop
+    "com.microsoft.rdc.osx.beta",    # beta kanál
+    "com.citrix.receiver.icaviewer.mac",  # Citrix Workspace
+    "com.vmware.horizon",            # VMware Horizon Client
+    "com.parallels.client",          # Parallels Client (RAS)
+    "com.parallels.desktop.console",  # Parallels Desktop (Windows VM)
+    "com.vmware.fusion",             # VMware Fusion (Windows VM)
+    "org.virtualbox.app.VirtualBoxVM",  # VirtualBox (Windows VM)
+    "com.realvnc.vncviewer",         # VNC na Windows
+    "com.teamviewer.TeamViewer",     # TeamViewer
+    "com.nulana.remotixmac",         # Remotix
+}
+_WINDOWS_TARGET_KEYWORDS = ("windows app", "remote desktop", "citrix", "horizon", "anydesk")
+
+
+def is_windows_target(bundle_id: str | None, app_name: str | None = None) -> bool:
+    """True, když se diktuje do vzdálené/virtuální WINDOWS plochy (RDP/VDI/VM).
+
+    Spillway běží na macOS, ale cílové pole je na Windows — a tam platí jiná
+    klávesová zkratka pro vložení (Ctrl+V). Ověřeno na uživatelově stroji:
+    „Windows App" = `com.microsoft.rdc.macos`.
+    """
+    if bundle_id and bundle_id in _WINDOWS_TARGET_BUNDLES:
+        return True
+    name = (app_name or "").lower()
+    return any(k in name for k in _WINDOWS_TARGET_KEYWORDS)
+
+
 # Prohlížeče, u kterých umíme AppleScriptem zjistit URL aktivní karty
 # (Automation oprávnění, NE Screen Recording — jednorázový systémový dialog).
 _BROWSER_SCRIPTS = {

@@ -161,6 +161,8 @@ class Controller:
             # [F2/F3] kontext: aktivní aplikace, profil formátování, obsah pole.
             app_name, bundle = context.frontmost_app()
             profile = context.app_profile(bundle, app_name)
+            # Vzdálená Windows plocha (RDP/AVD) → vkládá se Ctrl+V, ne ⌘+V.
+            win_target = context.is_windows_target(bundle, app_name)
             field_text, caret = context.focused_field()  # lokální AX čtení
 
             # Prohlížeč: doména aktivní karty (AppleScript/Automation) může upřesnit profil.
@@ -174,9 +176,14 @@ class Controller:
             secs = len(audio) / 16000.0
             if not self.transcriber.is_loaded:
                 print("💤→🔄 model byl uvolněný z paměti, znovu se načítá…")
-            print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_ctx} · profil: {profile})")
+            win_note = " · Windows (Ctrl+V)" if win_target else ""
+            print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_ctx} · profil: {profile}{win_note})")
             t0 = time.perf_counter()
-            raw = self.transcriber.transcribe(audio, language=self.language)
+            # Slovník jde i do Whisperu (hotwords) — biasuje samotný PŘEPIS ke
+            # správnému znění termínů, ne až Claudeovu opravu po něm.
+            raw = self.transcriber.transcribe(
+                audio, language=self.language, hotwords=self.glossary
+            )
             dt = time.perf_counter() - t0
             if not raw:
                 print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")
@@ -220,7 +227,7 @@ class Controller:
             ):
                 text = " " + text
 
-            paste_text(text)
+            paste_text(text, windows_target=win_target)
         except Exception as exc:  # noqa: BLE001
             print(f"❌ chyba v pipeline: {exc}")
             notify("Chyba při vkládání", "Diktát se nepodařilo zpracovat/vložit.")
