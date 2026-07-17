@@ -171,6 +171,29 @@ def test_glossary_stays_in_system():
     assert "commit" in call["system"]
 
 
+def test_glossary_is_framed_as_spelling_only():
+    # Regrese: slovník byl uvozený jen jako „piš tyto termíny přesně", což si
+    # model vyložil jako KONTEXT a do textu vložil „v aplikaci Domovoy", ačkoli
+    # nic takového nezaznělo (potvrzeno z historie: raw termín neměl, výstup ano).
+    c = _cleaner_with_fake()
+    c.clean("nějaký text", glossary=["Domovoy"])
+    system = c.client.messages.last["system"]
+    assert "NEZAZNĚL" in system, "prompt musí zakázat vkládání termínů, které nezazněly"
+    assert "Slovník neurčuje téma" in system
+
+
+def test_ai_profile_demands_compression_and_bullets():
+    # Profil „ai" musí explicitně chtít KRATŠÍ výstup a odrážky — data ukázala,
+    # že model jinak úsečné mluvené poznámky naopak ROZEPISUJE (+9 %).
+    c = _cleaner_with_fake()
+    c.clean("nějaké zadání", profile="ai")
+    system = c.client.messages.last["system"]
+    assert "KRATŠÍ" in system
+    assert "ODRÁŽKY" in system or "odrážky" in system
+    # Obsah zůstává nedotknutelný i v agresivním režimu.
+    assert "nepřidávej" in system
+
+
 # --- Vzdálená Windows plocha (RDP/AVD): Ctrl+V místo ⌘+V ---------------------
 
 
