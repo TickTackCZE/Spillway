@@ -37,8 +37,16 @@ _PROFILE_GUIDANCE = {
         "Cíl: EDITOR/TERMINÁL — jasná próza, technické termíny přesně a bez překladu."
     ),
     "ai": (
-        "Cíl: PROMPT PRO AI ASISTENTA — zachovej všechny informace a detaily beze změny "
-        "významu; strukturu přidej jen podle pravidel FORMÁT níže."
+        "Cíl: PROMPT PRO AI ASISTENTA. Tady NEJDE o věrný záznam řeči, ale o ÚČINNÝ PROMPT — "
+        "text aktivně přepiš z mluvené podoby do stručného věcného zadání (přeformulovat SMÍŠ "
+        "a máš):\n"
+        "  • bezezbytku vyhoď řečové vycpávky a tiky, i uvnitř vět: „jako“, „jakoby“, „prostě“, "
+        "„třeba“, „nějak(ý)“, „no“, „takovej“, „chápeš to?“, „že jo“;\n"
+        "  • co zaznělo víckrát nebo dokola, řekni JEDNOU;\n"
+        "  • mluvenou vatu převeď na věcnou formulaci (zadáváš úkol, nevyprávíš);\n"
+        "  • strukturu (odstavce/odrážky/seznam) podle pravidel FORMÁT níže.\n"
+        "ALE: žádný požadavek, fakt ani detail nevynechávej a nic si nepřidávej — jen to řekni "
+        "stručně a jasně."
     ),
     "generic": "Cíl: běžný text — lehká korektura, tón a formálnost nech jak zazněly.",
 }
@@ -55,10 +63,11 @@ UPRAV:
 - zjevně zkomolené anglické termíny oprav („pool request" → „pull request"); nepřekládej je.
 
 ZACHOVEJ (přísně):
-- význam, tón a registr přesně jak zazněly — slang i vulgarismy („jdu se ožrat" zůstane „jdu se ožrat"); nikdy necenzuruj, nezjemňuj, nemoralizuj;
+- všechna fakta, jména, čísla a požadavky — nic si nevymýšlej a nic nevynechávej;
+- význam a registr — slang i vulgarismy („jdu se ožrat" zůstane „jdu se ožrat"); nikdy necenzuruj, nezjemňuj, nemoralizuj;
 - osobu a perspektivu — oznámení zůstane oznámením, otázka otázkou;
-- uživatelova slova — žádná synonyma, žádná nová fakta, jména ani čísla;
-- slovo, kterým si nejsi JISTÝ, nech doslova beze změny — NEHÁDEJ, co asi mělo zaznít; divné slovo je lepší než domyšlená náhrada.
+- slovo, kterým si nejsi JISTÝ, nech doslova beze změny — NEHÁDEJ, co asi mělo zaznít; divné slovo je lepší než domyšlená náhrada;
+- uživatelovy formulace nepřepisuj do synonym — **výjimka: když si přeformulování výslovně žádá Cíl výše** (prompt pro AI), tam se drž Cíle.
 
 FORMÁT (podle obsahu, ne na sílu):
 - 3–4+ vět nebo víc myšlenek → odstavce oddělené prázdným řádkem, jedna myšlenka = jeden odstavec; delší text nikdy nenech jako jeden blok;
