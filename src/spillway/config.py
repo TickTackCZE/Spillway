@@ -57,6 +57,19 @@ def get_hotkey() -> tuple[int, str]:
     return (keycode, label)
 
 
+def get_cancel_hotkey() -> tuple[int, str]:
+    """(keycode, název) klávesy, která zruší běžící zpracování diktátu.
+    Výchozí Escape (53). [B17] odolné vůči poškozené hodnotě v settings.json."""
+    try:
+        keycode = int(settings.get("cancel_keycode", 53))
+    except (TypeError, ValueError):
+        keycode = 53
+    label = settings.get("cancel_label", "Escape")
+    if not isinstance(label, str):
+        label = "Escape"
+    return (keycode, label)
+
+
 def _flag(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no")
 

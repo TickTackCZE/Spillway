@@ -24,6 +24,10 @@ _DEFAULTS: dict = {
     "language": "cs",    # primární jazyk diktování
     "hotkey_keycode": 176,           # nativní diktovací klávesa (viz keymap.py)
     "hotkey_label": "F5 (diktování)",
+    # Zrušení běžícího zpracování (šetří tokeny, když jsem nadiktoval blbost).
+    # Potlačí se JEN během zpracování — jinde klávesa funguje normálně.
+    "cancel_keycode": 53,            # Escape
+    "cancel_label": "Escape",
     "auto_unload_min": 0.25,         # [R5] uvolnit Whisper model po N min nečinnosti (15s); reload je levný (~1,6s)
 }
 

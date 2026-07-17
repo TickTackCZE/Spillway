@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-from . import config, context
+from . import config, context, stats
 from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner
@@ -79,6 +79,9 @@ class Controller:
         self.transcriber = Transcriber()  # načte model (chvíli trvá)
         self.state = IDLE
         self._lock = threading.Lock()
+        # Zrušení běžícího zpracování (Escape) — šetří tokeny i čekání, když
+        # uživatel po puštění klávesy zjistí, že nadiktoval nesmysl.
+        self._cancel = threading.Event()
 
         # [F2/F3] AI úprava přes Claude — konfigurovatelná za běhu z menu.
         self.raw_mode = raw_mode
@@ -113,6 +116,17 @@ class Controller:
     def set_language(self, language: str) -> None:
         self.language = language
 
+    def request_cancel(self) -> bool:
+        """Zruší běžící nahrávání/zpracování. Vrací True, když bylo co rušit —
+        podle toho tap pozná, jestli má klávesu spolknout (jinde musí Escape
+        fungovat normálně). Volá se z vlákna tapu → drž to triviální."""
+        with self._lock:
+            if self.state == IDLE:
+                return False
+        self._cancel.set()
+        print("🚫 zrušeno uživatelem (nic se nevloží).")
+        return True
+
     def on_press(self) -> None:
         with self._lock:
             if self.state != IDLE:
@@ -121,6 +135,7 @@ class Controller:
                 print(f"⏳ zaneprázdněno ({self.state}) — počkej na dokončení.")
                 return
             self.state = RECORDING
+        self._cancel.clear()  # nový diktát → zahodit staré zrušení
         print("🔴 nahrávám… (drž F5)")
         self.recorder.start()
         # [B7] Watchdog: kdyby se ztratil key-up (spánek, lock, Secure Input),
@@ -156,8 +171,17 @@ class Controller:
         threading.Thread(target=self._process, daemon=True).start()
 
     def _process(self) -> None:
+        t_start = time.perf_counter()
+        audio_secs = 0.0
+        raw = ""
+        text = ""
+        app_ctx = None
+        profile = "generic"
         try:
             audio = self.recorder.stop()  # [B9] těžké volání až tady, na workeru
+            audio_secs = len(audio) / 16000.0
+            if self._cancel.is_set():
+                return  # zrušeno ještě před přepisem → nula tokenů, nula práce
             # [F2/F3] kontext: aktivní aplikace, profil formátování, obsah pole.
             app_name, bundle = context.frontmost_app()
             profile = context.app_profile(bundle, app_name)
@@ -189,6 +213,8 @@ class Controller:
                 print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")
                 return
             print(f"📝 přepis ({dt:.1f} s): {raw!r}")
+            if self._cancel.is_set():
+                return  # zrušeno po přepisu → ušetří se aspoň volání Claude
 
             text = raw
             if self.cleaner is not None:
@@ -227,11 +253,23 @@ class Controller:
             ):
                 text = " " + text
 
+            if self._cancel.is_set():
+                return  # poslední šance — nevkládat text, který uživatel zavrhl
             paste_text(text, windows_target=win_target)
         except Exception as exc:  # noqa: BLE001
             print(f"❌ chyba v pipeline: {exc}")
             notify("Chyba při vkládání", "Diktát se nepodařilo zpracovat/vložit.")
         finally:
+            # Statistiky („kolik jsem ušetřil") — best-effort, nikdy neshodí pipeline.
+            stats.record(
+                raw=raw,
+                final=text,
+                app=app_ctx,
+                profile=profile,
+                audio_seconds=audio_secs,
+                process_seconds=time.perf_counter() - t_start,
+                cancelled=self._cancel.is_set(),
+            )
             with self._lock:
                 self.state = IDLE
 
@@ -261,16 +299,22 @@ def main() -> None:
         # Uživateli to proto ukáže až tray přes `listener.tap_ok` po startu run loopu.
         print(f"❌ {msg}")
 
+    cancel_keycode, cancel_label = config.get_cancel_hotkey()
     listener = HotkeyListener(
         keycode=keycode,
         on_press=controller.on_press,
         on_release=controller.on_release,
         suppress=True,
         on_tap_failed=_on_tap_failed,
+        cancel_keycode=cancel_keycode,
+        on_cancel_key=controller.request_cancel,
     )
     controller.hotkey_listener = listener  # settings okno k němu potřebuje přístup
     listener.start()
-    print(f"✅ Připraveno. Drž {key_label}, mluv česky, pusť → text se vloží.")
+    print(
+        f"✅ Připraveno. Drž {key_label}, mluv česky, pusť → text se vloží. "
+        f"({cancel_label} během zpracování = zrušit)"
+    )
 
     try:
         # [F3] menu bar ikona se stavem (🎙️/🔴/⏳). run() blokuje na main threadu.

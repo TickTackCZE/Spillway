@@ -17,6 +17,8 @@ Osobní diktovací nástroj pro macOS. Lokální přepis řeči (faster-whisper)
 
 - `.app` sestavená, **stabilně self-signed** (oprávnění přežijí rebuildy), nasazená v `/Applications/Spillway.app`.
 - Pipeline běží end-to-end: F5 → nahrávání → přepis → úprava → vložení. HUD u pole, auto-unload modelu (~15 s), file-log.
+- **Zrušení diktátu** klávesou (výchozí Escape, konfigurovatelná) — zahodí pipeline před placeným voláním Claude. Klávesa se spolkne JEN během zpracování, jinde funguje normálně.
+- **Statistiky** v nastavení — ušetřený čas (odhad psaní ~40 slov/min vs. reálné mluvení+zpracování), počet diktátů, slova, zhuštění promptů (profil `ai`), nejčastější aplikace. Data v `history.jsonl` (rotace 5000 řádků) = i podklad pro pozdější export na RPi.
 - Model: **`claude-sonnet-5`** (výchozí, `temperature=0`); Haiku volitelný v nastavení.
 - Nastavení (téma / jazyk / model / klíč / slovník / klávesa) perzistentní; API klíč jen v Keychain.
 
@@ -70,17 +72,10 @@ Log běhu: `~/Library/Logs/Spillway/spillway.log` (obsahuje `AXIsProcessTrusted`
 
 ## Next steps (zbývá dodělat)
 
-- **🆕 Zrušení diktátu klávesou (šetří tokeny i čas)** — zadání uživatele 17. 7.: „když nadiktuju blbost a pustím klávesu, chci to stihnout zrušit". Po puštění klávesy (stav `PROCESSING`) stisk **Backspace** zruší běžící pipeline dřív, než se zaplatí Claude API a zatíží model.
-  - Implementace: tap už všechny klávesy vidí → ve stavu `PROCESSING` odchytit keycode 51 (Backspace) → nastavit `cancel_event`; `_process()` ho kontroluje před přepisem, před voláním LLM a před vložením → tiše skončí (HUD zhasne).
-  - **K rozhodnutí:** (a) Backspace, nebo spíš **Esc** (konvenční „zruš")? Backspace má riziko, že uživatel jen maže text v poli. (b) Potlačit tu klávesu (aby nesmazala znak), nebo propustit? Návrh: ve stavu `PROCESSING` klávesu potlačit a brát ji jako „zruš"; jinde nechat být.
-- **🆕 Statistiky / „kolik jsem ušetřil" (for fun)** — zadání uživatele 17. 7.
-  - **Ušetřený čas:** porovnat délku diktátu + zpracování vs. odhad, jak dlouho by trvalo to napsat (typicky ~40 slov/min → `slova / 40 * 60 s`). Rozdíl = ušetřeno. Kumulativně za den/týden/celkem.
-  - **Efektivita promptu (profil `ai`):** ukázat, o kolik se syrový diktát zkrátil na výsledný prompt (znaky i **tokeny**, přes `client.messages.count_tokens`) — např. „prompt zkrácen o 37 %". Reálný vzorek: 334 → 212 zn.
-  - **Další metriky:** počet diktátů, nadiktovaná slova, rozpad podle aplikace/profilu, útrata za Claude.
-  - Závisí na modulu `history` (viz níže) — metriky ukládat do stejného JSONL; zobrazení jako karta „Statistiky" v okně nastavení.
 - **Onboarding wizard oprávnění** — mikrofon / Accessibility / Input Monitoring, live detekce + deep-linky do Nastavení; první spuštění po instalaci.
 - **Autostart pro `/Applications` verzi** — nahradit dřívější LaunchAgent (dev verzi, zneškodněnou) login-itemem podepsané `.app` (SMAppService).
-- **Modul `history`** — ukládání přepisů (JSONL: čas, appka, profil, raw, upravený text, jazyk **+ metriky: délka audia, doba zpracování, počet slov, znaky/tokeny raw vs. výstup**) + historie posledních N v menu (klik → zpět do schránky). Je to i podklad pro statistiky výše a pozdější export na RPi.
+- **Historie v menu** — `stats.py` už přepisy i metriky ukládá do `history.jsonl`; zbývá UI: posledních N diktátů v menu lišty (klik → zpět do schránky).
+- **Statistiky — rozšíření:** úspora v **tokenech** (ne jen znacích) přes `client.messages.count_tokens`, útrata za Claude, rozpad za den/týden, tlačítko „vymazat historii" (teď jen rotace na 5000 řádků).
 - **Editor per-app profilů v UI** — teď pevná mapa v `context.py`.
 - **Zvuková odezva** start/stop nahrávání; **undo** posledního vložení; rychlý **raw-mode toggle** z menu.
 - **Zabalit Raleway font** (jinak UI padá na systémový — funkčně OK).

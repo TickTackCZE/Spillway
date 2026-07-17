@@ -60,11 +60,18 @@ class HotkeyListener:
         on_release: Callable[[], None],
         suppress: bool = True,
         on_tap_failed: Callable[[str], None] | None = None,
+        cancel_keycode: int | None = None,
+        on_cancel_key: Callable[[], bool] | None = None,
     ):
         self.keycode = keycode
         self.on_press = on_press
         self.on_release = on_release
         self.suppress = suppress
+        # Zrušení běžícího zpracování (výchozí Escape). `on_cancel_key` vrátí True,
+        # když se opravdu něco zrušilo → jen tehdy klávesu spolkneme. Mimo zpracování
+        # musí Escape fungovat úplně normálně (zavírá dialogy, vim, …).
+        self.cancel_keycode = cancel_keycode
+        self.on_cancel_key = on_cancel_key
         # Selhání vytvoření tapu (chybějící Input Monitoring) se dělo tiše ve
         # vlastním vlákně — nikdo to neviděl. Zavolá se na tomtéž vlákně;
         # volající si to musí přehodit na main thread (stejně jako u capture).
@@ -148,6 +155,22 @@ class HotkeyListener:
             return None  # spolknout tenhle stisk, ať nic nenapíše/nespustí
 
         keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+
+        # Zrušení zpracování (Escape). Klávesu spolkneme JEN když se fakt něco
+        # zrušilo — jinak by Escape přestal fungovat ve zbytku systému.
+        if (
+            self.cancel_keycode is not None
+            and keycode == self.cancel_keycode
+            and self.on_cancel_key is not None
+        ):
+            if type_ == kCGEventKeyDown:
+                try:
+                    if self.on_cancel_key():
+                        return None  # zrušeno → klávesu nepouštět dál
+                except Exception:  # noqa: BLE001 — callback nesmí shodit tap
+                    pass
+            return event
+
         if keycode != self.keycode:
             return event
 

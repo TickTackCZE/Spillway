@@ -221,3 +221,116 @@ def test_hotwords_str_joins_terms_and_handles_empty():
     assert _hotwords_str([]) is None
     assert _hotwords_str(None) is None
     assert _hotwords_str(["  ", ""]) is None  # samé prázdné → žádný bias
+
+
+# --- Statistiky ---------------------------------------------------------------
+
+
+@pytest.fixture
+def _stats_tmp(tmp_path, monkeypatch):
+    from spillway import stats
+
+    monkeypatch.setattr(stats, "_DIR", str(tmp_path))
+    monkeypatch.setattr(stats, "_PATH", str(tmp_path / "history.jsonl"))
+    return stats
+
+
+def test_stats_excludes_cancelled_and_counts_prompt_saving(_stats_tmp):
+    s = _stats_tmp
+    # profil ai: 334 → 212 znaků = -37 % (reálný vzorek z diktátu uživatele)
+    s.record(raw="a" * 334, final="b" * 212, app="Claude", profile="ai",
+             audio_seconds=20, process_seconds=4)
+    s.record(raw="x" * 100, final="ahoj jak se máš", app="Zprávy", profile="chat",
+             audio_seconds=3, process_seconds=2)
+    s.record(raw="z" * 50, final="zahozeno", app="Mail", profile="email",
+             audio_seconds=2, process_seconds=1, cancelled=True)
+
+    out = s.summary()
+    assert out["count"] == 2, "zrušený diktát se nesmí počítat do statistik"
+    assert out["prompt_saving_pct"] == 37, "zhuštění se počítá jen z profilu ai"
+    assert dict(out["top_apps"])["Claude"] == 1
+
+
+def test_stats_empty_and_saved_time_never_negative(_stats_tmp):
+    s = _stats_tmp
+    assert s.summary()["count"] == 0  # prázdná historie nespadne
+    # Dlouhé mluvení, krátký výstup → psaní by bylo rychlejší; úspora nesmí být záporná.
+    s.record(raw="a" * 10, final="ok", app="X", profile="chat",
+             audio_seconds=60, process_seconds=5)
+    assert s.summary()["saved_s"] == 0.0
+
+
+def test_human_duration_formats():
+    from spillway.stats import human_duration
+
+    assert human_duration(45) == "45 s"
+    assert human_duration(200) == "3 min 20 s"
+    assert human_duration(8100) == "2 h 15 min"
+
+
+# --- Zrušení diktátu (Escape) -------------------------------------------------
+
+
+def _controller_stub(state):
+    """Controller bez __init__ (nechceme načítat Whisper model)."""
+    import threading
+
+    from spillway.app import Controller
+
+    c = Controller.__new__(Controller)
+    c.state = state
+    c._lock = threading.Lock()
+    c._cancel = threading.Event()
+    return c
+
+
+def test_cancel_only_when_something_runs():
+    from spillway.app import IDLE, PROCESSING
+
+    idle = _controller_stub(IDLE)
+    assert idle.request_cancel() is False, "v klidu se nesmí nic rušit (Escape musí projít dál)"
+    assert not idle._cancel.is_set()
+
+    busy = _controller_stub(PROCESSING)
+    assert busy.request_cancel() is True
+    assert busy._cancel.is_set()
+
+
+def test_cancel_key_swallowed_only_when_it_cancelled_something(monkeypatch):
+    # Escape smí tap spolknout JEN když se fakt něco zrušilo — jinak by Escape
+    # přestal fungovat ve zbytku systému.
+    from Quartz import kCGEventKeyDown
+
+    from spillway import hotkey as hk
+
+    # Event je opaque C struktura → keycode musíme podstrčit.
+    monkeypatch.setattr(hk, "CGEventGetIntegerValueField", lambda ev, field: 53)
+
+    for cancelled, expect_swallow in ((True, True), (False, False)):
+        lis = hk.HotkeyListener(
+            keycode=176, on_press=lambda: None, on_release=lambda: None,
+            cancel_keycode=53, on_cancel_key=lambda: cancelled,
+        )
+        ev = object()
+        res = lis._callback(None, kCGEventKeyDown, ev, None)
+        if expect_swallow:
+            assert res is None, "zrušeno → klávesu spolknout"
+        else:
+            assert res is ev, "nebylo co rušit → klávesu pustit dál"
+
+
+def test_cancel_key_untouched_when_not_the_cancel_key(monkeypatch):
+    # Jiná klávesa než rušicí projde beze změny i během zpracování.
+    from Quartz import kCGEventKeyDown
+
+    from spillway import hotkey as hk
+
+    monkeypatch.setattr(hk, "CGEventGetIntegerValueField", lambda ev, field: 8)  # "C"
+    calls = []
+    lis = hk.HotkeyListener(
+        keycode=176, on_press=lambda: None, on_release=lambda: None,
+        cancel_keycode=53, on_cancel_key=lambda: calls.append(1) or True,
+    )
+    ev = object()
+    assert lis._callback(None, kCGEventKeyDown, ev, None) is ev
+    assert not calls, "rušicí callback se nesmí volat pro cizí klávesu"
