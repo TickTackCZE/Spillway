@@ -346,6 +346,42 @@ def _controller_stub(state):
     return c
 
 
+def test_cancel_during_recording_ends_the_recording(monkeypatch):
+    # Regrese: ESC při NAHRÁVÁNÍ jen nastavil příznak a čekal na puštění klávesy
+    # → mikrofon běžel dál a HUD visel na „Ruším" bez konce. Musí převzít řízení
+    # od on_release: přepnout na PROCESSING a spustit _process (ten uvolní mikrofon).
+    from spillway import app as appmod
+    from spillway.app import PROCESSING, RECORDING
+
+    started = []
+    monkeypatch.setattr(
+        appmod.threading, "Thread",
+        lambda target=None, daemon=None: type("T", (), {"start": lambda s: started.append(target)})(),
+    )
+
+    c = _controller_stub(RECORDING)
+    c._watchdog = None
+    assert c.request_cancel() is True
+    assert c.state == PROCESSING, "rušení při nahrávání musí převzít řízení"
+    assert started and started[0] == c._process, "_process musí doběhnout a uvolnit mikrofon"
+
+
+def test_cancel_during_processing_does_not_spawn_second_process(monkeypatch):
+    # Při zpracování už _process běží — nesmí se spustit podruhé.
+    from spillway import app as appmod
+    from spillway.app import PROCESSING
+
+    started = []
+    monkeypatch.setattr(
+        appmod.threading, "Thread",
+        lambda target=None, daemon=None: type("T", (), {"start": lambda s: started.append(target)})(),
+    )
+
+    c = _controller_stub(PROCESSING)
+    assert c.request_cancel() is True
+    assert started == [], "během zpracování se _process znovu spouštět nesmí"
+
+
 def test_cancel_refused_once_pasting_started():
     # [F5] Za bodem vložení už rušit nejde: Escape musí projít do systému
     # (vrátit False) a diktát se nesmí zapsat jako zrušený.
