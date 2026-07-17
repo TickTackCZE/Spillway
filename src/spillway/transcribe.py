@@ -8,6 +8,7 @@ za mlx-whisper.
 from __future__ import annotations
 
 import gc
+import os
 import threading
 import time
 
@@ -23,6 +24,26 @@ _HALLUCINATION_MARKERS = (
     ".cz",
 )
 _HALLUCINATION_MAX_LEN = 45
+
+def _beam_size() -> int:
+    """Doporučený default faster-whisperu je 5 (dřív tu byla greedy 1 = méně
+    přesné). Přebitelné přes SPILLWAY_BEAM_SIZE, kdyby latence vadila víc."""
+    try:
+        return max(1, int(os.environ.get("SPILLWAY_BEAM_SIZE", "5")))
+    except (TypeError, ValueError):
+        return 5
+
+
+BEAM_SIZE = _beam_size()
+
+
+def _hotwords_str(terms: list[str] | None) -> str | None:
+    """Slovník → jeden řetězec pro faster-whisper `hotwords` (biasuje dekodér).
+    Prázdný slovník → None (žádný bias)."""
+    if not terms:
+        return None
+    cleaned = [t.strip() for t in terms if t and t.strip()]
+    return ", ".join(cleaned) if cleaned else None
 
 
 class Transcriber:
@@ -66,7 +87,12 @@ class Transcriber:
         gc.collect()
         return True
 
-    def transcribe(self, audio: np.ndarray, language: str | None = None) -> str:
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        language: str | None = None,
+        hotwords: list[str] | None = None,
+    ) -> str:
         if audio is None or audio.size == 0:
             return ""
         with self._lock:
@@ -78,7 +104,13 @@ class Transcriber:
             audio,
             language=language or self.language,
             vad_filter=True,
-            beam_size=1,
+            # beam_size=5 je doporučený default faster-whisperu (dřív tu byla 1 =
+            # greedy). Přesnější dekódování za cenu trochy latence — na M4 se to
+            # v praxi vejde do desítek ms navíc (změřeno).
+            beam_size=BEAM_SIZE,
+            # [F-c] Uživatelský slovník biasuje PŘEPIS ke správnému znění termínů
+            # („pull request", názvy projektů) — dřív to musel dohánět až Claude.
+            hotwords=_hotwords_str(hotwords),
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()
         with self._lock:

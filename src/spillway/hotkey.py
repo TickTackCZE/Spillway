@@ -59,11 +59,28 @@ class HotkeyListener:
         on_press: Callable[[], None],
         on_release: Callable[[], None],
         suppress: bool = True,
+        on_tap_failed: Callable[[str], None] | None = None,
+        cancel_keycode: int | None = None,
+        on_cancel_key: Callable[[], bool] | None = None,
     ):
         self.keycode = keycode
         self.on_press = on_press
         self.on_release = on_release
         self.suppress = suppress
+        # Zrušení běžícího zpracování (výchozí Escape). `on_cancel_key` vrátí True,
+        # když se opravdu něco zrušilo → jen tehdy klávesu spolkneme. Mimo zpracování
+        # musí Escape fungovat úplně normálně (zavírá dialogy, vim, …).
+        self.cancel_keycode = cancel_keycode
+        self.on_cancel_key = on_cancel_key
+        # Selhání vytvoření tapu (chybějící Input Monitoring) se dělo tiše ve
+        # vlastním vlákně — nikdo to neviděl. Zavolá se na tomtéž vlákně;
+        # volající si to musí přehodit na main thread (stejně jako u capture).
+        self.on_tap_failed = on_tap_failed
+        # Stav vytvoření tapu, aby ho šlo zjistit AŽ po startu run loopu (dřív se
+        # notifikace posílala z vlákna tapu před během NSApplication a tiše zmizela).
+        # None = ještě nevíme, True = tap běží, False = selhalo (chybí oprávnění).
+        self.tap_ok: bool | None = None
+        self.tap_error: str | None = None
         self._pressed = False
         self._tap = None
         self._runloop = None
@@ -138,6 +155,22 @@ class HotkeyListener:
             return None  # spolknout tenhle stisk, ať nic nenapíše/nespustí
 
         keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+
+        # Zrušení zpracování (Escape). Klávesu spolkneme JEN když se fakt něco
+        # zrušilo — jinak by Escape přestal fungovat ve zbytku systému.
+        if (
+            self.cancel_keycode is not None
+            and keycode == self.cancel_keycode
+            and self.on_cancel_key is not None
+        ):
+            if type_ == kCGEventKeyDown:
+                try:
+                    if self.on_cancel_key():
+                        return None  # zrušeno → klávesu nepouštět dál
+                except Exception:  # noqa: BLE001 — callback nesmí shodit tap
+                    pass
+            return event
+
         if keycode != self.keycode:
             return event
 
@@ -161,14 +194,24 @@ class HotkeyListener:
             None,
         )
         if self._tap is None:
-            raise RuntimeError(
-                "Nepodařilo se vytvořit event tap — povol Input Monitoring "
-                "(a pro potlačení klávesy Accessibility) pro tuto aplikaci."
+            msg = (
+                "Nepodařilo se vytvořit event tap — povol Zpřístupnění (Accessibility) "
+                "a Monitorování vstupu (Input Monitoring) pro Spillway v Nastavení "
+                "systému → Soukromí a zabezpečení, pak appku restartuj."
             )
+            self.tap_ok = False
+            self.tap_error = msg
+            if self.on_tap_failed is not None:
+                self.on_tap_failed(msg)
+            else:
+                print(f"❌ {msg}")
+            return  # bez tapu nemá smysl pokračovat do CFRunLoopRun()
         source = CFMachPortCreateRunLoopSource(None, self._tap, 0)
         self._runloop = CFRunLoopGetCurrent()
         CFRunLoopAddSource(self._runloop, source, kCFRunLoopCommonModes)
         CGEventTapEnable(self._tap, True)
+        self.tap_ok = True
+        print("✅ event tap aktivní (klávesa se odchytává).")
         CFRunLoopRun()
 
     def start(self) -> None:

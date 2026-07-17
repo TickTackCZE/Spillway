@@ -34,6 +34,39 @@ _FALLBACK_KEYWORDS = {
     "code": ("code", "xcode", "terminal", "iterm", "pycharm", "intellij", "antigravity"),
 }
 
+# Aplikace, ve kterých je cílem vzdálená/virtuální WINDOWS plocha (RDP/VDI/VM).
+# Vkládání v nich musí použít Ctrl+V, ne ⌘+V — klient nepřeloží ⌘ na Ctrl a do
+# session dorazí holé „V" (napíše se „v" místo vložení). Viz `paste.paste_text`.
+_WINDOWS_TARGET_BUNDLES = {
+    "com.microsoft.rdc.macos",       # Windows App (dřív Microsoft Remote Desktop) / AVD
+    "com.microsoft.rdc.osx",         # starší Microsoft Remote Desktop
+    "com.microsoft.rdc.osx.beta",    # beta kanál
+    "com.citrix.receiver.icaviewer.mac",  # Citrix Workspace
+    "com.vmware.horizon",            # VMware Horizon Client
+    "com.parallels.client",          # Parallels Client (RAS)
+    "com.parallels.desktop.console",  # Parallels Desktop (Windows VM)
+    "com.vmware.fusion",             # VMware Fusion (Windows VM)
+    "org.virtualbox.app.VirtualBoxVM",  # VirtualBox (Windows VM)
+    "com.realvnc.vncviewer",         # VNC na Windows
+    "com.teamviewer.TeamViewer",     # TeamViewer
+    "com.nulana.remotixmac",         # Remotix
+}
+_WINDOWS_TARGET_KEYWORDS = ("windows app", "remote desktop", "citrix", "horizon", "anydesk")
+
+
+def is_windows_target(bundle_id: str | None, app_name: str | None = None) -> bool:
+    """True, když se diktuje do vzdálené/virtuální WINDOWS plochy (RDP/VDI/VM).
+
+    Spillway běží na macOS, ale cílové pole je na Windows — a tam platí jiná
+    klávesová zkratka pro vložení (Ctrl+V). Ověřeno na uživatelově stroji:
+    „Windows App" = `com.microsoft.rdc.macos`.
+    """
+    if bundle_id and bundle_id in _WINDOWS_TARGET_BUNDLES:
+        return True
+    name = (app_name or "").lower()
+    return any(k in name for k in _WINDOWS_TARGET_KEYWORDS)
+
+
 # Prohlížeče, u kterých umíme AppleScriptem zjistit URL aktivní karty
 # (Automation oprávnění, NE Screen Recording — jednorázový systémový dialog).
 _BROWSER_SCRIPTS = {
@@ -201,6 +234,41 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
         except Exception:  # noqa: BLE001
             cgrect_type = 3
 
+    def _focused_frame(focused) -> tuple[float, float, float, float] | None:  # noqa: ANN001
+        """Fallback: rám (pozice+velikost) fokusovaného pole. Když appka neumí
+        přesnou pozici kurzoru (Electron/web), je HUD u pole pořád mnohem lepší
+        než u myši. Vracíme jen horní pruh pole (výška omezená), ať HUD sedí
+        nahoře nad polem, ne uprostřed velké textarey."""
+        try:
+            from ApplicationServices import (
+                kAXPositionAttribute,
+                kAXSizeAttribute,
+                kAXValueCGPointType,
+                kAXValueCGSizeType,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            err1, pos_val = AXUIElementCopyAttributeValue(focused, kAXPositionAttribute, None)
+            err2, size_val = AXUIElementCopyAttributeValue(focused, kAXSizeAttribute, None)
+            if err1 or err2 or pos_val is None or size_val is None:
+                _dbg("fallback: pole nevrací pozici/velikost")
+                return None
+            okp, pt = AXValueGetValue(pos_val, kAXValueCGPointType, None)
+            oks, sz = AXValueGetValue(size_val, kAXValueCGSizeType, None)
+            if not (okp and oks):
+                return None
+            fx, fy = float(pt.x), float(pt.y)
+            fh = float(sz.height)
+            if fh <= 1.0:
+                return None
+            _dbg(f"fallback rám pole=({fx:.0f},{fy:.0f}, h={fh:.0f}) → HUD nad pole")
+            # Předstíráme „kurzor" s malou výškou na horní hraně pole.
+            return (fx, fy, 1.0, min(fh, 22.0))
+        except Exception as exc:  # noqa: BLE001
+            _dbg(f"fallback výjimka: {type(exc).__name__}: {exc}")
+            return None
+
     try:
         system = AXUIElementCreateSystemWide()
         err, focused = AXUIElementCopyAttributeValue(
@@ -213,18 +281,18 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
             focused, kAXSelectedTextRangeAttribute, None
         )
         if err or rng_val is None:
-            _dbg(f"appka nevrací kAXSelectedTextRangeAttribute (err={err})")
-            return None
+            _dbg(f"appka nevrací kAXSelectedTextRangeAttribute (err={err}) → zkouším rám pole")
+            return _focused_frame(focused)
         err, bounds_val = AXUIElementCopyParameterizedAttributeValue(
             focused, bounds_attr, rng_val, None
         )
         if err or bounds_val is None:
-            _dbg(f"appka nepodporuje {bounds_attr} (err={err})")
-            return None
+            _dbg(f"appka nepodporuje {bounds_attr} (err={err}) → zkouším rám pole")
+            return _focused_frame(focused)
         ok, rect = AXValueGetValue(bounds_val, cgrect_type, None)
         if not ok:
-            _dbg("AXValueGetValue selhalo")
-            return None
+            _dbg("AXValueGetValue selhalo → zkouším rám pole")
+            return _focused_frame(focused)
         try:
             x, y = float(rect.origin.x), float(rect.origin.y)
             w, h = float(rect.size.width), float(rect.size.height)
@@ -234,8 +302,8 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
         # Degenerovaný obdélník (typicky Electron/web vrací (0, výška, 0, 0)) →
         # neplatné; kurzor má vždy nenulovou výšku řádku.
         if h <= 1.0:
-            _dbg(f"degenerovaný rect (0,{y},0,0) — appka to jen předstírá")
-            return None
+            _dbg(f"degenerovaný rect (0,{y},0,0) — appka to jen předstírá → zkouším rám pole")
+            return _focused_frame(focused)
         _dbg(f"OK rect=({x:.0f},{y:.0f},{w:.0f},{h:.0f})")
         return (x, y, w, h)
     except Exception as exc:  # noqa: BLE001

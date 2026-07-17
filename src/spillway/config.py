@@ -20,7 +20,7 @@ KEYRING_ACCOUNT = "anthropic"
 
 def get_model() -> str:
     """Model pro AI úpravu (z nastavení v liště). Env SPILLWAY_LLM_MODEL má přednost."""
-    return os.environ.get("SPILLWAY_LLM_MODEL") or settings.get("model", "claude-haiku-4-5")
+    return os.environ.get("SPILLWAY_LLM_MODEL") or settings.get("model", "claude-sonnet-5")
 
 
 def glossary() -> list[str]:
@@ -57,8 +57,37 @@ def get_hotkey() -> tuple[int, str]:
     return (keycode, label)
 
 
+def get_cancel_hotkey() -> tuple[int, str]:
+    """(keycode, název) klávesy, která zruší běžící zpracování diktátu.
+    Výchozí Escape (53). [B17] odolné vůči poškozené hodnotě v settings.json."""
+    try:
+        keycode = int(settings.get("cancel_keycode", 53))
+    except (TypeError, ValueError):
+        keycode = 53
+    label = settings.get("cancel_label", "Escape")
+    if not isinstance(label, str):
+        label = "Escape"
+    return (keycode, label)
+
+
 def _flag(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no")
+
+
+def whisper_hotwords() -> bool:
+    """Předat slovník i Whisperu jako `hotwords` (bias dekodéru)?
+
+    VÝCHOZÍ VYPNUTO. Bias sice pomůže u vzácných termínů, ale na akusticky
+    nejednoznačném místě Whisper termín ze slovníku **vloží, i když nezazněl**
+    (uživatel to zažil: „Domovoy" v přepisu, kde ho neřekl). To porušuje
+    základní pravidlo B1 (nevymýšlet, co uživatel neřekl) přímo na úrovni
+    přepisu, kde už to nikdo nechytí.
+
+    Opravu zkomolenin dělá bezpečně až Claude přes slovník v promptu (ověřeno:
+    „komitnul→commitnul", „repozitáže→repozitáře", „pool request→pull request",
+    a termín ze slovníku si nevymyslí). Zapnout jde přes SPILLWAY_WHISPER_HOTWORDS=1.
+    """
+    return _flag("SPILLWAY_WHISPER_HOTWORDS", "0")
 
 
 def auto_space() -> bool:
@@ -79,12 +108,13 @@ def field_context() -> bool:
 def get_auto_unload_minutes() -> float:
     """[R5] Po kolika minutách nečinnosti uvolnit Whisper model z paměti
     (~1,5–2 GB RAM); znovu se lazy-loadne při dalším diktátu (~1,6 s). 0 = nikdy.
-    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 1 minuta (reload je levný)."""
-    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 1)
+    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 0,25 min (15 s) — nejde na
+    0 s (viz plán): krátká pauza mezi větami by pak platila 1,6s reload pokaždé."""
+    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 0.25)
     try:
         return float(raw)
     except (TypeError, ValueError):
-        return 1.0
+        return 0.25
 
 
 _UNSET = object()

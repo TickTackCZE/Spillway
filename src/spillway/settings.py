@@ -16,7 +16,7 @@ _PATH = os.path.join(_DIR, "settings.json")
 _lock = threading.Lock()
 
 _DEFAULTS: dict = {
-    "model": "claude-haiku-4-5",
+    "model": "claude-sonnet-5",
     "field_context": True,
     "auto_space": True,
     "glossary": [],
@@ -24,7 +24,11 @@ _DEFAULTS: dict = {
     "language": "cs",    # primární jazyk diktování
     "hotkey_keycode": 176,           # nativní diktovací klávesa (viz keymap.py)
     "hotkey_label": "F5 (diktování)",
-    "auto_unload_min": 1,            # [R5] uvolnit Whisper model po N min nečinnosti; reload je levný (~1,6s)
+    # Zrušení běžícího zpracování (šetří tokeny, když jsem nadiktoval blbost).
+    # Potlačí se JEN během zpracování — jinde klávesa funguje normálně.
+    "cancel_keycode": 53,            # Escape
+    "cancel_label": "Escape",
+    "auto_unload_min": 0.25,         # [R5] uvolnit Whisper model po N min nečinnosti (15s); reload je levný (~1,6s)
 }
 
 

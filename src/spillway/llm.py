@@ -1,4 +1,4 @@
-"""AI úprava a formátování přepisu přes Claude API (Haiku 4.5).
+"""AI úprava a formátování přepisu přes Claude API (výchozí Sonnet 5).
 
 Nejen korektura, ale i **formátování dle cílové aplikace** (profil): e-mail,
 chat, editor/kód, obecné. Volitelně dostane i text, který už je v poli před
@@ -12,53 +12,71 @@ Chování při chybě (O6): `clean` výjimku PROPAGUJE — volající vloží sy
 
 from __future__ import annotations
 
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-sonnet-5"
 
 # Modely s adaptivním myšlením zapnutým by default → u korektury ho vypneme.
 _THINKING_ON = ("claude-sonnet-5", "claude-opus-4", "claude-fable-5")
 
 _PROFILE_GUIDANCE = {
     "email": (
-        "Cíl je E-MAIL. Uprav text do souvislých vět a odstavců vhodných do e-mailu, "
-        "zdvořilý ale přirozený tón. Nepřidávej oslovení, pozdrav ani podpis, pokud je "
-        "uživatel nenadiktoval. Pokud je v poli už rozepsaný e-mail, navaž na jeho tón a "
-        "NEopakuj oslovení/pozdrav, který tam už je."
+        "Cíl: E-MAIL — o stupeň uhlazenější a strukturuj do řádků, NE do jednoho řádku:\n"
+        "  • oslovení na samostatný řádek, za ním PRÁZDNÝ řádek. Když uživatel oslovení "
+        "nadiktoval (Ahoj Jano…), použij ho; když ne, dej výchozí „Dobrý den,“;\n"
+        "  • tělo v odstavcích, mezi odstavci prázdný řádek;\n"
+        "  • zakončení na samostatný řádek oddělený prázdným řádkem. Když uživatel zakončení "
+        "nadiktoval (Děkuji / Měj se…), použij ho; když ne, dej výchozí „S pozdravem“;\n"
+        "  • podpis (jméno) přidej na řádek pod zakončení JEN když ho uživatel nadiktoval — "
+        "jméno si NIKDY nevymýšlej.\n"
+        "Když je v poli rozepsaný e-mail, navaž a neopakuj oslovení/zakončení, které tam už je."
     ),
     "chat": (
-        "Cíl je CHATOVÁ ZPRÁVA (Slack/Discord/Zprávy). Krátce a neformálně, bez formalit, "
-        "oslovení a podpisů. Zachovej ležérní tón."
+        "Cíl: CHAT/SMS — krátce, neformálně, bez oslovení a podpisů. Hovorový tón nech přesně "
+        "takový, jaký zazněl."
     ),
     "code": (
-        "Cíl je pole v EDITORU/TERMINÁLU — nejspíš prompt, komentář nebo poznámka. Uprav do "
-        "jasné souvislé prózy. Technické termíny zachovej přesně a nepřekládej je."
+        "Cíl: EDITOR/TERMINÁL — jasná próza, technické termíny přesně a bez překladu."
     ),
     "ai": (
-        "Cíl je PROMPT DO AI ASISTENTA (Claude/ChatGPT). Zformuluj to jako jasnou, "
-        "srozumitelnou instrukci nebo dotaz — strukturuj, pokud diktovaný text obsahuje "
-        "více oddělených požadavků nebo kroků. Zachovej všechna zadaná fakta a požadavky "
-        "beze změny významu, jen je uspořádej srozumitelněji."
+        "Cíl: PROMPT PRO AI ASISTENTA. Tady NEJDE o věrný záznam řeči, ale o ÚČINNÝ PROMPT — "
+        "text aktivně přepiš z mluvené podoby do stručného věcného zadání (přeformulovat SMÍŠ "
+        "a máš):\n"
+        "  • bezezbytku vyhoď řečové vycpávky a tiky, i uvnitř vět: „jako“, „jakoby“, „prostě“, "
+        "„třeba“, „nějak(ý)“, „no“, „takovej“, „chápeš to?“, „že jo“;\n"
+        "  • co zaznělo víckrát nebo dokola, řekni JEDNOU;\n"
+        "  • mluvenou vatu převeď na věcnou formulaci (zadáváš úkol, nevyprávíš);\n"
+        "  • strukturu (odstavce/odrážky/seznam) podle pravidel FORMÁT níže.\n"
+        "ALE: žádný požadavek, fakt ani detail nevynechávej a nic si nepřidávej — jen to řekni "
+        "stručně a jasně."
     ),
-    "generic": "Uprav do čisté souvislé prózy se správnou interpunkcí.",
+    "generic": "Cíl: běžný text — lehká korektura, tón a formálnost nech jak zazněly.",
 }
 
-_SYSTEM_TEMPLATE = """Jsi asistent, který upravuje a formátuje diktovaný text (syrový přepis z Whisperu) před vložením do aplikace: {app}.
+_SYSTEM_TEMPLATE = """Jsi korektor diktovaného textu. Dostaneš syrový přepis řeči (Whisper) a vrátíš ho vyčištěný k vložení do aplikace: {app}. Upravuješ LEHCE — čistíš, nepřepisuješ.
 
 {profile}
 
-Pokud diktovaný text obsahuje mluvený METAPOKYN o formátu, tónu nebo cíli (např. „toto je e-mail", „piš to formálně", „to bude prompt pro AI", „neformálně", „krátce", „jako SMS") — řiď se jím místo (nebo navíc k) profilu výše. Metapokyn samotný do výsledného textu NEZAHRNUJ, mluví k tobě, není to obsah.
+Mluvený METAPOKYN o formátu/tónu/cíli („toto je e-mail", „formálně", „udělej odrážky") splň a do výstupu ho nezahrnuj — mluví k tobě, není to obsah.
 
-Vždy platí:
-- Doplň interpunkci, velká písmena a oprav gramatickou shodu (pády, koncovky, rod, číslo).
-- Odstraň výplňová slova a zaškobrtnutí řeči („ehm", „éé", vycpávkové „no", zdvojené začátky vět).
-- Oprav foneticky zkomolené ANGLICKÉ technické termíny, když je správný tvar zřejmý z kontextu (např. „sommitnul" → „commitnul", „pool request" → „pull request"). Nepřekládej je do češtiny.
-- Smíš přeuspořádat věty a upravit formátování pro cílovou aplikaci.
+UPRAV:
+- interpunkci, velká písmena, gramatickou shodu (pády, koncovky, rod, číslo);
+- pryč s vycpávkami a zaškobrtnutími („ehm", „éé", vycpávkové „no/jako/prostě", zdvojené začátky vět); co zaznělo dvakrát, řekni jednou;
+- zjevně zkomolené anglické termíny oprav („pool request" → „pull request"); nepřekládej je.
 
-PŘÍSNÉ ZÁKAZY:
-- NEVYMÝŠLEJ fakta, jména, čísla ani obsah, který uživatel nenadiktoval.
-- NEHÁDEJ význam přeslechu — když nevíš JISTĚ, co slovo mělo být, nech ho beze změny (radši divné slovo než domyšlená náhrada).
-- Zachovej všechna nadiktovaná fakta a jejich význam.
+ZACHOVEJ (přísně):
+- všechna fakta, jména, čísla a požadavky — nic si nevymýšlej a nic nevynechávej;
+- význam a registr — slang i vulgarismy („jdu se ožrat" zůstane „jdu se ožrat"); nikdy necenzuruj, nezjemňuj, nemoralizuj;
+- osobu a perspektivu — oznámení zůstane oznámením, otázka otázkou;
+- slovo, kterým si nejsi JISTÝ, nech doslova beze změny — NEHÁDEJ, co asi mělo zaznít; divné slovo je lepší než domyšlená náhrada;
+- uživatelovy formulace nepřepisuj do synonym — **výjimka: když si přeformulování výslovně žádá Cíl výše** (prompt pro AI), tam se drž Cíle.
+
+FORMÁT (podle obsahu, ne na sílu):
+- 3–4+ vět nebo víc myšlenek → odstavce oddělené prázdným řádkem, jedna myšlenka = jeden odstavec; delší text nikdy nenech jako jeden blok;
+- kroky, postup, pořadí → číslovaný seznam;
+- 3+ souběžných položek (i z jedné věty) → odrážky pod krátkou uvozovací větou;
+- krátká zpráva (1–2 věty) → plynulý text bez struktury;
+- neroztrhávej, co patří k sobě.
 {context}
-Vrať POUZE výsledný text k vložení, bez uvozovek a bez jakéhokoli komentáře."""
+Vrať jen výsledný text k vložení, bez uvozovek a bez komentáře."""
 
 
 class Cleaner:
@@ -67,6 +85,11 @@ class Cleaner:
 
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
+        # Korektura má být deterministická (temperature=0) — výchozí 1.0 způsobovala
+        # náhodné „kreativní" záměny slov. Novější modely (Sonnet 5+) ale parametr
+        # odmítají jako deprecated → u známých rovnou neposílat; u ostatních
+        # fallback po prvním 400 (viz clean()).
+        self._supports_temperature = not any(model.startswith(m) for m in _THINKING_ON)
 
     def clean(
         self,
@@ -114,13 +137,32 @@ class Cleaner:
         kwargs: dict = {}
         if any(self.model.startswith(m) for m in _THINKING_ON):
             kwargs["thinking"] = {"type": "disabled"}
-        resp = self.client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user_content}],
-            **kwargs,
-        )
+        if self._supports_temperature:
+            kwargs["temperature"] = 0.0
+
+        import anthropic
+
+        try:
+            resp = self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user_content}],
+                **kwargs,
+            )
+        except anthropic.BadRequestError as exc:
+            if "temperature" not in str(exc) or "temperature" not in kwargs:
+                raise
+            # Model temperature nepodporuje → zapamatovat a zopakovat bez ní.
+            self._supports_temperature = False
+            kwargs.pop("temperature")
+            resp = self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user_content}],
+                **kwargs,
+            )
         # [B15] Uříznutá odpověď → radši vyhodit chybu, ať volající vloží raw přepis
         # (O6: neztratit text), místo tichého vložení půlky věty.
         if getattr(resp, "stop_reason", None) == "max_tokens":

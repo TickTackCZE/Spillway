@@ -14,10 +14,11 @@ Vyžaduje oprávnění: Microphone, Input Monitoring, Accessibility.
 from __future__ import annotations
 
 import signal
+import sys
 import threading
 import time
 
-from . import config, context
+from . import config, context, stats
 from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner
@@ -25,6 +26,45 @@ from .paste import paste_text
 from .transcribe import Transcriber
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
+
+# Minimální doba, po kterou „Ruším" zůstane v HUD i poté, co pipeline doběhne.
+# Jen proti probliknutí u okamžitého zrušení — hlavní podmínkou je běžící stav
+# (viz `is_cancelling`), ne časovač.
+CANCEL_MIN_VISIBLE_S = 0.6
+
+
+def _setup_logging() -> str | None:
+    """Ve zabalené .app (bez terminálu) není kam psát print() — přesměruj
+    stdout/stderr do logu, ať je appka diagnostikovatelná. Vrátí cestu k logu."""
+    import os
+
+    log_dir = os.path.expanduser("~/Library/Logs/Spillway")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "spillway.log")
+        # line-buffered, ať se zápisy objeví hned (ne až po pádu)
+        f = open(log_path, "a", buffering=1, encoding="utf-8")
+        # Přesměruj jen ve frozen buildu; při vývoji chceme vidět terminál.
+        if getattr(sys, "frozen", False):
+            sys.stdout = f
+            sys.stderr = f
+        import datetime
+
+        print(f"\n===== Spillway start {datetime.datetime.now():%Y-%m-%d %H:%M:%S} =====")
+        return log_path
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _log_permission_diagnostics() -> None:
+    """Zapiš do logu, jestli má proces Accessibility a jaká je jeho identita —
+    ground truth pro ladění mrtvého event tapu (B23)."""
+    try:
+        from ApplicationServices import AXIsProcessTrusted
+
+        print(f"🔐 AXIsProcessTrusted (Zpřístupnění): {AXIsProcessTrusted()}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"🔐 AXIsProcessTrusted nelze zjistit: {exc}")
 
 
 def notify(title: str, message: str) -> None:
@@ -44,6 +84,18 @@ class Controller:
         self.transcriber = Transcriber()  # načte model (chvíli trvá)
         self.state = IDLE
         self._lock = threading.Lock()
+        # Zrušení běžícího zpracování (Escape) — šetří tokeny i čekání, když
+        # uživatel po puštění klávesy zjistí, že nadiktoval nesmysl.
+        self._cancel = threading.Event()
+        # Dokdy (monotonic) držet „Ruším" i po doběhnutí pipeline — jen proti
+        # probliknutí; hlavní podmínka je běžící stav (viz `is_cancelling`).
+        self._cancel_min_until = 0.0
+        # [F5] Bod, za kterým už rušit nejde — vkládání běží (0,25–1,2 s kvůli
+        # sleepům). Escape po něm nesmí spolknout klávesu ani označit hotový
+        # diktát za zrušený.
+        self._pasting = False
+        # [F2] Vlákno, které otevírá mikrofon; `_process` na něj počká.
+        self._start_thread: threading.Thread | None = None
 
         # [F2/F3] AI úprava přes Claude — konfigurovatelná za běhu z menu.
         self.raw_mode = raw_mode
@@ -78,6 +130,37 @@ class Controller:
     def set_language(self, language: str) -> None:
         self.language = language
 
+    def request_cancel(self) -> bool:
+        """Zruší běžící nahrávání/zpracování. Vrací True, když bylo co rušit —
+        podle toho tap pozná, jestli má klávesu spolknout (jinde musí Escape
+        fungovat normálně). Volá se z vlákna tapu → drž to triviální."""
+        with self._lock:
+            # [F5] Už se vkládá → pozdě. Vrátit False, ať Escape projde do
+            # systému normálně a diktát se nezapíše jako zrušený.
+            if self.state == IDLE or self._pasting:
+                return False
+        self._cancel.set()
+        self._cancel_min_until = time.monotonic() + CANCEL_MIN_VISIBLE_S
+        print("🚫 ruším… (nic se nevloží)")
+        return True
+
+    def is_cancelling(self) -> bool:
+        """True, dokud má HUD ukazovat „Ruším".
+
+        Drží se BĚŽÍCÍHO stavu, ne časovače: Whisper ani volání Claude nejdou
+        přerušit uprostřed, takže po Escape ještě chvíli dobíhají — a po celou
+        tu dobu musí HUD říkat „Ruším", ne se vrátit na „Zpracovávám".
+        """
+        if not self._cancel.is_set():
+            return False
+        with self._lock:
+            if self._pasting:
+                return False  # [F5] vkládá se → rušení už neplatí
+            if self.state != IDLE:
+                return True  # pipeline ještě dobíhá → pořád rušíme
+        # Doběhlo — krátký dojezd, ať hláška neproblikne u okamžitého zrušení.
+        return time.monotonic() < self._cancel_min_until
+
     def on_press(self) -> None:
         with self._lock:
             if self.state != IDLE:
@@ -86,11 +169,34 @@ class Controller:
                 print(f"⏳ zaneprázdněno ({self.state}) — počkej na dokončení.")
                 return
             self.state = RECORDING
+        self._cancel.clear()  # nový diktát → zahodit staré zrušení
+        self._cancel_min_until = 0.0  # ať „Ruším" nepřebíjí nové „Nahrávám"
         print("🔴 nahrávám… (drž F5)")
-        self.recorder.start()
+        # [F2] `recorder.start()` otevírá vstupní zařízení — u Bluetooth mikrofonu
+        # (přepnutí do HFP) i stovky ms až sekundu. Na vlákně tapu by to hrozilo
+        # `kCGEventTapDisabledByTimeout` → ztracený key-up a nepotlačené F5.
+        # Stejný důvod jako B9 u `stop()`; stav je nastavený, takže HUD naskočí hned.
+        # POZOR: `_process` si na tohle vlákno musí počkat (join) — Recorder
+        # nechrání životní cyklus streamu, takže `stop()` před dokončeným
+        # `start()` by nechal mikrofon otevřený napořád (viz B2).
+        self._start_thread = threading.Thread(target=self._start_recording, daemon=True)
+        self._start_thread.start()
         # [B7] Watchdog: kdyby se ztratil key-up (spánek, lock, Secure Input),
         # po max_seconds nahrávání vynuceně ukončíme, ať appka nezůstane v RECORDING.
         self._arm_watchdog()
+
+    def _start_recording(self) -> None:
+        """[F2] Otevření mikrofonu na worker vlákně (ne na tapu). Když uživatel
+        stihne pustit klávesu dřív, než se stream otevře, `stop()` v `_process`
+        stejně proběhne až po nás — pořadí drží zámek uvnitř Recorderu."""
+        try:
+            self.recorder.start()
+        except Exception as exc:  # noqa: BLE001 — [O6] viditelná chyba, ne tichý pád
+            print(f"❌ mikrofon se nepodařilo spustit: {exc}")
+            notify("Mikrofon nedostupný", "Nahrávání se nepodařilo spustit.")
+            with self._lock:
+                self.state = IDLE
+            self._cancel_watchdog()
 
     def _arm_watchdog(self) -> None:
         self._cancel_watchdog()
@@ -121,15 +227,33 @@ class Controller:
         threading.Thread(target=self._process, daemon=True).start()
 
     def _process(self) -> None:
+        t_start = time.perf_counter()
+        audio_secs = 0.0
+        raw = ""
+        text = ""
+        app_name = None
+        domain = None
+        profile = "generic"
+        outcome = "error"  # přepíše se, jakmile víme, jak to dopadlo
         try:
+            # [F2] Počkat, až doběhne otevírání mikrofonu — jinak by `stop()`
+            # mohl proběhnout dřív než `start()` a stream by zůstal viset otevřený.
+            starter = getattr(self, "_start_thread", None)
+            if starter is not None:
+                starter.join(timeout=5.0)
             audio = self.recorder.stop()  # [B9] těžké volání až tady, na workeru
+            audio_secs = len(audio) / 16000.0
+            if self._cancel.is_set():
+                outcome = "cancelled"
+                return  # zrušeno ještě před přepisem → nula tokenů, nula práce
             # [F2/F3] kontext: aktivní aplikace, profil formátování, obsah pole.
             app_name, bundle = context.frontmost_app()
             profile = context.app_profile(bundle, app_name)
+            # Vzdálená Windows plocha (RDP/AVD) → vkládá se Ctrl+V, ne ⌘+V.
+            win_target = context.is_windows_target(bundle, app_name)
             field_text, caret = context.focused_field()  # lokální AX čtení
 
             # Prohlížeč: doména aktivní karty (AppleScript/Automation) může upřesnit profil.
-            domain = None
             if config.field_context():
                 browser_profile, domain = context.browser_context(bundle)
                 if browser_profile:
@@ -139,14 +263,26 @@ class Controller:
             secs = len(audio) / 16000.0
             if not self.transcriber.is_loaded:
                 print("💤→🔄 model byl uvolněný z paměti, znovu se načítá…")
-            print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_ctx} · profil: {profile})")
+            win_note = " · Windows (Ctrl+V)" if win_target else ""
+            print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_ctx} · profil: {profile}{win_note})")
             t0 = time.perf_counter()
-            raw = self.transcriber.transcribe(audio, language=self.language)
+            # Slovník do Whisperu (hotwords) jen když si o to uživatel řekne —
+            # výchozí VYPNUTO, protože bias vkládá termíny, které nezazněly
+            # (viz config.whisper_hotwords). Zkomoleniny opraví bezpečně Claude.
+            raw = self.transcriber.transcribe(
+                audio,
+                language=self.language,
+                hotwords=self.glossary if config.whisper_hotwords() else None,
+            )
             dt = time.perf_counter() - t0
             if not raw:
                 print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")
+                outcome = "empty"
                 return
             print(f"📝 přepis ({dt:.1f} s): {raw!r}")
+            if self._cancel.is_set():
+                outcome = "cancelled"
+                return  # zrušeno po přepisu → ušetří se aspoň volání Claude
 
             text = raw
             if self.cleaner is not None:
@@ -185,19 +321,43 @@ class Controller:
             ):
                 text = " " + text
 
-            paste_text(text)
+            # [F5] Poslední šance zrušit. Za tímhle bodem už se vkládá a rušit
+            # nejde — `_pasting` zajistí, že Escape projde normálně dál a diktát
+            # se nezapíše jako zrušený.
+            with self._lock:
+                if self._cancel.is_set():
+                    outcome = "cancelled"
+                    return
+                self._pasting = True
+            paste_text(text, windows_target=win_target)
+            outcome = "pasted"
         except Exception as exc:  # noqa: BLE001
             print(f"❌ chyba v pipeline: {exc}")
             notify("Chyba při vkládání", "Diktát se nepodařilo zpracovat/vložit.")
+            outcome = "error"
         finally:
+            # Statistiky („kolik jsem ušetřil") — best-effort, nikdy neshodí pipeline.
+            # [F6] `outcome` rozliší skutečný diktát od prázdného/zrušeného/pádu,
+            # ať se do statistik nepočítá, co nic nevložilo.
+            stats.record(
+                raw=raw,
+                final=text,
+                app=app_name,
+                domain=domain,
+                profile=profile,
+                audio_seconds=audio_secs,
+                process_seconds=time.perf_counter() - t_start,
+                outcome=outcome,
+            )
             with self._lock:
+                self._pasting = False
                 self.state = IDLE
 
 
 def main() -> None:
-    import sys
-
     from . import lifecycle
+
+    log_path = _setup_logging()
 
     # [B5] Single-instance zámek — druhá instance by měla dva event tapy,
     # dva mikrofony a 2× Whisper model. Když už běží, skonči.
@@ -206,19 +366,35 @@ def main() -> None:
         print("Spillway už běží (jiná instance). Končím.")
         return
 
+    _log_permission_diagnostics()
+
     raw_mode = "--raw" in sys.argv
     print(f"Spillway — načítám model (chvíli to trvá)…{'  [raw režim]' if raw_mode else ''}")
     controller = Controller(raw_mode=raw_mode)
     keycode, key_label = config.get_hotkey()
+
+    def _on_tap_failed(msg: str) -> None:
+        # POZOR: tohle běží na vlákně tapu JEŠTĚ NEŽ naběhne NSApplication run loop,
+        # takže rumps.notification by tady tiše zmizela (to byl původní bug B23).
+        # Uživateli to proto ukáže až tray přes `listener.tap_ok` po startu run loopu.
+        print(f"❌ {msg}")
+
+    cancel_keycode, cancel_label = config.get_cancel_hotkey()
     listener = HotkeyListener(
         keycode=keycode,
         on_press=controller.on_press,
         on_release=controller.on_release,
         suppress=True,
+        on_tap_failed=_on_tap_failed,
+        cancel_keycode=cancel_keycode,
+        on_cancel_key=controller.request_cancel,
     )
     controller.hotkey_listener = listener  # settings okno k němu potřebuje přístup
     listener.start()
-    print(f"✅ Připraveno. Drž {key_label}, mluv česky, pusť → text se vloží.")
+    print(
+        f"✅ Připraveno. Drž {key_label}, mluv česky, pusť → text se vloží. "
+        f"({cancel_label} během zpracování = zrušit)"
+    )
 
     try:
         # [F3] menu bar ikona se stavem (🎙️/🔴/⏳). run() blokuje na main threadu.

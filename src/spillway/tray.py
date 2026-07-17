@@ -13,7 +13,7 @@ from __future__ import annotations
 import rumps
 
 from . import config
-from .app import PROCESSING, RECORDING
+from .app import IDLE, PROCESSING, RECORDING
 
 _BAR_ICON = "🎙️"  # placeholder; Spillway logo přijde s .app bundlem (ikonové assety)
 
@@ -47,6 +47,10 @@ class SpillwayTray(rumps.App):
         # Okno nastavení (Domovoy design) — vytvoří se líně při prvním otevření.
         self._settings = None
 
+        # Varovná položka (skrytá, dokud nezjistíme mrtvý event tap — B23).
+        self._warn_item = rumps.MenuItem(
+            "⚠️ Klávesa nefunguje — povol oprávnění", callback=self._open_privacy
+        )
         self.menu = [
             rumps.MenuItem("Nastavení…", callback=self.open_settings),
             None,
@@ -56,9 +60,49 @@ class SpillwayTray(rumps.App):
         self._timer = rumps.Timer(self._tick, 0.15)
         self._timer.start()
 
+        # [B23] Jednorázová kontrola stavu event tapu AŽ po startu run loopu —
+        # dřív se notifikace o mrtvém tapu posílala moc brzy a tiše mizela.
+        self._tap_checked = False
+        self._tapcheck_timer = rumps.Timer(self._check_tap, 1.0)
+        self._tapcheck_timer.start()
+
         # [R5] Periodicky uvolnit Whisper model po nečinnosti (~1,5–2 GB RAM).
-        self._unload_timer = rumps.Timer(self._check_unload, 30)
+        # Kontrola po 5 s, ať uvolnění nezpozdí víc než samotný idle práh.
+        self._unload_timer = rumps.Timer(self._check_unload, 5)
         self._unload_timer.start()
+
+    def _check_tap(self, _sender) -> None:  # noqa: ANN001
+        listener = getattr(self.controller, "hotkey_listener", None)
+        if listener is None or listener.tap_ok is None:
+            return  # ještě nevíme (tap se zakládá na jiném vlákně) — zkusíme za 1 s
+        self._tap_checked = True
+        self._tapcheck_timer.stop()
+        if listener.tap_ok is False:
+            # Trvale viditelné: notifikace + položka v menu + vykřičník v liště.
+            rumps.notification(
+                "Spillway", "Klávesa nefunguje",
+                "Chybí Zpřístupnění / Monitorování vstupu. Klikni v menu na ⚠️.",
+            )
+            if self._warn_item.title not in self.menu:
+                self.menu.insert_before("Nastavení…", self._warn_item)
+            try:
+                if not getattr(self, "template", False):
+                    self.title = "🎙️⚠️"
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"⚠️ {listener.tap_error}")
+
+    def _open_privacy(self, _sender) -> None:  # noqa: ANN001
+        """Otevře přímo Nastavení systému → Soukromí → Zpřístupnění."""
+        import subprocess
+
+        try:
+            subprocess.Popen([
+                "open",
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            ])
+        except Exception:  # noqa: BLE001
+            pass
 
     def _check_unload(self, _sender) -> None:  # noqa: ANN001
         try:
@@ -66,14 +110,40 @@ class SpillwayTray(rumps.App):
                 return  # neuvolňovat uprostřed nahrávání/zpracování
             idle_min = config.get_auto_unload_minutes()
             if self.controller.transcriber.unload_if_idle(idle_min * 60):
-                print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_min:.0f} min).")
+                print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_min * 60:.0f} s).")
         except Exception:  # noqa: BLE001
             pass
 
+    def _refresh_stats_when_done(self) -> None:
+        """Po dokončení diktátu obnovit kartu Statistiky, je-li okno otevřené.
+
+        `stats.record` zapíše data hned, ale okno se plní jen při `ready` (tj.
+        při prvním načtení HTML) — bez tohohle by čísla naskočila až po zavření
+        a znovuotevření nastavení. Běží z rumps.Timeru = main thread, takže
+        `evaluateJavaScript` je bezpečné.
+        """
+        state = getattr(self.controller, "state", IDLE)
+        prev = getattr(self, "_prev_state", state)
+        self._prev_state = state
+        if state != IDLE or prev == IDLE:
+            return  # zajímá nás jen přechod „něco běželo" → hotovo
+        win = self._settings
+        if win is not None and win.is_visible():
+            win.refresh()
+
     def _tick(self, _sender) -> None:  # noqa: ANN001
+        try:
+            self._refresh_stats_when_done()
+        except Exception:  # noqa: BLE001 — statistika nesmí rozbít HUD
+            pass
         if self.hud is None:
             return
         try:
+            # „Ruším" má přednost nad stavem — dokud rušení nedoběhne, nesmí se
+            # HUD vrátit na „Zpracovávám" (Whisper/Claude nejdou přerušit hned).
+            if self.controller.is_cancelling():
+                self.hud.show("cancel")
+                return
             state = self.controller.state
             if state == RECORDING:
                 self.hud.show("rec")

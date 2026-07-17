@@ -10,16 +10,23 @@ konfigurační soubory faster_whisper/ctranslate2.
 
 import os
 
+from PyInstaller.utils.hooks import collect_data_files
+
 block_cipher = None
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(SPEC)))
 SRC = os.path.join(ROOT, "src")
 
+# faster_whisper si nese nekódové assety — hlavně silero_vad_v6.onnx (VAD model
+# pro vad_filter=True v transcribe.py). Bez nich přepis spadne za běhu
+# (ONNXRuntimeError NO_SUCHFILE). PyInstaller je z importů neodvodí → přibalit ručně.
+_datas = collect_data_files("faster_whisper")
+
 a = Analysis(
     [os.path.join(ROOT, "run_spillway.py")],
     pathex=[SRC],
     binaries=[],
-    datas=[],
+    datas=_datas,
     hiddenimports=[
         # pyobjc frameworky použité napříč moduly — PyInstaller je z importů
         # samotných často nedokáže odvodit (dynamické načítání bridge kódu).

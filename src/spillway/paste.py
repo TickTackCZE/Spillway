@@ -18,6 +18,7 @@ from Quartz import (
     CGEventPost,
     CGEventSetFlags,
     kCGEventFlagMaskCommand,
+    kCGEventFlagMaskControl,
     kCGHIDEventTap,
 )
 
@@ -26,6 +27,10 @@ NSPASTEBOARD_CONCEALED = "org.nspasteboard.ConcealedType"
 V_KEYCODE = 9  # ANSI pozice "V"
 
 DEFAULT_SETTLE_S = 0.25
+# Vzdálená Windows plocha (RDP/VDI): schránka se do session přenáší po síti přes
+# rdpclip — potřebuje víc času než lokální vložení, jinak by Ctrl+V vložil ještě
+# starý obsah vzdálené schránky.
+REMOTE_SETTLE_S = 0.6
 
 
 def _write(pb: NSPasteboard, text: str, transient: bool) -> int:
@@ -40,10 +45,16 @@ def _write(pb: NSPasteboard, text: str, transient: bool) -> int:
     return pb.changeCount()
 
 
-def _cmd_v() -> None:
+def _paste_keystroke(windows_target: bool = False) -> None:
+    """Pošle ⌘+V (macOS), nebo Ctrl+V při diktování do vzdálené Windows plochy.
+
+    RDP klienti (Windows App / AVD) syntetické ⌘+V NEpřeloží na Ctrl — do session
+    dorazí holé „V" a místo vložení se napíše „v". Ctrl+V projde správně.
+    """
+    flags = kCGEventFlagMaskControl if windows_target else kCGEventFlagMaskCommand
     for pressed in (True, False):
         ev = CGEventCreateKeyboardEvent(None, V_KEYCODE, pressed)
-        CGEventSetFlags(ev, kCGEventFlagMaskCommand)
+        CGEventSetFlags(ev, flags)
         CGEventPost(kCGHIDEventTap, ev)
 
 
@@ -79,16 +90,37 @@ def _restore(pb: NSPasteboard, snapshot) -> None:
         pb.writeObjects_(new_items)
 
 
-def paste_text(text: str, *, settle_s: float = DEFAULT_SETTLE_S, restore: bool = True) -> None:
+def paste_text(
+    text: str,
+    *,
+    settle_s: float | None = None,
+    restore: bool = True,
+    windows_target: bool = False,
+) -> None:
     """Vloží `text` do právě zaměřeného pole a (volitelně) obnoví schránku
-    (vč. ne-textového obsahu). Vyžaduje Accessibility (jinak CGEventPost tiše selže)."""
+    (vč. ne-textového obsahu). Vyžaduje Accessibility (jinak CGEventPost tiše selže).
+
+    `windows_target=True` (vzdálená Windows plocha přes RDP/VDI) → Ctrl+V místo
+    ⌘+V a delší čekání na síťovou synchronizaci schránky.
+    """
     if not text:
         return
+    if settle_s is None:
+        settle_s = DEFAULT_SETTLE_S
     pb = NSPasteboard.generalPasteboard()
+
+    # [F9] U vzdálené plochy schránku NEOBNOVUJEME. rdpclip si obsah stahuje
+    # opožděně (delayed rendering) — kdybychom lokální schránku vrátili zpátky
+    # dřív, než si ho vzdálená strana vyzvedne, vložil by se do Windows STARÝ
+    # text. Tiché a matoucí selhání; ztráta transient obsahu schránky je menší zlo.
+    restore = restore and not windows_target
     snapshot = _backup(pb) if restore else []
 
     change_after_write = _write(pb, text, transient=True)
-    _cmd_v()
+    if windows_target:
+        # Dát rdpclip čas přenést schránku do session, teprve pak Ctrl+V.
+        time.sleep(REMOTE_SETTLE_S)
+    _paste_keystroke(windows_target=windows_target)
     time.sleep(settle_s)
 
     # Obnovit jen když schránku mezitím nepřepsal někdo jiný (clipboard manager).

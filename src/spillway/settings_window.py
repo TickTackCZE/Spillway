@@ -28,7 +28,7 @@ from WebKit import WKWebView, WKWebViewConfiguration
 
 from PyObjCTools import AppHelper
 
-from . import autostart, config, design, keymap, settings
+from . import autostart, config, design, keymap, settings, stats
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 
 _LOGO = design.logo_svg(color="#818CF8", width=30, height=30, drops=False)
@@ -86,12 +86,43 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 </style></head><body>
   <div class="head">__LOGO__<div><div class="name">SPILLWAY</div><div class="sub">Nastavení</div></div></div>
 
-  <div class="card"><h3>Klávesa (hold-to-talk)</h3>
-    <div class="rowt" style="border:none;padding:0;">
-      <div class="l" id="hotkeyLabel">F5</div>
-      <button class="btn" id="hotkeyBtn" onclick="recordHotkey()">Změnit</button>
+  <div class="card"><h3>Klávesy</h3>
+    <div class="rowt">
+      <div class="l">Diktování<small>Podrž, mluv, pusť → text se vloží</small></div>
+      <div class="field" style="width:auto;align-items:center;gap:8px;">
+        <span class="l" id="hotkeyLabel" style="color:var(--accent);font-weight:600;">F5</span>
+        <button class="btn" id="hotkeyBtn" onclick="recordHotkey()">Změnit</button>
+      </div>
     </div>
-    <div class="hint">Podrž klávesu, mluv a pusť ji. Klikni na Změnit a stiskni novou klávesu (funguje kdekoliv v systému).</div>
+    <div class="rowt">
+      <div class="l">Zrušit zpracování<small>Zahodí diktát dřív, než se zaplatí AI úprava</small></div>
+      <div class="field" style="width:auto;align-items:center;gap:8px;">
+        <span class="l" id="cancelLabel" style="color:var(--accent);font-weight:600;">Escape</span>
+        <button class="btn" id="cancelBtn" onclick="recordCancel()">Změnit</button>
+      </div>
+    </div>
+    <div class="hint">Klikni na Změnit a stiskni novou klávesu (funguje kdekoliv v systému). Rušicí klávesa se spolkne jen během zpracování — jinde funguje normálně.</div>
+  </div>
+
+  <div class="card"><h3>Statistiky</h3>
+    <div id="statsEmpty" class="hint" style="margin:0;">Zatím žádný diktát — až budeš diktovat, uvidíš tu, kolik času jsi ušetřil.</div>
+    <div id="statsBody" style="display:none;">
+      <div class="rowt">
+        <div class="l">Ušetřený čas<small id="statsSavedSub">oproti psaní na klávesnici</small></div>
+        <div class="l" id="statsSaved" style="color:var(--accent);font-weight:600;">—</div>
+      </div>
+      <div class="rowt">
+        <div class="l">Diktátů<small id="statsWords">—</small></div>
+        <div class="l" id="statsCount" style="font-weight:600;">—</div>
+      </div>
+      <div class="rowt" id="statsPromptRow">
+        <div class="l">Zhuštění promptů<small>O kolik se diktát zkrátil do AI (profil „ai“)</small></div>
+        <div class="l" id="statsPrompt" style="color:var(--accent);font-weight:600;">—</div>
+      </div>
+      <div class="rowt" id="statsAppsRow" style="border:none;">
+        <div class="l">Nejčastěji<small id="statsApps">—</small></div>
+      </div>
+    </div>
   </div>
 
   <div class="card"><h3>Model úpravy</h3>
@@ -145,14 +176,46 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     document.getElementById('hotkeyLabel').textContent = '…';
     send({action:'record_hotkey'});
   }
-  function applyHotkey(h){
-    document.getElementById('hotkeyBtn').textContent = 'Změnit';
-    document.getElementById('hotkeyBtn').disabled = false;
-    document.getElementById('hotkeyLabel').textContent = h.label;
+  function recordCancel(){
+    document.getElementById('cancelBtn').textContent = 'Stiskni klávesu…';
+    document.getElementById('cancelBtn').disabled = true;
+    document.getElementById('cancelLabel').textContent = '…';
+    send({action:'record_cancel'});
   }
-  function cancelHotkey(){
-    document.getElementById('hotkeyBtn').textContent = 'Změnit';
-    document.getElementById('hotkeyBtn').disabled = false;
+  // `which` = 'hotkey' | 'cancel' — jeden pár funkcí pro obě klávesy.
+  function applyHotkey(h){
+    var which = h.which || 'hotkey';
+    document.getElementById(which+'Btn').textContent = 'Změnit';
+    document.getElementById(which+'Btn').disabled = false;
+    document.getElementById(which+'Label').textContent = h.label;
+  }
+  function cancelHotkey(which){
+    which = which || 'hotkey';
+    document.getElementById(which+'Btn').textContent = 'Změnit';
+    document.getElementById(which+'Btn').disabled = false;
+  }
+  // [F3] Obě klávesy nesmí být stejné — vrátíme tlačítko a krátce to vysvětlíme.
+  function rejectHotkey(which){
+    var b = document.getElementById(which+'Btn');
+    b.textContent = 'Už je použitá'; b.disabled = false;
+    send({action:'state'});  // vrátit původní popisek klávesy
+    setTimeout(function(){ b.textContent = 'Změnit'; }, 1600);
+  }
+  function applyStats(st){
+    var has = st && st.count > 0;
+    document.getElementById('statsEmpty').style.display = has ? 'none' : 'block';
+    document.getElementById('statsBody').style.display = has ? 'block' : 'none';
+    if(!has) return;
+    document.getElementById('statsSaved').textContent = st.saved_h;
+    document.getElementById('statsSavedSub').textContent = 'napsal bys to za ' + st.typing_h + ', nadiktoval za ' + st.spoken_h;
+    document.getElementById('statsCount').textContent = st.count;
+    document.getElementById('statsWords').textContent = st.words + ' slov celkem';
+    var pr = document.getElementById('statsPromptRow');
+    if(st.prompt_saving_pct === null){ pr.style.display='none'; }
+    else { pr.style.display='flex'; document.getElementById('statsPrompt').textContent = '−' + st.prompt_saving_pct + ' %'; }
+    var ar = document.getElementById('statsAppsRow');
+    if(!st.top_apps || !st.top_apps.length){ ar.style.display='none'; }
+    else { ar.style.display='flex'; document.getElementById('statsApps').textContent = st.top_apps.map(function(a){return a[0]+' ('+a[1]+')';}).join(' · '); }
   }
   function applyTheme(t){
     if(t==='system'){ document.documentElement.removeAttribute('data-theme'); }
@@ -166,6 +229,8 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   function tog(el){ var on=!el.classList.contains('on'); el.classList.toggle('on',on); send({action:'toggle',key:el.dataset.key,value:on}); }
   function applyState(s){
     document.getElementById('hotkeyLabel').textContent = s.hotkey_label || 'F5';
+    document.getElementById('cancelLabel').textContent = s.cancel_label || 'Escape';
+    if(s.stats) applyStats(s.stats);
     applyTheme(s.theme||'system');
     document.querySelectorAll('.pill').forEach(p=>p.classList.toggle('active', p.dataset.model===s.model));
     document.getElementById('lang').value = s.language || 'cs';
@@ -195,7 +260,7 @@ class _Bridge(NSObject):
             raw = message.body()
             body = dict(raw) if hasattr(raw, "keys") else {}
             action = str(body.get("action", ""))
-            if action == "ready":
+            if action in ("ready", "state"):
                 self._push_state()
             elif action == "model":
                 mid = str(body.get("value", ""))
@@ -228,15 +293,17 @@ class _Bridge(NSObject):
                 terms = [t.strip() for t in text.split(",") if t.strip()]
                 settings.set("glossary", terms)
                 self.controller.set_glossary(terms)
-            elif action == "record_hotkey":
+            elif action in ("record_hotkey", "record_cancel"):
+                which = "hotkey" if action == "record_hotkey" else "cancel"
                 listener = getattr(self.controller, "hotkey_listener", None)
                 started = False
                 if listener is not None and getattr(self.controller, "state", "IDLE") == "IDLE":
                     started = listener.start_capture(
-                        self._on_hotkey_captured, self._on_hotkey_cancelled
+                        lambda kc, w=which: self._on_hotkey_captured(kc, w),
+                        lambda w=which: self._on_hotkey_cancelled(w),
                     )
                 if not started:  # [B6] nahrává se / capture už běží → reset UI
-                    self._on_hotkey_cancelled()
+                    self._on_hotkey_cancelled(which)
             elif action == "toggle":
                 key = str(body.get("key", ""))
                 val = bool(body.get("value"))
@@ -247,27 +314,50 @@ class _Bridge(NSObject):
         except Exception as exc:  # noqa: BLE001
             print(f"[settings] bridge error: {exc}")
 
-    def _on_hotkey_captured(self, keycode: int) -> None:
+    def _on_hotkey_captured(self, keycode: int, which: str = "hotkey") -> None:
         # Voláno z vlákna event tapu → VŠE (i zápis settings [B16]) přehodit na main thread.
         label = keymap.label_for(keycode)
 
+        # [F3] Obě klávesy nesmí být stejné — rušicí větev v tapu má přednost,
+        # takže shodná klávesa by úplně umlčela hold-to-talk (a u F5 by navíc
+        # přestala potlačovat nativní diktování).
+        other = (
+            config.get_hotkey()[0] if which == "cancel" else config.get_cancel_hotkey()[0]
+        )
+        if keycode == other:
+            def _reject() -> None:
+                if self.webview is not None:
+                    self.webview.evaluateJavaScript_completionHandler_(
+                        "rejectHotkey(" + json.dumps(which) + ")", None
+                    )
+            AppHelper.callAfter(_reject)
+            return
+
         def _apply() -> None:
-            settings.set("hotkey_keycode", keycode)
-            settings.set("hotkey_label", label)
             listener = getattr(self.controller, "hotkey_listener", None)
-            if listener is not None:
-                listener.keycode = keycode
+            if which == "cancel":
+                settings.set("cancel_keycode", keycode)
+                settings.set("cancel_label", label)
+                if listener is not None:
+                    listener.cancel_keycode = keycode
+            else:
+                settings.set("hotkey_keycode", keycode)
+                settings.set("hotkey_label", label)
+                if listener is not None:
+                    listener.keycode = keycode
             if self.webview is not None:
-                js = "applyHotkey(" + json.dumps({"keycode": keycode, "label": label}, ensure_ascii=False) + ")"
+                payload = {"keycode": keycode, "label": label, "which": which}
+                js = "applyHotkey(" + json.dumps(payload, ensure_ascii=False) + ")"
                 self.webview.evaluateJavaScript_completionHandler_(js, None)
 
         AppHelper.callAfter(_apply)
 
-    def _on_hotkey_cancelled(self) -> None:
+    def _on_hotkey_cancelled(self, which: str = "hotkey") -> None:
         # [B4] Timeout / zrušené zachytávání → jen resetuj tlačítko v UI.
         def _apply() -> None:
             if self.webview is not None:
-                self.webview.evaluateJavaScript_completionHandler_("cancelHotkey()", None)
+                js = "cancelHotkey(" + json.dumps(which) + ")"
+                self.webview.evaluateJavaScript_completionHandler_(js, None)
 
         AppHelper.callAfter(_apply)
 
@@ -275,8 +365,20 @@ class _Bridge(NSObject):
         if self.webview is None:
             return
         _keycode, hotkey_label = config.get_hotkey()
+        _cancel_kc, cancel_label = config.get_cancel_hotkey()
+        summary = stats.summary()
         state = {
             "hotkey_label": hotkey_label,
+            "cancel_label": cancel_label,
+            "stats": {
+                "count": summary["count"],
+                "words": summary["words"],
+                "saved_h": stats.human_duration(summary["saved_s"]),
+                "typing_h": stats.human_duration(summary["typing_s"]),
+                "spoken_h": stats.human_duration(summary["spoken_s"]),
+                "prompt_saving_pct": summary["prompt_saving_pct"],
+                "top_apps": summary["top_apps"],
+            },
             "theme": config.get_theme(),
             "model": config.get_model(),
             "language": config.get_language(),
@@ -345,3 +447,20 @@ class SettingsWindow:
         self.window.center()
         self.window.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
+        # Okno se vytvoří jednou a pak recykluje — bez tohohle by karta
+        # Statistiky ukazovala zamrzlá data z prvního otevření (`ready` už
+        # podruhé nenastane, protože se HTML znovu nenačítá).
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Přenačte stav do okna (hlavně Statistiky). Musí běžet na main threadu."""
+        try:
+            self.bridge._push_state()
+        except Exception:  # noqa: BLE001 — refresh je kosmetika, nesmí nic shodit
+            pass
+
+    def is_visible(self) -> bool:
+        try:
+            return bool(self.window.isVisible())
+        except Exception:  # noqa: BLE001
+            return False
