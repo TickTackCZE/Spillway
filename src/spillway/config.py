@@ -77,15 +77,18 @@ def _flag(name: str, default: str = "1") -> bool:
 def whisper_hotwords() -> bool:
     """Předat slovník i Whisperu jako `hotwords` (bias dekodéru)?
 
-    VÝCHOZÍ VYPNUTO. Bias sice pomůže u vzácných termínů, ale na akusticky
-    nejednoznačném místě Whisper termín ze slovníku **vloží, i když nezazněl**
-    (uživatel to zažil: „Domovoy" v přepisu, kde ho neřekl). To porušuje
-    základní pravidlo B1 (nevymýšlet, co uživatel neřekl) přímo na úrovni
-    přepisu, kde už to nikdo nechytí.
+    VÝCHOZÍ VYPNUTO — bias vkládá termíny do promptu dekodéru, takže na
+    akusticky nejednoznačném místě může termín „doslechnout", i když nezazněl.
+    V přepisu už to nikdo nechytí (porušení B1 na nejnižší vrstvě).
 
-    Opravu zkomolenin dělá bezpečně až Claude přes slovník v promptu (ověřeno:
-    „komitnul→commitnul", „repozitáže→repozitáře", „pool request→pull request",
-    a termín ze slovníku si nevymyslí). Zapnout jde přes SPILLWAY_WHISPER_HOTWORDS=1.
+    Pozn.: hlášené vložení „Domovoy" ve skutečnosti NEZPŮSOBIL Whisper — historie
+    ukázala, že v raw přepisu termín nebyl a přidal ho až Claude (slovník v
+    promptu bral jako téma). Opraveno v `llm.py` orámováním slovníku jako čistě
+    pravopisné pomůcky. Hotwords zůstávají vypnuté jako opatrný default: opravu
+    zkomolenin zvládá Claude bezpečně (ověřeno „komitnul→commitnul",
+    „pool request→pull request") a druhá, riskantnější cesta k témuž není nutná.
+
+    Zapnout: SPILLWAY_WHISPER_HOTWORDS=1.
     """
     return _flag("SPILLWAY_WHISPER_HOTWORDS", "0")
 

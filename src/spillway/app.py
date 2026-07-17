@@ -139,9 +139,21 @@ class Controller:
             # systému normálně a diktát se nezapíše jako zrušený.
             if self.state == IDLE or self._pasting:
                 return False
+            # Rušení PŘI NAHRÁVÁNÍ musí nahrávání i ukončit. Dřív se jen nastavil
+            # příznak a čekalo se na puštění klávesy — jenže do té doby běžel
+            # mikrofon dál a HUD visel na „Ruším" bez konce (uživatel: „nešlo
+            # zrušit"). Převezmeme řízení od `on_release`.
+            take_over = self.state == RECORDING
+            if take_over:
+                self.state = PROCESSING
         self._cancel.set()
         self._cancel_min_until = time.monotonic() + CANCEL_MIN_VISIBLE_S
         print("🚫 ruším… (nic se nevloží)")
+        if take_over:
+            # Vlákno tapu drž triviální — těžké `recorder.stop()` udělá `_process`,
+            # který rovnou uvidí `_cancel`, uvolní mikrofon a skončí na IDLE.
+            self._cancel_watchdog()
+            threading.Thread(target=self._process, daemon=True).start()
         return True
 
     def is_cancelling(self) -> bool:
