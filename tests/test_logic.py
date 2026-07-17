@@ -243,12 +243,49 @@ def test_stats_excludes_cancelled_and_counts_prompt_saving(_stats_tmp):
     s.record(raw="x" * 100, final="ahoj jak se máš", app="Zprávy", profile="chat",
              audio_seconds=3, process_seconds=2)
     s.record(raw="z" * 50, final="zahozeno", app="Mail", profile="email",
-             audio_seconds=2, process_seconds=1, cancelled=True)
+             audio_seconds=2, process_seconds=1, outcome="cancelled")
 
     out = s.summary()
     assert out["count"] == 2, "zrušený diktát se nesmí počítat do statistik"
     assert out["prompt_saving_pct"] == 37, "zhuštění se počítá jen z profilu ai"
     assert dict(out["top_apps"])["Claude"] == 1
+
+
+def test_stats_ignore_non_dictations(_stats_tmp):
+    # [F6] Prázdný přepis a pád pipeline nic nevložily → nesmí do statistik.
+    # Dřív se zapisovaly jako plnohodnotné, nafukovaly count a SRÁŽELY úsporu
+    # (rostl `spoken_s`, ale `typing_s` ne).
+    s = _stats_tmp
+    s.record(raw="", final="", app="Mail", profile="email",
+             audio_seconds=9, process_seconds=3, outcome="empty")
+    s.record(raw="něco", final="", app="Mail", profile="email",
+             audio_seconds=9, process_seconds=3, outcome="error")
+    assert s.summary()["count"] == 0
+    assert s.summary()["saved_s"] == 0.0
+
+
+def test_stats_domain_does_not_fragment_top_apps(_stats_tmp):
+    # [F6] „Chrome (claude.ai)" a „Chrome (gmail.com)" je pořád jeden Chrome.
+    s = _stats_tmp
+    for dom in ("claude.ai", "gmail.com"):
+        s.record(raw="a" * 20, final="nějaký text sem", app="Chrome", domain=dom,
+                 profile="ai", audio_seconds=4, process_seconds=1)
+    assert dict(s.summary()["top_apps"]) == {"Chrome": 2}
+
+
+def test_stats_reads_legacy_entries_without_outcome(_stats_tmp, tmp_path):
+    # Starší záznamy (před polem `outcome`) se nesmí ztratit ani započítat špatně.
+    import json
+    p = tmp_path / "history.jsonl"
+    p.write_text(
+        json.dumps({"app": "Mail", "profile": "email", "audio_s": 5, "process_s": 1,
+                    "words": 20, "typing_s": 30, "cancelled": False}) + "\n"
+        + json.dumps({"app": "Mail", "profile": "email", "audio_s": 5, "process_s": 1,
+                      "words": 9, "typing_s": 13, "cancelled": True}) + "\n",
+        encoding="utf-8",
+    )
+    out = _stats_tmp.summary()
+    assert out["count"] == 1, "starý zrušený záznam se pozná podle `cancelled`"
 
 
 def test_stats_empty_and_saved_time_never_negative(_stats_tmp):
@@ -281,7 +318,33 @@ def _controller_stub(state):
     c.state = state
     c._lock = threading.Lock()
     c._cancel = threading.Event()
+    c._cancel_min_until = 0.0  # [F10] skutečné jméno atributu, ne staré cancel_notice_until
+    c._pasting = False
     return c
+
+
+def test_cancel_refused_once_pasting_started():
+    # [F5] Za bodem vložení už rušit nejde: Escape musí projít do systému
+    # (vrátit False) a diktát se nesmí zapsat jako zrušený.
+    from spillway.app import PROCESSING
+
+    c = _controller_stub(PROCESSING)
+    c._pasting = True
+    assert c.request_cancel() is False, "během vkládání se klávesa nesmí spolknout"
+    assert not c._cancel.is_set()
+    assert c.is_cancelling() is False
+
+
+def test_cancel_during_paste_does_not_show_ruším():
+    # [F5] Escape těsně před vložením nastaví _cancel; jakmile začne vkládání,
+    # HUD už nesmí tvrdit „Ruším" (text se vloží).
+    from spillway.app import PROCESSING
+
+    c = _controller_stub(PROCESSING)
+    c.request_cancel()
+    assert c.is_cancelling() is True
+    c._pasting = True
+    assert c.is_cancelling() is False
 
 
 def test_cancel_only_when_something_runs():
@@ -294,6 +357,169 @@ def test_cancel_only_when_something_runs():
     busy = _controller_stub(PROCESSING)
     assert busy.request_cancel() is True
     assert busy._cancel.is_set()
+
+
+def test_cancelling_holds_until_pipeline_actually_finishes():
+    # Regrese: „Ruším" se nesmí po chvíli přepnout zpátky na „Zpracovávám".
+    # Whisper/Claude nejdou přerušit hned, takže dokud stav není IDLE, rušíme.
+    import time
+
+    from spillway.app import IDLE, PROCESSING
+
+    c = _controller_stub(PROCESSING)
+    assert c.is_cancelling() is False, "bez Escape se nic neruší"
+
+    c.request_cancel()
+    assert c.is_cancelling() is True
+    c._cancel_min_until = time.monotonic() - 1  # i po vypršení dojezdu…
+    assert c.is_cancelling() is True, "pipeline pořád běží → pořád „Ruším“"
+
+    c.state = IDLE  # …a teprve když doběhne, hláška smí zmizet
+    assert c.is_cancelling() is False
+
+
+def test_cancelling_has_short_tail_so_it_cannot_flash():
+    # Okamžité zrušení → stav je hned IDLE; krátký dojezd zabrání probliknutí.
+    from spillway.app import IDLE, PROCESSING
+
+    c = _controller_stub(PROCESSING)
+    c.request_cancel()
+    c.state = IDLE
+    assert c.is_cancelling() is True, "krátce po zrušení se hláška ještě drží"
+
+
+def test_tray_starts_unload_timer_in_init():
+    # Regrese (F1): timer auto-unloadu se omylem zakládal až v `_open_privacy`,
+    # takže se bez kliknutí na varovnou položku NIKDY nespustil a Whisper model
+    # (~2 GB) zůstal v RAM napořád. Musí vzniknout v __init__.
+    import inspect
+
+    from spillway.tray import SpillwayTray
+
+    init_src = inspect.getsource(SpillwayTray.__init__)
+    assert "_unload_timer" in init_src, "auto-unload se musí zakládat v __init__"
+    assert "_unload_timer" not in inspect.getsource(SpillwayTray._open_privacy)
+
+
+def _tray_stub(state):
+    from spillway.app import IDLE  # noqa: F401
+    from spillway.tray import SpillwayTray
+
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray.hud = None
+    tray.controller = _controller_stub(state)
+    tray._settings = None
+    return tray
+
+
+class _WinStub:
+    def __init__(self, visible=True):
+        self.visible = visible
+        self.refreshed = 0
+
+    def is_visible(self):
+        return self.visible
+
+    def refresh(self):
+        self.refreshed += 1
+
+
+def test_stats_refresh_after_dictation_finishes():
+    # Karta Statistiky se plnila jen při `ready` (prvním načtení HTML), takže
+    # po diktátu ukazovala zamrzlá čísla. Musí se obnovit po dokončení.
+    from spillway.app import IDLE, PROCESSING
+
+    tray = _tray_stub(PROCESSING)
+    win = _WinStub()
+    tray._settings = win
+
+    tray._refresh_stats_when_done()  # pořád běží → nic
+    assert win.refreshed == 0
+
+    tray.controller.state = IDLE     # doběhlo → obnovit
+    tray._refresh_stats_when_done()
+    assert win.refreshed == 1
+
+    tray._refresh_stats_when_done()  # už je klid → neobnovovat pořád dokola
+    assert win.refreshed == 1
+
+
+def test_stats_not_refreshed_when_window_closed():
+    from spillway.app import IDLE, PROCESSING
+
+    tray = _tray_stub(PROCESSING)
+    win = _WinStub(visible=False)
+    tray._settings = win
+    tray.controller.state = IDLE
+    tray._refresh_stats_when_done()
+    assert win.refreshed == 0, "zavřené okno nemá cenu obnovovat"
+
+
+def test_tray_prefers_cancelling_over_state():
+    from spillway.app import PROCESSING
+    from spillway.tray import SpillwayTray
+
+    shown = []
+
+    class _HUD:
+        def show(self, s):
+            shown.append(s)
+
+        def hide(self):
+            shown.append("hide")
+
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray.hud = _HUD()
+    tray.controller = _controller_stub(PROCESSING)
+
+    tray._tick(None)
+    assert shown == ["proc"], "bez zrušení normální stav"
+
+    shown.clear()
+    tray.controller.request_cancel()
+    tray._tick(None)
+    assert shown == ["cancel"], "rušení má přednost před „Zpracovávám“"
+
+
+def test_rdp_paste_does_not_restore_clipboard(monkeypatch):
+    # [F9] U vzdálené plochy si rdpclip stahuje schránku opožděně — obnovením
+    # lokální schránky bychom do Windows vložili STARÝ text. Proto se neobnovuje.
+    from spillway import paste
+
+    restored = []
+    monkeypatch.setattr(paste, "_backup", lambda pb: ["snapshot"])
+    monkeypatch.setattr(paste, "_restore", lambda pb, snap: restored.append(snap))
+    monkeypatch.setattr(paste, "_write", lambda pb, t, transient: 1)
+    monkeypatch.setattr(paste, "_paste_keystroke", lambda windows_target=False: None)
+    monkeypatch.setattr(paste.time, "sleep", lambda s: None)
+
+    class _PB:
+        def changeCount(self):
+            return 1  # nikdo schránku mezitím nepřepsal → obnova by jinak proběhla
+
+    class _FakeNSPasteboard:  # ObjC selektory nejdou patchovat → podstrč celou třídu
+        @staticmethod
+        def generalPasteboard():
+            return _PB()
+
+    monkeypatch.setattr(paste, "NSPasteboard", _FakeNSPasteboard)
+
+    paste.paste_text("text", windows_target=True)
+    assert restored == [], "u RDP se schránka nesmí obnovovat"
+
+    paste.paste_text("text", windows_target=False)
+    assert restored == [["snapshot"]], "lokálně se obnovit má"
+
+
+def test_glossary_not_fed_to_whisper_by_default(monkeypatch):
+    # Regrese: hotwords vkládaly slova ze slovníku, která nezazněla („Domovoy").
+    # Výchozí stav = slovník jde jen do Claude promptu, ne do Whisperu.
+    from spillway import config
+
+    monkeypatch.delenv("SPILLWAY_WHISPER_HOTWORDS", raising=False)
+    assert config.whisper_hotwords() is False
+    monkeypatch.setenv("SPILLWAY_WHISPER_HOTWORDS", "1")
+    assert config.whisper_hotwords() is True
 
 
 def test_cancel_key_swallowed_only_when_it_cancelled_something(monkeypatch):

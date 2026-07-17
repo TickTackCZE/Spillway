@@ -74,6 +74,22 @@ def _flag(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no")
 
 
+def whisper_hotwords() -> bool:
+    """Předat slovník i Whisperu jako `hotwords` (bias dekodéru)?
+
+    VÝCHOZÍ VYPNUTO. Bias sice pomůže u vzácných termínů, ale na akusticky
+    nejednoznačném místě Whisper termín ze slovníku **vloží, i když nezazněl**
+    (uživatel to zažil: „Domovoy" v přepisu, kde ho neřekl). To porušuje
+    základní pravidlo B1 (nevymýšlet, co uživatel neřekl) přímo na úrovni
+    přepisu, kde už to nikdo nechytí.
+
+    Opravu zkomolenin dělá bezpečně až Claude přes slovník v promptu (ověřeno:
+    „komitnul→commitnul", „repozitáže→repozitáře", „pool request→pull request",
+    a termín ze slovníku si nevymyslí). Zapnout jde přes SPILLWAY_WHISPER_HOTWORDS=1.
+    """
+    return _flag("SPILLWAY_WHISPER_HOTWORDS", "0")
+
+
 def auto_space() -> bool:
     """Mezera před textem, když kurzor stojí za nemezerovým znakem. Env přebíjí nastavení."""
     if "SPILLWAY_AUTO_SPACE" in os.environ:

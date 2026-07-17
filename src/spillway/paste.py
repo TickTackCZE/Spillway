@@ -106,8 +106,14 @@ def paste_text(
     if not text:
         return
     if settle_s is None:
-        settle_s = REMOTE_SETTLE_S if windows_target else DEFAULT_SETTLE_S
+        settle_s = DEFAULT_SETTLE_S
     pb = NSPasteboard.generalPasteboard()
+
+    # [F9] U vzdálené plochy schránku NEOBNOVUJEME. rdpclip si obsah stahuje
+    # opožděně (delayed rendering) — kdybychom lokální schránku vrátili zpátky
+    # dřív, než si ho vzdálená strana vyzvedne, vložil by se do Windows STARÝ
+    # text. Tiché a matoucí selhání; ztráta transient obsahu schránky je menší zlo.
+    restore = restore and not windows_target
     snapshot = _backup(pb) if restore else []
 
     change_after_write = _write(pb, text, transient=True)

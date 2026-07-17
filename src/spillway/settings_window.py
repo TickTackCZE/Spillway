@@ -194,6 +194,13 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     document.getElementById(which+'Btn').textContent = 'Změnit';
     document.getElementById(which+'Btn').disabled = false;
   }
+  // [F3] Obě klávesy nesmí být stejné — vrátíme tlačítko a krátce to vysvětlíme.
+  function rejectHotkey(which){
+    var b = document.getElementById(which+'Btn');
+    b.textContent = 'Už je použitá'; b.disabled = false;
+    send({action:'state'});  // vrátit původní popisek klávesy
+    setTimeout(function(){ b.textContent = 'Změnit'; }, 1600);
+  }
   function applyStats(st){
     var has = st && st.count > 0;
     document.getElementById('statsEmpty').style.display = has ? 'none' : 'block';
@@ -253,7 +260,7 @@ class _Bridge(NSObject):
             raw = message.body()
             body = dict(raw) if hasattr(raw, "keys") else {}
             action = str(body.get("action", ""))
-            if action == "ready":
+            if action in ("ready", "state"):
                 self._push_state()
             elif action == "model":
                 mid = str(body.get("value", ""))
@@ -310,6 +317,21 @@ class _Bridge(NSObject):
     def _on_hotkey_captured(self, keycode: int, which: str = "hotkey") -> None:
         # Voláno z vlákna event tapu → VŠE (i zápis settings [B16]) přehodit na main thread.
         label = keymap.label_for(keycode)
+
+        # [F3] Obě klávesy nesmí být stejné — rušicí větev v tapu má přednost,
+        # takže shodná klávesa by úplně umlčela hold-to-talk (a u F5 by navíc
+        # přestala potlačovat nativní diktování).
+        other = (
+            config.get_hotkey()[0] if which == "cancel" else config.get_cancel_hotkey()[0]
+        )
+        if keycode == other:
+            def _reject() -> None:
+                if self.webview is not None:
+                    self.webview.evaluateJavaScript_completionHandler_(
+                        "rejectHotkey(" + json.dumps(which) + ")", None
+                    )
+            AppHelper.callAfter(_reject)
+            return
 
         def _apply() -> None:
             listener = getattr(self.controller, "hotkey_listener", None)
@@ -425,3 +447,20 @@ class SettingsWindow:
         self.window.center()
         self.window.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
+        # Okno se vytvoří jednou a pak recykluje — bez tohohle by karta
+        # Statistiky ukazovala zamrzlá data z prvního otevření (`ready` už
+        # podruhé nenastane, protože se HTML znovu nenačítá).
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Přenačte stav do okna (hlavně Statistiky). Musí běžet na main threadu."""
+        try:
+            self.bridge._push_state()
+        except Exception:  # noqa: BLE001 — refresh je kosmetika, nesmí nic shodit
+            pass
+
+    def is_visible(self) -> bool:
+        try:
+            return bool(self.window.isVisible())
+        except Exception:  # noqa: BLE001
+            return False

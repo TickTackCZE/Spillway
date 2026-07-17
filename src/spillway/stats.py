@@ -46,13 +46,24 @@ def record(
     profile: str,
     audio_seconds: float,
     process_seconds: float,
-    cancelled: bool = False,
+    outcome: str = "pasted",
+    domain: str | None = None,
 ) -> None:
-    """Zapíše jeden diktát do historie. Best-effort — chyby polkne."""
+    """Zapíše jeden diktát do historie. Best-effort — chyby polkne.
+
+    `outcome`: "pasted" (text se vložil) | "cancelled" (Escape) | "empty"
+    (prázdný přepis) | "error" (pád pipeline). Do statistik se počítá jen
+    "pasted" — jinak by prázdné a zrušené pokusy nafukovaly počty a srážely
+    vykázanou úsporu času.
+
+    `app` je jen název aplikace; `domain` (u prohlížeče) se ukládá zvlášť, ať se
+    „Chrome (claude.ai)" a „Chrome (gmail.com)" neroztříští v žebříčku aplikací.
+    """
     try:
         entry = {
             "ts": time.time(),
             "app": app or "?",
+            "domain": domain,
             "profile": profile,
             "audio_s": round(audio_seconds, 2),
             "process_s": round(process_seconds, 2),
@@ -60,7 +71,7 @@ def record(
             "raw_chars": len(raw or ""),
             "out_chars": len(final or ""),
             "typing_s": round(typing_seconds(final), 1),
-            "cancelled": cancelled,
+            "outcome": outcome,
             "raw": raw,
             "final": final,
         }
@@ -107,8 +118,16 @@ def _entries() -> list[dict]:
 
 
 def summary() -> dict:
-    """Agregace pro kartu Statistiky v nastavení."""
-    rows = [e for e in _entries() if not e.get("cancelled")]
+    """Agregace pro kartu Statistiky v nastavení.
+
+    Počítá jen skutečně vložené diktáty (`outcome == "pasted"`) — zrušené,
+    prázdné a spadlé pokusy nic nevložily, takže by jen kazily čísla.
+    Starší záznamy (před polem `outcome`) se poznají podle `cancelled`.
+    """
+    rows = [
+        e for e in _entries()
+        if e.get("outcome", "cancelled" if e.get("cancelled") else "pasted") == "pasted"
+    ]
     if not rows:
         return {
             "count": 0, "words": 0, "saved_s": 0.0, "spoken_s": 0.0,

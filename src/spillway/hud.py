@@ -55,6 +55,8 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
   .dot.rec { background:#FF453A; animation:pulse 1.5s infinite; }
   .dot.proc { background:#FF9F0A; animation:blink 1s infinite; }
+  /* Ruším — šedá, bliká stejně jako „Zpracovávám" (rušení taky chvíli běží). */
+  .dot.cancel { background:#8E8E93; animation:blink 1s infinite; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(255,69,58,0.5);} 70%{box-shadow:0 0 0 6px rgba(255,69,58,0);} 100%{box-shadow:0 0 0 0 rgba(255,69,58,0);} }
   @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
   .label { color:#F5F5F7; font-size:13px; font-weight:500; letter-spacing:0.2px; white-space:nowrap; line-height:1; }
@@ -69,6 +71,7 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
       var c=document.getElementById('card'),d=document.getElementById('dot'),l=document.getElementById('label');
       if(s==='rec'){c.style.display='inline-flex';d.className='dot rec';l.textContent='Nahrávám';}
       else if(s==='proc'){c.style.display='inline-flex';d.className='dot proc';l.textContent='Zpracovávám';}
+      else if(s==='cancel'){c.style.display='inline-flex';d.className='dot cancel';l.textContent='Ruším';}
       else {c.style.display='none';}
     }
   </script>

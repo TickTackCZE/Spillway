@@ -28,8 +28,8 @@ Osobní diktovací nástroj pro macOS. Lokální přepis řeči (faster-whisper)
 
 - **Python 3.12 + PyObjC** (AppKit / Quartz / WebKit / ApplicationServices). Menu-bar app (`LSUIElement`), bundle přes **PyInstaller**.
 - **CGEventTap** na vlastním vlákně/CFRunLoop, callback triviální. F5 = keycode **176**, `return None` potlačí nativní diktování. Watchdog na ztracený key-up, re-enable po timeoutu.
-- **Přepis:** faster-whisper `large-v3-turbo` int8, CPU (RTF ~0,30 na M-čipu, reload ~1,6 s). `vad_filter=True` (Silero VAD asset se balí přes `collect_data_files`). `beam_size=5` (přebitelné `SPILLWAY_BEAM_SIZE`); **uživatelský slovník jde do Whisperu jako `hotwords`** → biasuje samotný přepis, ne až Claudeovu opravu.
-- **Paste:** zápis do schránky (+ Transient/Concealed typy) → ⌘+V přes CGEvent → fixní delay ~250 ms → obnova schránky. **Vzdálená Windows plocha (RDP/AVD/VDI, `context.is_windows_target`) → Ctrl+V** místo ⌘+V a delší čekání (~0,6 s) na síťovou synchronizaci schránky přes rdpclip — RDP klienti syntetické ⌘ nepřeloží na Ctrl a do session dorazí holé „V".
+- **Přepis:** faster-whisper `large-v3-turbo` int8, CPU (RTF ~0,30 na M-čipu, reload ~1,6 s). `vad_filter=True` (Silero VAD asset se balí přes `collect_data_files`). `beam_size=5` (přebitelné `SPILLWAY_BEAM_SIZE`). **Slovník do Whisperu (`hotwords`) je VYPNUTÝ** (zapne `SPILLWAY_WHISPER_HOTWORDS=1`): bias sice pomáhá u vzácných termínů, ale na akusticky nejednoznačném místě termín **vloží, i když nezazněl** — porušení B1 rovnou v přepisu, kde už to nikdo nechytí. Zkomoleniny opravuje bezpečně až Claude přes slovník v promptu (ověřeno: „komitnul→commitnul", „pool request→pull request", a termín ze slovníku si nevymyslí).
+- **Paste:** zápis do schránky (+ Transient/Concealed typy) → ⌘+V přes CGEvent → fixní delay ~250 ms → obnova schránky. **Vzdálená Windows plocha (RDP/AVD/VDI, `context.is_windows_target`) → Ctrl+V** místo ⌘+V (klienti syntetické ⌘ nepřeloží na Ctrl → do session dorazí holé „V"), čekání ~0,6 s na rdpclip a **schránka se u RDP záměrně NEobnovuje** — rdpclip si obsah stahuje opožděně, takže obnova by do Windows vložila starý text.
 - **Moduly** `src/spillway/`: hotkey, audio, transcribe, context, llm, paste, tray, hud, settings(_window), config, lifecycle, autostart, baricon, keymap, design.
 - **⚠️ Podpis je kritický:** TCC granty (Accessibility/Input Monitoring) i Keychain ACL se vážou na code signature. Ad-hoc podpis se mění každým buildem → resetoval by oprávnění. Řeší **stabilní self-signed cert „Spillway Self-Signed"** — DR = `identifier "com.spillway.app" and certificate root = H"…"` je konstantní napříč rebuildy. Privátní klíč v login keychainu + záloha `~/Library/Application Support/Spillway/codesign-identity.p12` (mimo git).
 
@@ -89,6 +89,14 @@ Log běhu: `~/Library/Logs/Spillway/spillway.log` (obsahuje `AXIsProcessTrusted`
 - **Export historie na RPi / DB + analytiky** — kolik/kde/jaké termíny diktuji, WER trendy. Proto historii od začátku ukládat strojově čitelně.
 - **Rychlost:** `mlx-whisper` (Neural Engine/GPU místo CPU), streamovaná odpověď Claude, přeskočit LLM krok u velmi krátkých vět. Největší fixní náklad je síťová latence k API (~0,5–1,5 s).
 - Vícejazyčný přepínatelný režim (per-app / hotkey), titulek okna do kontextu (za cenu Screen Recording), streaming přepis v reálném čase, vlastní hlasové příkazy („nový odstavec", „smazat větu").
+
+---
+
+## Vědomé výjimky z pravidla „nevymýšlet" (B1)
+
+Základní pravidlo zní: nikdy nesmí vzniknout obsah, který uživatel nenadiktoval. Jedna výjimka je schválená:
+
+- **E-mailová etiketa** (profil `email`): když oslovení/zakončení nezazní, doplní se výchozí „Dobrý den," a „S pozdravem". **Rozhodnutí uživatele 17. 7.** — chce nadiktovat jen obsah a dostat hotový e-mail. **Jméno do podpisu se nikdy nevymýšlí.** Ostatní profily (chat/ai/code/generic) nepřidávají nic.
 
 ---
 
