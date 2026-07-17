@@ -92,6 +92,12 @@ Log běhu: `~/Library/Logs/Spillway/spillway.log` (obsahuje `AXIsProcessTrusted`
 
 ---
 
+## Profil `ai` — proč je agresivní
+
+Diktování promptu do AI je jiná úloha než přepis zprávy: čte to model, ne člověk. Změřeno na reálné historii (9 diktátů, 2054 zn.): původní „šetrný" prompt zhušťoval jen o **13 %** a úsečné mluvené poznámky dokonce **rozepisoval do uhlazených vět** (+9 %). Po přeboostování profilu (výstup musí být kratší, odrážky od 2 zadání, pryč zdvořilosti a uvozovací vata) je zhuštění **29 %**, bez ztráty požadavků. Profil si výslovně přebíjí obecná pravidla FORMÁT. Obsah zůstává nedotknutelný — krátí se forma, ne informace.
+
+---
+
 ## Vědomé výjimky z pravidla „nevymýšlet" (B1)
 
 Základní pravidlo zní: nikdy nesmí vzniknout obsah, který uživatel nenadiktoval. Jedna výjimka je schválená:

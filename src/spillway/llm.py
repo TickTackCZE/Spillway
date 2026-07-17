@@ -37,16 +37,23 @@ _PROFILE_GUIDANCE = {
         "Cíl: EDITOR/TERMINÁL — jasná próza, technické termíny přesně a bez překladu."
     ),
     "ai": (
-        "Cíl: PROMPT PRO AI ASISTENTA. Tady NEJDE o věrný záznam řeči, ale o ÚČINNÝ PROMPT — "
-        "text aktivně přepiš z mluvené podoby do stručného věcného zadání (přeformulovat SMÍŠ "
-        "a máš):\n"
-        "  • bezezbytku vyhoď řečové vycpávky a tiky, i uvnitř vět: „jako“, „jakoby“, „prostě“, "
-        "„třeba“, „nějak(ý)“, „no“, „takovej“, „chápeš to?“, „že jo“;\n"
-        "  • co zaznělo víckrát nebo dokola, řekni JEDNOU;\n"
-        "  • mluvenou vatu převeď na věcnou formulaci (zadáváš úkol, nevyprávíš);\n"
-        "  • strukturu (odstavce/odrážky/seznam) podle pravidel FORMÁT níže.\n"
-        "ALE: žádný požadavek, fakt ani detail nevynechávej a nic si nepřidávej — jen to řekni "
-        "stručně a jasně."
+        "Cíl: PROMPT PRO AI ASISTENTA — z mluveného zadání vytěž KOSTRU a napiš ji co "
+        "NEJÚSPORNĚJI. Tohle není přepis řeči ani sloh: čte to model, který nepotřebuje "
+        "zdvořilosti, plynulá souvětí ani vyprávění. Pravidla FORMÁT níže tu neplatí — "
+        "řiď se těmito:\n"
+        "  • Výstup MUSÍ být výrazně KRATŠÍ než vstup. Úsečnou mluvenou poznámku NIKDY "
+        "nerozepisuj do uhlazených vět — to je přesně špatně.\n"
+        "  • Jakmile jsou zadání dvě a víc, piš je jako ODRÁŽKY nebo číslovaný seznam "
+        "(jeden bod = jeden požadavek). Souvislý text jen u jediného krátkého zadání.\n"
+        "  • Bezezbytku vyhoď: vycpávky („jako“, „jakoby“, „prostě“, „třeba“, „nějak“, „no“, "
+        "„chápeš to?“), zdvořilosti („prosím“, „mohl bys“), uvozovací vatu („chtěl jsem se "
+        "zeptat“, „jenom co zkontroluju“, „další věc co bychom mohli“), metavyprávění o tom, "
+        "co chceš říct, a všechno, co zaznělo dvakrát.\n"
+        "  • Věty stahuj na holé zadání: „Mělo by to fungovat tak, že se X aktualizuje hned "
+        "po Y“ → „X aktualizovat hned po Y“.\n"
+        "ALE obsah je nedotknutelný: každý požadavek, podmínku, číslo, název a detail zachovej. "
+        "Krátit smíš FORMU, ne informace. A nic nepřidávej — ani názvy aplikací, značek či "
+        "témat, které nezazněly."
     ),
     "generic": "Cíl: běžný text — lehká korektura, tón a formálnost nech jak zazněly.",
 }
@@ -107,9 +114,15 @@ class Cleaner:
         context_block = ""
         if glossary:
             terms = ", ".join(glossary)
+            # POZOR: dřív tu stálo jen „tyto termíny piš přesně v tomto tvaru" —
+            # model si to vyložil jako KONTEXT a do textu vložil „v aplikaci
+            # Domovoy", ačkoli v přepisu nic takového nezaznělo (porušení B1,
+            # potvrzeno z historie: raw termín neobsahoval, výstup ano).
             context_block += (
-                "\nSlovník uživatele — tyto termíny piš přesně v tomto tvaru a foneticky "
-                f"zkomolený přepis oprav na ně: {terms}.\n"
+                "\nSlovník uživatele (JEN pravopisná pomůcka): když v přepisu zazní některý "
+                f"z těchto termínů — i foneticky zkomolený — napiš ho přesně takto: {terms}. "
+                "Termín, který v přepisu NEZAZNĚL, do textu NIKDY nevkládej a neber ho jako "
+                "nápovědu, o čem text je. Slovník neurčuje téma.\n"
             )
 
         system = _SYSTEM_TEMPLATE.format(
