@@ -65,8 +65,8 @@ Log běhu: `~/Library/Logs/Spillway/spillway.log` (obsahuje `AXIsProcessTrusted`
 
 ## Otevřená rozhodnutí (čekají na tebe)
 
-- **O8 — celé e-mailové vlákno jako kontext?** Teď se čte jen doména aktivní karty (→ profil), ne obsah. Číst celé vlákno by zlepšilo odpovědi, ale pošle víc textu k Anthropic (privacy dopad). Chceš? Jen Mail.app, nebo i webmail (Gmail/Outlook v prohlížeči)?
-- **O9 — sjednocení celého pole při doplnění.** Místo navázání na existující text přeformulovat celé pole + nový diktát do jednoho celku (Cmd+A → přepsat). Doporučení: **volitelný** režim spouštěný explicitně (tlačítko / hlasový pokyn), ne výchozí (jinak hrozí „vylepšení" už hotových částí + ztráta rich-text formátování). Chceš to?
+- **O8 — celé e-mailové vlákno jako kontext?** ⚠️ **Pozor, částečně se to už děje:** profil `email` posílá Claudeovi `field_text[:3000]` — a protože AX vrací pole jako jeden plochý text, je v tom **i citovaná historie a podpis**. Rozhodnout: nechat, omezit (jen text nad citací), nebo vypnout. Vypínač už existuje (přepínač „Číst kontext pole").
+- **O9 — sjednocení celého pole → ZAMÍTNUTO** (research 17. 7.). Obava uživatele potvrzena: AX vrací pole odpovědi jako jeden plochý text včetně citovaného vlákna a podpisu, a `paste.py` píše do schránky **jen plain text** → `Cmd+A` + vložení by nevratně smazalo historii konverzace i HTML podpis (logo, odkazy). Hranice „můj text / citace / podpis" nejde spolehlivě detekovat: markery citace jsou lokalizované a u Outlooku nekonzistentní, `-- ` podpis dle RFC 3676 dnes skoro nikdo nepoužívá a `<blockquote>` se v AX ztratí. Pokud někdy, tak jen nad **označeným výběrem** (`AXSelectedText`), nikdy `Cmd+A`, a až po implementaci undo.
 
 ---
 

@@ -29,6 +29,7 @@ _DEFAULTS: dict = {
     "cancel_keycode": 53,            # Escape
     "cancel_label": "Escape",
     "auto_unload_min": 0.25,         # [R5] uvolnit Whisper model po N min nečinnosti (15s); reload je levný (~1,6s)
+    "llm_min_seconds": 5.0,          # kratší diktát → jen lokální úprava, bez volání Clauda
 }
 
 

@@ -70,6 +70,20 @@ def get_cancel_hotkey() -> tuple[int, str]:
     return (keycode, label)
 
 
+def llm_min_seconds() -> float:
+    """Kratší diktát než N sekund se NEposílá do Clauda — jen lokální úprava.
+
+    Šetří tokeny i čas u „ok", „díky", „zítra v pět". Výjimku má profil `email`,
+    kde je i u krátké zprávy smyslem doplnit strukturu (oslovení/pozdrav).
+    0 = posílat vždy. Env SPILLWAY_LLM_MIN_SECONDS přebíjí.
+    """
+    raw = os.environ.get("SPILLWAY_LLM_MIN_SECONDS") or settings.get("llm_min_seconds", 5.0)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 5.0
+
+
 def _flag(name: str, default: str = "1") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no")
 

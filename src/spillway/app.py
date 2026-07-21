@@ -21,8 +21,8 @@ import time
 from . import config, context, stats
 from .audio import Recorder
 from .hotkey import HotkeyListener
-from .llm import Cleaner
-from .paste import paste_text
+from .llm import Cleaner, basic_cleanup
+from .paste import copy_to_clipboard, paste_text
 from .transcribe import Transcriber
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
@@ -193,6 +193,10 @@ class Controller:
         # `start()` by nechal mikrofon otevřený napořád (viz B2).
         self._start_thread = threading.Thread(target=self._start_recording, daemon=True)
         self._start_thread.start()
+        # Předehřát Whisper model, dokud uživatel mluví — po auto-unloadu by se
+        # jinak čekalo ~1,6 s až po puštění klávesy. Takhle se reload schová.
+        if not self.transcriber.is_loaded:
+            threading.Thread(target=self.transcriber.preload, daemon=True).start()
         # [B7] Watchdog: kdyby se ztratil key-up (spánek, lock, Secure Input),
         # po max_seconds nahrávání vynuceně ukončíme, ať appka nezůstane v RECORDING.
         self._arm_watchdog()
@@ -259,24 +263,34 @@ class Controller:
                 outcome = "cancelled"
                 return  # zrušeno ještě před přepisem → nula tokenů, nula práce
             # [F2/F3] kontext: aktivní aplikace, profil formátování, obsah pole.
-            app_name, bundle = context.frontmost_app()
-            profile = context.app_profile(bundle, app_name)
-            # Vzdálená Windows plocha (RDP/AVD) → vkládá se Ctrl+V, ne ⌘+V.
-            win_target = context.is_windows_target(bundle, app_name)
-            field_text, caret = context.focused_field()  # lokální AX čtení
+            # Sbírá se PARALELNĚ s přepisem — nepotřebuje audio a `browser_context`
+            # čeká na `osascript` (až 2 s). Dřív to běželo před přepisem, takže se
+            # ta doba čistě přičítala; teď se schová za Whisper.
+            ctx: dict = {}
 
-            # Prohlížeč: doména aktivní karty (AppleScript/Automation) může upřesnit profil.
-            if config.field_context():
-                browser_profile, domain = context.browser_context(bundle)
-                if browser_profile:
-                    profile = browser_profile
-            app_ctx = f"{app_name} ({domain})" if domain else app_name
+            def _gather_context() -> None:
+                try:
+                    a_name, a_bundle = context.frontmost_app()
+                    ctx["app_name"], ctx["bundle"] = a_name, a_bundle
+                    ctx["profile"] = context.app_profile(a_bundle, a_name)
+                    ctx["win_target"] = context.is_windows_target(a_bundle, a_name)
+                    ctx["field_text"], ctx["caret"] = context.focused_field()
+                    ctx["at_line_start"] = context.caret_at_line_start()
+                    if config.field_context():
+                        b_profile, b_domain = context.browser_context(a_bundle)
+                        ctx["domain"] = b_domain
+                        if b_profile:
+                            ctx["profile"] = b_profile
+                except Exception as exc:  # noqa: BLE001 — bez kontextu jedeme dál
+                    ctx["error"] = exc
+
+            ctx_thread = threading.Thread(target=_gather_context, daemon=True)
+            ctx_thread.start()
 
             secs = len(audio) / 16000.0
             if not self.transcriber.is_loaded:
                 print("💤→🔄 model byl uvolněný z paměti, znovu se načítá…")
-            win_note = " · Windows (Ctrl+V)" if win_target else ""
-            print(f"⏳ přepisuji {secs:.1f} s audia…  ({app_ctx} · profil: {profile}{win_note})")
+            print(f"⏳ přepisuji {secs:.1f} s audia…")
             t0 = time.perf_counter()
             # Slovník do Whisperu (hotwords) jen když si o to uživatel řekne —
             # výchozí VYPNUTO, protože bias vkládá termíny, které nezazněly
@@ -296,8 +310,28 @@ class Controller:
                 outcome = "cancelled"
                 return  # zrušeno po přepisu → ušetří se aspoň volání Claude
 
+            # Kontext už se mezitím posbíral souběžně s přepisem.
+            ctx_thread.join(timeout=3.0)
+            app_name = ctx.get("app_name")
+            bundle = ctx.get("bundle")
+            profile = ctx.get("profile", "generic")
+            win_target = bool(ctx.get("win_target"))
+            field_text, caret = ctx.get("field_text"), ctx.get("caret")
+            domain = ctx.get("domain")
+            app_ctx = f"{app_name} ({domain})" if domain else app_name
+            win_note = " · Windows (Ctrl+V)" if win_target else ""
+            print(f"   ({app_ctx} · profil: {profile}{win_note})")
+
             text = raw
-            if self.cleaner is not None:
+            # Krátký diktát („ok", „díky", „zítra v pět") do Clauda neposíláme —
+            # ušetří tokeny i ~1 s čekání. E-mail je výjimka: tam je i u krátké
+            # zprávy smyslem doplnit strukturu (oslovení/pozdrav).
+            min_s = config.llm_min_seconds()
+            skip_llm = min_s > 0 and audio_secs < min_s and profile != "email"
+            if skip_llm:
+                text = basic_cleanup(raw)
+                print(f"⚡ krátký diktát ({audio_secs:.1f} s < {min_s:g} s) → bez AI: {text!r}")
+            elif self.cleaner is not None:
                 # Existující obsah pole jako kontext (jen když povoleno).
                 # E-mail → celé pole (cap 3000); jinak okno před kurzorem.
                 before = None
@@ -323,15 +357,16 @@ class Controller:
                     notify("AI úprava selhala", "Vložen syrový přepis. Zkontroluj API klíč / kredit.")
                     text = raw
 
-            # Chytrá mezera: kurzor za nemezerovým znakem (a ne první text v poli).
-            if (
-                config.auto_space()
-                and field_text
-                and caret
-                and 0 < caret <= len(field_text)
-                and not field_text[caret - 1].isspace()
-            ):
-                text = " " + text
+            # Chytrá mezera: jen když kurzor stojí těsně za nemezerovým znakem.
+            # `at_line_start` má přednost — rich-text pole (Mail) nevrací koncový
+            # konec řádku, takže z textu by to po Enteru vypadalo jako konec slova
+            # a vloudila by se mezera navíc na začátek nového řádku.
+            if config.auto_space() and not text[:1].isspace():
+                at_line_start = context.caret_at_line_start()
+                if at_line_start is not True and context.needs_leading_space(
+                    field_text, caret
+                ):
+                    text = " " + text
 
             # [F5] Poslední šance zrušit. Za tímhle bodem už se vkládá a rušit
             # nejde — `_pasting` zajistí, že Escape projde normálně dál a diktát
@@ -341,6 +376,17 @@ class Controller:
                     outcome = "cancelled"
                     return
                 self._pasting = True
+
+            # Přepnul uživatel mezitím jinam? Pak text NEVKLÁDAT — spadl by do
+            # cizího pole (chat, terminál). Nechat ho ve schránce a říct o tom.
+            _, now_bundle = context.frontmost_app()
+            if bundle and now_bundle and now_bundle != bundle:
+                copy_to_clipboard(text)
+                print(f"📋 fokus je jinde ({now_bundle}) → text ve schránce, nevkládám.")
+                notify("Text je ve schránce", "Přepnul jsi jinam — vlož ho ⌘V, kam chceš.")
+                outcome = "clipboard"
+                return
+
             paste_text(text, windows_target=win_target)
             outcome = "pasted"
         except Exception as exc:  # noqa: BLE001
