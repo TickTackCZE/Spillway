@@ -224,53 +224,6 @@ def focused_field() -> tuple[str | None, int | None]:
         return (None, None)
 
 
-def focused_element():
-    """Reference na právě zaměřený AX prvek — schová se při diktování, aby šlo
-    text později vložit přesně do NĚJ, i když uživatel mezitím přepnul jinam."""
-    try:
-        from ApplicationServices import (
-            AXUIElementCopyAttributeValue,
-            AXUIElementCreateSystemWide,
-            kAXFocusedUIElementAttribute,
-        )
-    except Exception:  # noqa: BLE001
-        return None
-    try:
-        err, focused = AXUIElementCopyAttributeValue(
-            AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute, None
-        )
-        return None if err else focused
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def insert_text_ax(element, text: str) -> bool:  # noqa: ANN001
-    """Zapíše text přímo do prvku přes Accessibility — BEZ fokusu a BEZ schránky.
-
-    Díky tomu může uživatel po nadiktování rovnou dělat něco jiného a text mu
-    doputuje tam, kam diktoval. Ověřeno naživo: zápis do TextEditu proběhl,
-    zatímco vepředu byl Finder.
-
-    Vrací False, když to pole nepodporuje (typicky web/Electron, kde je AX
-    read-only) nebo prvek už neexistuje — volající pak sáhne po schránce.
-    """
-    if element is None or not text:
-        return False
-    try:
-        from ApplicationServices import (
-            AXUIElementSetAttributeValue,
-            kAXSelectedTextAttribute,
-        )
-    except Exception:  # noqa: BLE001
-        return False
-    try:
-        # AXSelectedText vloží na pozici kurzoru (nebo nahradí výběr) — stejná
-        # sémantika jako ⌘V, jen bez nutnosti mít pole aktivní.
-        return AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute, text) == 0
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def needs_leading_space(field_text: str | None, caret: int | None) -> bool:
     """Má se před vkládaný text doplnit mezera, ať slova nesplynou?
 
