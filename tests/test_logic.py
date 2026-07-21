@@ -578,6 +578,15 @@ def test_llm_min_seconds_setting(monkeypatch):
     assert config.llm_min_seconds() == 5.0  # poškozená hodnota → fallback
 
 
+def test_ax_insert_guards_bad_input():
+    # Zápis přes AX se nesmí pokoušet o nesmysly (a nesmí spadnout).
+    from spillway.context import insert_text_ax
+
+    assert insert_text_ax(None, "text") is False, "bez prvku nelze psát"
+    assert insert_text_ax(object(), "") is False, "prázdný text nemá co dělat"
+    assert insert_text_ax(object(), "text") is False, "neplatný prvek → False, ne pád"
+
+
 def test_expanded_app_detection():
     from spillway.context import app_profile
 
