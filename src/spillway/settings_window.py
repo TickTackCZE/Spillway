@@ -115,10 +115,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
         <div class="l">Diktátů<small id="statsWords">—</small></div>
         <div class="l" id="statsCount" style="font-weight:600;">—</div>
       </div>
-      <div class="rowt" id="statsPromptRow">
-        <div class="l">Zhuštění promptů<small>O kolik se diktát zkrátil do AI (profil „ai“)</small></div>
-        <div class="l" id="statsPrompt" style="color:var(--accent);font-weight:600;">—</div>
-      </div>
       <div class="rowt" id="statsAppsRow" style="border:none;">
         <div class="l">Nejčastěji<small id="statsApps">—</small></div>
       </div>
@@ -210,9 +206,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     document.getElementById('statsSavedSub').textContent = 'napsal bys to za ' + st.typing_h + ', nadiktoval za ' + st.spoken_h;
     document.getElementById('statsCount').textContent = st.count;
     document.getElementById('statsWords').textContent = st.words + ' slov celkem';
-    var pr = document.getElementById('statsPromptRow');
-    if(st.prompt_saving_pct === null){ pr.style.display='none'; }
-    else { pr.style.display='flex'; document.getElementById('statsPrompt').textContent = '−' + st.prompt_saving_pct + ' %'; }
     var ar = document.getElementById('statsAppsRow');
     if(!st.top_apps || !st.top_apps.length){ ar.style.display='none'; }
     else { ar.style.display='flex'; document.getElementById('statsApps').textContent = st.top_apps.map(function(a){return a[0]+' ('+a[1]+')';}).join(' · '); }
@@ -376,7 +369,6 @@ class _Bridge(NSObject):
                 "saved_h": stats.human_duration(summary["saved_s"]),
                 "typing_h": stats.human_duration(summary["typing_s"]),
                 "spoken_h": stats.human_duration(summary["spoken_s"]),
-                "prompt_saving_pct": summary["prompt_saving_pct"],
                 "top_apps": summary["top_apps"],
             },
             "theme": config.get_theme(),
