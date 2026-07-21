@@ -126,7 +126,7 @@ def summary() -> dict:
     """
     rows = [
         e for e in _entries()
-        if e.get("outcome", "cancelled" if e.get("cancelled") else "pasted") == "pasted"
+        if e.get("outcome", "cancelled" if e.get("cancelled") else "pasted") in ("pasted", "clipboard")
     ]
     if not rows:
         return {

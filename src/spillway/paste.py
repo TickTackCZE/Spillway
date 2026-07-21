@@ -90,6 +90,14 @@ def _restore(pb: NSPasteboard, snapshot) -> None:
         pb.writeObjects_(new_items)
 
 
+def copy_to_clipboard(text: str) -> None:
+    """Jen zapsat do schránky, nevkládat. Používá se, když uživatel mezitím
+    přepnul do jiné aplikace — text by jinak spadl do cizího pole."""
+    if not text:
+        return
+    _write(NSPasteboard.generalPasteboard(), text, transient=False)
+
+
 def paste_text(
     text: str,
     *,

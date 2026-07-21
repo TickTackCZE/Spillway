@@ -540,6 +540,55 @@ def test_tray_prefers_cancelling_over_state():
     assert shown == ["cancel"], "rušení má přednost před „Zpracovávám“"
 
 
+def test_leading_space_not_added_on_new_line():
+    # Uživatel: po „Dobrý den" + Enter se vloudila mezera navíc.
+    from spillway.context import needs_leading_space
+
+    assert needs_leading_space("Dobrý den", 9) is True, "za slovem mezera patří"
+    assert needs_leading_space("Dobrý den\n", 10) is False, "po Enteru ne"
+    assert needs_leading_space("Dobrý den\n\n", 11) is False, "po dvou Enterech ne"
+    assert needs_leading_space("Dobrý den\r\n", 11) is False, "CRLF taky ne"
+    assert needs_leading_space("Dobrý den\n    ", 14) is False, "odsazení = pořád nový řádek"
+    assert needs_leading_space("Dobrý den ", 10) is False, "mezera už tam je"
+    assert needs_leading_space("", 0) is False
+    assert needs_leading_space(None, None) is False
+    assert needs_leading_space("text", 0) is False, "začátek pole"
+    assert needs_leading_space("text", 99) is False, "kurzor mimo rozsah"
+
+
+def test_basic_cleanup_is_safe_without_api():
+    # Lokální úprava krátkých diktátů — nesmí nic vymýšlet ani rozbít názvy.
+    from spillway.llm import basic_cleanup
+
+    assert basic_cleanup("  ahoj   jak se  máš ") == "Ahoj jak se máš"
+    assert basic_cleanup("iPhone se rozbil") == "iPhone se rozbil", "nerozbíjet iPhone"
+    assert basic_cleanup("macOS je fajn") == "macOS je fajn"
+    assert basic_cleanup("") == ""
+    assert basic_cleanup("Už velké") == "Už velké"
+
+
+def test_llm_min_seconds_setting(monkeypatch):
+    from spillway import config
+
+    monkeypatch.delenv("SPILLWAY_LLM_MIN_SECONDS", raising=False)
+    assert config.llm_min_seconds() == 5.0  # výchozí práh
+    monkeypatch.setenv("SPILLWAY_LLM_MIN_SECONDS", "0")
+    assert config.llm_min_seconds() == 0.0  # 0 = posílat vždy
+    monkeypatch.setenv("SPILLWAY_LLM_MIN_SECONDS", "nesmysl")
+    assert config.llm_min_seconds() == 5.0  # poškozená hodnota → fallback
+
+
+def test_expanded_app_detection():
+    from spillway.context import app_profile
+
+    assert app_profile("com.superhuman.mail", "Superhuman") == "email"
+    assert app_profile("ru.keepcoder.Telegram", "Telegram") == "chat"
+    assert app_profile("dev.zed.Zed", "Zed") == "code"
+    assert app_profile("ai.perplexity.mac", "Perplexity") == "ai"
+    assert app_profile("md.obsidian", "Obsidian") == "generic"
+    assert app_profile("com.naprosto.neznama", "Neznámá") == "generic"
+
+
 def test_rdp_paste_does_not_restore_clipboard(monkeypatch):
     # [F9] U vzdálené plochy si rdpclip stahuje schránku opožděně — obnovením
     # lokální schránky bychom do Windows vložili STARÝ text. Proto se neobnovuje.

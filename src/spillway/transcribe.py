@@ -73,6 +73,14 @@ class Transcriber:
     def is_loaded(self) -> bool:
         return self._model is not None
 
+    def preload(self) -> None:
+        """Načte model dopředu. Volá se při STISKU klávesy — než domluvíš, model
+        je připravený, takže se reload (~1,6 s po auto-unloadu) schová do doby,
+        kdy stejně mluvíš, místo aby se čekalo až po puštění klávesy."""
+        with self._lock:
+            if self._model is None:
+                self._load_model()
+
     def unload_if_idle(self, idle_seconds: float) -> bool:
         """Uvolní model, pokud je nečinný déle než `idle_seconds`. Vrací True,
         když k uvolnění došlo. `idle_seconds <= 0` vypíná auto-unload."""

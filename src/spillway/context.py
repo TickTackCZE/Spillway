@@ -10,21 +10,51 @@ from AppKit import NSWorkspace
 
 # Bundle ID → profil formátování.
 _PROFILES = {
+    # E-mail
     "com.apple.mail": "email",
     "com.microsoft.Outlook": "email",
-    "com.readdle.smartemail-Mac": "email",
+    "com.readdle.smartemail-Mac": "email",       # Spark
+    "com.superhuman.mail": "email",
+    "org.mozilla.thunderbird": "email",
+    "com.CanaryMail.CanaryMail": "email",
+    "com.mimestream.Mimestream": "email",
+    # Chat / zprávy
     "com.tinyspeck.slackmacgap": "chat",
     "com.hnc.Discord": "chat",
-    "com.apple.MobileSMS": "chat",  # Zprávy
+    "com.apple.MobileSMS": "chat",               # Zprávy
     "net.whatsapp.WhatsApp": "chat",
     "com.microsoft.teams2": "chat",
+    "com.microsoft.teams": "chat",
+    "ru.keepcoder.Telegram": "chat",
+    "org.whispersystems.signal-desktop": "chat",
+    "com.facebook.archon.developerID": "chat",   # Messenger
+    "us.zoom.xos": "chat",
+    # Editory / terminály
     "com.microsoft.VSCode": "code",
+    "com.todesktop.230313mzl4w4u92": "code",     # Cursor
+    "dev.zed.Zed": "code",
+    "com.exafunction.windsurf": "code",
     "com.apple.dt.Xcode": "code",
     "com.apple.Terminal": "code",
     "com.googlecode.iterm2": "code",
+    "dev.warp.Warp-Stable": "code",
+    "com.mitchellh.ghostty": "code",
     "com.jetbrains.pycharm": "code",
+    "com.jetbrains.intellij": "code",
+    "com.jetbrains.WebStorm": "code",
+    "com.sublimetext.4": "code",
+    # AI asistenti
     "com.anthropic.claudefordesktop": "ai",
     "com.openai.chat": "ai",
+    "ai.perplexity.mac": "ai",
+    # Poznámky a psaní → obecná próza
+    "com.apple.Notes": "generic",
+    "md.obsidian": "generic",
+    "notion.id": "generic",
+    "net.shinyfrog.bear": "generic",
+    "com.apple.TextEdit": "generic",
+    "com.apple.iWork.Pages": "generic",
+    "com.linear": "generic",
 }
 # Pořadí je důležité — "ai" před "chat", ať "gpt"/"claude" nespadne do obecného chatu.
 _FALLBACK_KEYWORDS = {
@@ -192,6 +222,95 @@ def focused_field() -> tuple[str | None, int | None]:
         return (text, caret)
     except Exception:  # noqa: BLE001
         return (None, None)
+
+
+def needs_leading_space(field_text: str | None, caret: int | None) -> bool:
+    """Má se před vkládaný text doplnit mezera, ať slova nesplynou?
+
+    Pravidlo: ano jen tehdy, když kurzor stojí těsně za nemezerovým znakem.
+    Konec řádku (i s odsazením) mezeru NEchce — po Enteru začínáme nový řádek.
+    """
+    if not field_text or caret is None:
+        return False
+    if caret <= 0 or caret > len(field_text):
+        return False
+    before = field_text[:caret]
+    # Odsazení na novém řádku („\n   ") pořád znamená začátek řádku.
+    if before.rstrip(" \t").endswith(("\n", "\r", " ", " ")):
+        return False
+    return not before[-1].isspace()
+
+
+def caret_at_line_start() -> bool | None:
+    """Stojí kurzor na začátku řádku? True/False, None = nezjistitelné.
+
+    Nutné proto, že rich-text editory (Mail, Outlook) vracejí v AXValue text
+    BEZ koncového konce řádku — po „Dobrý den" + Enter tedy z textu vypadá, že
+    kurzor stojí za písmenem „n", a `needs_leading_space` by chybně přidala
+    mezeru. Číslo řádku + rozsah řádku to poznají správně i tam.
+    """
+    try:
+        from ApplicationServices import (
+            AXUIElementCopyAttributeValue,
+            AXUIElementCopyParameterizedAttributeValue,
+            AXUIElementCreateSystemWide,
+            AXValueGetValue,
+            kAXFocusedUIElementAttribute,
+            kAXInsertionPointLineNumberAttribute,
+            kAXRangeForLineParameterizedAttribute,
+            kAXSelectedTextRangeAttribute,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from ApplicationServices import kAXValueCFRangeType as cfrange
+    except Exception:  # noqa: BLE001
+        try:
+            from ApplicationServices import kAXValueTypeCFRange as cfrange
+        except Exception:  # noqa: BLE001
+            cfrange = 4
+
+    def _location(rng_val):
+        ok, rng = AXValueGetValue(rng_val, cfrange, None)
+        if not ok:
+            return None
+        loc = getattr(rng, "location", None)
+        if loc is None:
+            try:
+                loc = rng[0]
+            except Exception:  # noqa: BLE001
+                return None
+        return int(loc)
+
+    try:
+        system = AXUIElementCreateSystemWide()
+        err, focused = AXUIElementCopyAttributeValue(
+            system, kAXFocusedUIElementAttribute, None
+        )
+        if err or focused is None:
+            return None
+        err, line = AXUIElementCopyAttributeValue(
+            focused, kAXInsertionPointLineNumberAttribute, None
+        )
+        if err or line is None:
+            return None
+        err, line_rng = AXUIElementCopyParameterizedAttributeValue(
+            focused, kAXRangeForLineParameterizedAttribute, line, None
+        )
+        if err or line_rng is None:
+            return None
+        line_start = _location(line_rng)
+        err, sel = AXUIElementCopyAttributeValue(
+            focused, kAXSelectedTextRangeAttribute, None
+        )
+        if err or sel is None:
+            return None
+        caret = _location(sel)
+        if line_start is None or caret is None:
+            return None
+        return caret <= line_start
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def caret_screen_rect() -> tuple[float, float, float, float] | None:
