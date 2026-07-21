@@ -276,6 +276,9 @@ class Controller:
                     ctx["win_target"] = context.is_windows_target(a_bundle, a_name)
                     ctx["field_text"], ctx["caret"] = context.focused_field()
                     ctx["at_line_start"] = context.caret_at_line_start()
+                    # Schovat si PRVEK, do kterého se diktovalo — když uživatel
+                    # mezitím přepne jinam, zapíšeme text přímo do něj (na pozadí).
+                    ctx["element"] = context.focused_element()
                     if config.field_context():
                         b_profile, b_domain = context.browser_context(a_bundle)
                         ctx["domain"] = b_domain
@@ -377,13 +380,19 @@ class Controller:
                     return
                 self._pasting = True
 
-            # Přepnul uživatel mezitím jinam? Pak text NEVKLÁDAT — spadl by do
-            # cizího pole (chat, terminál). Nechat ho ve schránce a říct o tom.
+            # Přepnul uživatel mezitím jinam? ⌘V by text hodilo do cizí appky.
+            # Zkusíme ho zapsat přímo do původního pole přes Accessibility —
+            # funguje na pozadí, takže uživatel může mezitím dělat něco jiného.
             _, now_bundle = context.frontmost_app()
             if bundle and now_bundle and now_bundle != bundle:
+                if context.insert_text_ax(ctx.get("element"), text):
+                    print("🖊️  fokus je jinde → zapsáno přímo do původního pole (na pozadí).")
+                    outcome = "pasted"
+                    return
+                # Web/Electron pole zápis přes AX nepodporují → aspoň schránka.
                 copy_to_clipboard(text)
-                print(f"📋 fokus je jinde ({now_bundle}) → text ve schránce, nevkládám.")
-                notify("Text je ve schránce", "Přepnul jsi jinam — vlož ho ⌘V, kam chceš.")
+                print(f"📋 fokus je jinde ({now_bundle}) a pole nejde zapsat → text ve schránce.")
+                notify("Text je ve schránce", "Původní pole nešlo doplnit — vlož ho ⌘V.")
                 outcome = "clipboard"
                 return
 
