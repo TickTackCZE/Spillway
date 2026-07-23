@@ -22,20 +22,11 @@ _DIR = os.path.expanduser("~/Library/Application Support/Spillway")
 _PATH = os.path.join(_DIR, "history.jsonl")
 _lock = threading.Lock()
 
-# Průměrná rychlost psaní na klávesnici. 40 slov/min je běžný odhad pro
-# netrénovaného pisatele; konzervativní (spíš podhodnotí úsporu).
-TYPING_WPM = 40.0
-
 _MAX_LINES = 5000  # rotace, ať soubor neroste donekonečna
 
 
 def _words(text: str) -> int:
     return len([w for w in (text or "").split() if w.strip()])
-
-
-def typing_seconds(text: str) -> float:
-    """Odhad, jak dlouho by trvalo text napsat na klávesnici."""
-    return _words(text) / TYPING_WPM * 60.0
 
 
 def record(
@@ -70,7 +61,6 @@ def record(
             "words": _words(final),
             "raw_chars": len(raw or ""),
             "out_chars": len(final or ""),
-            "typing_s": round(typing_seconds(final), 1),
             "outcome": outcome,
             "raw": raw,
             "final": final,
@@ -129,25 +119,12 @@ def summary() -> dict:
         if e.get("outcome", "cancelled" if e.get("cancelled") else "pasted") in ("pasted", "clipboard")
     ]
     if not rows:
-        return {
-            "count": 0, "words": 0, "saved_s": 0.0, "spoken_s": 0.0,
-            "typing_s": 0.0, "prompt_saving_pct": None, "top_apps": [],
-        }
+        return {"count": 0, "words": 0, "dictation_s": 0.0, "top_apps": []}
 
-    spoken = sum(float(e.get("audio_s", 0)) + float(e.get("process_s", 0)) for e in rows)
-    typing = sum(float(e.get("typing_s", 0)) for e in rows)
-
-    # Efektivita promptu: jen profil "ai", kde je cílem zhutnit diktát na prompt.
-    ai = [
-        e for e in rows
-        if e.get("profile") == "ai" and e.get("raw_chars") and e.get("out_chars")
-    ]
-    pct = None
-    if ai:
-        raw_total = sum(int(e["raw_chars"]) for e in ai)
-        out_total = sum(int(e["out_chars"]) for e in ai)
-        if raw_total:
-            pct = round((1 - out_total / raw_total) * 100)
+    # Jen fakta: kolik jsem toho reálně namluvil. „Ušetřený čas" se dřív dopočítával
+    # z hádané rychlosti psaní (40 slov/min) — to celé číslo nadhodnocovalo pro
+    # rychlé pisatele, tak ho neukazujeme.
+    dictation = sum(float(e.get("audio_s", 0)) for e in rows)
 
     counts: dict[str, int] = {}
     for e in rows:
@@ -157,10 +134,7 @@ def summary() -> dict:
     return {
         "count": len(rows),
         "words": sum(int(e.get("words", 0)) for e in rows),
-        "saved_s": max(0.0, typing - spoken),
-        "spoken_s": spoken,
-        "typing_s": typing,
-        "prompt_saving_pct": pct,
+        "dictation_s": dictation,
         "top_apps": top,
     }
 

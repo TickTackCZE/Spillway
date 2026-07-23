@@ -246,6 +246,29 @@ def test_hotwords_str_joins_terms_and_handles_empty():
     assert _hotwords_str(["  ", ""]) is None  # samé prázdné → žádný bias
 
 
+def test_silence_gate_for_mlx():
+    # mlx nemá VAD → energetická brána musí ticho/šum poznat, ať nehalucinuje,
+    # a přitom nepustit dolů skutečnou (i tichou) řeč.
+    import numpy as np
+
+    from spillway.transcribe import _is_silence
+
+    assert _is_silence(np.zeros(16000 * 2, dtype="float32")) is True
+    assert _is_silence((np.random.randn(16000 * 2) * 0.003).astype("float32")) is True
+    assert _is_silence(np.zeros(500, dtype="float32")) is True  # moc krátké
+    speech = (np.random.randn(16000) * 0.05).astype("float32")  # hlasitější signál
+    assert _is_silence(speech) is False
+
+
+def test_backend_env_override(monkeypatch):
+    from spillway import transcribe as T
+
+    monkeypatch.setenv("SPILLWAY_WHISPER_BACKEND", "faster")
+    assert T._pick_backend() == "faster"
+    monkeypatch.setenv("SPILLWAY_WHISPER_BACKEND", "mlx")
+    assert T._pick_backend() == "mlx"
+
+
 # --- Statistiky ---------------------------------------------------------------
 
 
@@ -258,9 +281,8 @@ def _stats_tmp(tmp_path, monkeypatch):
     return stats
 
 
-def test_stats_excludes_cancelled_and_counts_prompt_saving(_stats_tmp):
+def test_stats_excludes_cancelled_and_sums_dictation_time(_stats_tmp):
     s = _stats_tmp
-    # profil ai: 334 → 212 znaků = -37 % (reálný vzorek z diktátu uživatele)
     s.record(raw="a" * 334, final="b" * 212, app="Claude", profile="ai",
              audio_seconds=20, process_seconds=4)
     s.record(raw="x" * 100, final="ahoj jak se máš", app="Zprávy", profile="chat",
@@ -270,21 +292,19 @@ def test_stats_excludes_cancelled_and_counts_prompt_saving(_stats_tmp):
 
     out = s.summary()
     assert out["count"] == 2, "zrušený diktát se nesmí počítat do statistik"
-    assert out["prompt_saving_pct"] == 37, "zhuštění se počítá jen z profilu ai"
+    assert out["dictation_s"] == 23, "čas diktování = 20 + 3 (zrušený se nepočítá)"
     assert dict(out["top_apps"])["Claude"] == 1
 
 
 def test_stats_ignore_non_dictations(_stats_tmp):
     # [F6] Prázdný přepis a pád pipeline nic nevložily → nesmí do statistik.
-    # Dřív se zapisovaly jako plnohodnotné, nafukovaly count a SRÁŽELY úsporu
-    # (rostl `spoken_s`, ale `typing_s` ne).
     s = _stats_tmp
     s.record(raw="", final="", app="Mail", profile="email",
              audio_seconds=9, process_seconds=3, outcome="empty")
     s.record(raw="něco", final="", app="Mail", profile="email",
              audio_seconds=9, process_seconds=3, outcome="error")
     assert s.summary()["count"] == 0
-    assert s.summary()["saved_s"] == 0.0
+    assert s.summary()["dictation_s"] == 0.0
 
 
 def test_stats_domain_does_not_fragment_top_apps(_stats_tmp):
@@ -311,13 +331,10 @@ def test_stats_reads_legacy_entries_without_outcome(_stats_tmp, tmp_path):
     assert out["count"] == 1, "starý zrušený záznam se pozná podle `cancelled`"
 
 
-def test_stats_empty_and_saved_time_never_negative(_stats_tmp):
+def test_stats_empty_summary_does_not_crash(_stats_tmp):
     s = _stats_tmp
     assert s.summary()["count"] == 0  # prázdná historie nespadne
-    # Dlouhé mluvení, krátký výstup → psaní by bylo rychlejší; úspora nesmí být záporná.
-    s.record(raw="a" * 10, final="ok", app="X", profile="chat",
-             audio_seconds=60, process_seconds=5)
-    assert s.summary()["saved_s"] == 0.0
+    assert s.summary()["dictation_s"] == 0.0
 
 
 def test_human_duration_formats():

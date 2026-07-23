@@ -1,21 +1,29 @@
-"""Lokální přepis řeči přes faster-whisper (large-v3-turbo, CPU).
+"""Lokální přepis řeči.
 
-Model se drží jako singleton v paměti (Spike B: teplé načtení ~1,6 s, RTF ~0,30
-na M4). Backend je schválně za jednoduchým rozhraním, aby šel později vyměnit
-za mlx-whisper.
+Dva backendy za jedním rozhraním:
+  • **mlx** — mlx-whisper na Apple GPU/ANE (RTF ~0,08 na M4, ~4,5× rychlejší než
+    CPU při stejné kvalitě — změřeno). Výchozí na Apple Silicon.
+  • **faster** — faster-whisper na CPU. Fallback (jiný HW, budoucí Windows, nebo
+    když mlx nejde načíst). Má VAD zabudovaný.
+
+mlx VAD nemá → ticho by halucinovalo („Titulky vytvořil…"). Řešíme bránou přes
+silero VAD z faster_whisper (onnx už je v bundlu) + post-filtrem `_drop_hallucination`.
+
+Přepnutí: `SPILLWAY_WHISPER_BACKEND=mlx|faster`. Model uvolnitelný po nečinnosti (R5).
 """
 
 from __future__ import annotations
 
 import gc
 import os
+import platform
 import threading
 import time
 
 import numpy as np
 
-# Známé halucinace na tichu/krátkém audiu (R10). Pozor: [B8] filtr smí zahodit
-# jen KRÁTKÝ výstup (jinak zahodí legitimní diktát začínající „Titulky…"/„Překlad…").
+# Známé halucinace na tichu/krátkém audiu (R10). [B8] filtr smí zahodit jen
+# KRÁTKÝ výstup (jinak zahodí legitimní diktát začínající „Titulky…"/„Překlad…").
 _HALLUCINATION_MARKERS = (
     "titulky vytvořil",
     "titulky pro",
@@ -25,9 +33,10 @@ _HALLUCINATION_MARKERS = (
 )
 _HALLUCINATION_MAX_LEN = 45
 
+_MLX_MODEL = os.environ.get("SPILLWAY_MLX_MODEL") or "mlx-community/whisper-large-v3-turbo"
+
+
 def _beam_size() -> int:
-    """Doporučený default faster-whisperu je 5 (dřív tu byla greedy 1 = méně
-    přesné). Přebitelné přes SPILLWAY_BEAM_SIZE, kdyby latence vadila víc."""
     try:
         return max(1, int(os.environ.get("SPILLWAY_BEAM_SIZE", "5")))
     except (TypeError, ValueError):
@@ -38,17 +47,42 @@ BEAM_SIZE = _beam_size()
 
 
 def _hotwords_str(terms: list[str] | None) -> str | None:
-    """Slovník → jeden řetězec pro faster-whisper `hotwords` (biasuje dekodér).
-    Prázdný slovník → None (žádný bias)."""
+    """Slovník → jeden řetězec pro faster-whisper `hotwords`. Prázdný → None."""
     if not terms:
         return None
     cleaned = [t.strip() for t in terms if t and t.strip()]
     return ", ".join(cleaned) if cleaned else None
 
 
+def _pick_backend() -> str:
+    """mlx na Apple Silicon (když jde importnout), jinak faster-whisper.
+    Přebitelné přes SPILLWAY_WHISPER_BACKEND."""
+    forced = (os.environ.get("SPILLWAY_WHISPER_BACKEND") or "").strip().lower()
+    if forced in ("mlx", "faster"):
+        return forced
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        try:
+            import mlx_whisper  # noqa: F401
+
+            return "mlx"
+        except Exception:  # noqa: BLE001 — mlx nedostupné (nezabalené, chyba) → CPU
+            return "faster"
+    return "faster"
+
+
+def _is_silence(audio: np.ndarray) -> bool:
+    """Levná brána proti tichu pro mlx (které vlastní VAD nemá) — než by mlx na
+    tichu halucinovalo („Titulky vytvořil…"). Ověřeno: ticho/šum má „voiced"
+    podíl ≤ 0,1 %, i tichá řeč ≥ 59 %, takže práh 1 % bezpečně odděluje.
+    Silero VAD se sem záměrně nedává — na CPU by ukusoval z GPU zrychlení."""
+    if audio.size < 1600:  # < 0,1 s → nic k přepisu
+        return True
+    voiced = float(np.mean(np.abs(audio) > 0.01))
+    return voiced < 0.01
+
+
 class Transcriber:
-    """[R5] Model (~1,5–2 GB RAM) jde uvolnit po nečinnosti a znovu lazy-load
-    při dalším diktátu (teplé znovunačtení ze souborové cache ~1,6 s — Spike B)."""
+    """[R5] Model (~1,5–2 GB) jde uvolnit po nečinnosti a znovu lazy-loadnout."""
 
     def __init__(
         self,
@@ -59,31 +93,60 @@ class Transcriber:
         self.model_name = model_name
         self.compute_type = compute_type
         self.language = language
-        self._model = None
+        self.backend = _pick_backend()
+        self._model = None  # faster: WhisperModel; mlx: sentinel True po warmu
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
-        self._load_model()  # při startu appky natvrdo (ať je první diktát rychlý)
+        # V zabalené .app se mlx Metal shadery (mlx.metallib) můžou nezabalit —
+        # ověř, že mlx reálně počítá na GPU, jinak spadni na CPU (žádná regrese).
+        if self.backend == "mlx" and not self._mlx_ok():
+            print("⚠️  mlx nefunguje (shadery?) → fallback na faster-whisper (CPU).")
+            self.backend = "faster"
+        print(f"🗣️  Whisper backend: {self.backend}"
+              f"{' (' + _MLX_MODEL + ')' if self.backend == 'mlx' else ' (CPU large-v3-turbo)'}")
+        self._load_model()
+
+    def _mlx_ok(self) -> bool:
+        """Skutečně proženeme mlx přes GPU na drobném klipu — odhalí chybějící
+        shadery/knihovny v bundlu ještě před prvním diktátem."""
+        try:
+            import mlx_whisper
+
+            mlx_whisper.transcribe(
+                np.full(4800, 0.02, dtype="float32"),
+                path_or_hf_repo=_MLX_MODEL, language="cs",
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            print(f"mlx health-check selhal: {exc}")
+            return False
+
+    # --- životní cyklus modelu ------------------------------------------------
 
     def _load_model(self) -> None:
-        from faster_whisper import WhisperModel
+        if self.backend == "mlx":
+            import mlx_whisper
 
-        self._model = WhisperModel(self.model_name, device="cpu", compute_type=self.compute_type)
+            mlx_whisper.load_models.load_model(_MLX_MODEL)  # cachuje se
+            self._model = True
+        else:
+            from faster_whisper import WhisperModel
+
+            self._model = WhisperModel(self.model_name, device="cpu",
+                                       compute_type=self.compute_type)
 
     @property
     def is_loaded(self) -> bool:
         return self._model is not None
 
     def preload(self) -> None:
-        """Načte model dopředu. Volá se při STISKU klávesy — než domluvíš, model
-        je připravený, takže se reload (~1,6 s po auto-unloadu) schová do doby,
-        kdy stejně mluvíš, místo aby se čekalo až po puštění klávesy."""
+        """Načte model dopředu (volá se při stisku klávesy — reload se schová do
+        doby, kdy uživatel mluví)."""
         with self._lock:
             if self._model is None:
                 self._load_model()
 
     def unload_if_idle(self, idle_seconds: float) -> bool:
-        """Uvolní model, pokud je nečinný déle než `idle_seconds`. Vrací True,
-        když k uvolnění došlo. `idle_seconds <= 0` vypíná auto-unload."""
         if idle_seconds <= 0:
             return False
         with self._lock:
@@ -92,8 +155,17 @@ class Transcriber:
             if time.monotonic() - self._last_used < idle_seconds:
                 return False
             self._model = None
+            if self.backend == "mlx":
+                try:
+                    import mlx_whisper
+
+                    mlx_whisper.load_models.load_model.cache_clear()
+                except Exception:  # noqa: BLE001
+                    pass
         gc.collect()
         return True
+
+    # --- přepis ---------------------------------------------------------------
 
     def transcribe(
         self,
@@ -107,28 +179,45 @@ class Transcriber:
             if self._model is None:
                 self._load_model()
             self._last_used = time.monotonic()
-            model = self._model
-        segments, _info = model.transcribe(
-            audio,
-            language=language or self.language,
-            vad_filter=True,
-            # beam_size=5 je doporučený default faster-whisperu (dřív tu byla 1 =
-            # greedy). Přesnější dekódování za cenu trochy latence — na M4 se to
-            # v praxi vejde do desítek ms navíc (změřeno).
-            beam_size=BEAM_SIZE,
-            # [F-c] Uživatelský slovník biasuje PŘEPIS ke správnému znění termínů
-            # („pull request", názvy projektů) — dřív to musel dohánět až Claude.
-            hotwords=_hotwords_str(hotwords),
-        )
-        text = " ".join(seg.text.strip() for seg in segments).strip()
+        lang = language or self.language
+
+        if self.backend == "mlx":
+            text = self._transcribe_mlx(audio, lang)
+        else:
+            text = self._transcribe_faster(audio, lang, hotwords)
+
         with self._lock:
             self._last_used = time.monotonic()  # dokončení, ne jen start
         return _drop_hallucination(text)
 
+    def _transcribe_mlx(self, audio: np.ndarray, lang: str) -> str:
+        if _is_silence(audio):  # brána proti halucinaci na tichu
+            return ""
+        import mlx_whisper
+
+        res = mlx_whisper.transcribe(
+            audio,
+            path_or_hf_repo=_MLX_MODEL,
+            language=lang,
+            condition_on_previous_text=False,  # bez přenosu halucinací mezi okny
+        )
+        return (res.get("text") or "").strip()
+
+    def _transcribe_faster(self, audio: np.ndarray, lang: str,
+                           hotwords: list[str] | None) -> str:
+        model = self._model
+        segments, _info = model.transcribe(
+            audio,
+            language=lang,
+            vad_filter=True,
+            beam_size=BEAM_SIZE,
+            hotwords=_hotwords_str(hotwords),
+        )
+        return " ".join(seg.text.strip() for seg in segments).strip()
+
 
 def _drop_hallucination(text: str) -> str:
-    # [B8] Zahoď jen krátký výstup, který je celý halucinační marker — u delšího
-    # diktátu (i když náhodou začíná „Překlad…") text ponech, ať se neztratí.
+    # [B8] Zahoď jen krátký výstup, který je celý halucinační marker.
     if len(text) > _HALLUCINATION_MAX_LEN:
         return text
     low = text.lower()
