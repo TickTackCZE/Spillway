@@ -34,6 +34,17 @@ CANCEL_MIN_VISIBLE_S = 0.6
 
 _CANCELLED = object()  # sentinel: běh přerušen Escapem uprostřed
 
+# [security] Do logu se ve výchozím stavu NEpíše obsah diktátů (log není šifrovaný
+# a je v běžném umístění). Plný text jen s SPILLWAY_DEBUG_TEXT=1 na ladění.
+import os as _os  # noqa: E402
+
+_LOG_TEXT = _os.environ.get("SPILLWAY_DEBUG_TEXT", "0").lower() not in ("0", "false", "no")
+
+
+def _preview(text: str) -> str:
+    """Bezpečný náhled pro log: buď délka (default), nebo plný text při ladění."""
+    return repr(text) if _LOG_TEXT else f"{len(text)} zn."
+
 
 def _setup_logging() -> str | None:
     """Ve zabalené .app (bez terminálu) není kam psát print() — přesměruj
@@ -44,6 +55,13 @@ def _setup_logging() -> str | None:
     try:
         os.makedirs(log_dir, exist_ok=True)
         log_path = os.path.join(log_dir, "spillway.log")
+        # [security] Log ořízni, když překročí 1 MB — jinak roste donekonečna
+        # (a s ním i množství citlivého obsahu, co v něm skončí).
+        try:
+            if os.path.getsize(log_path) > 1_000_000:
+                os.remove(log_path)
+        except OSError:
+            pass
         # line-buffered, ať se zápisy objeví hned (ne až po pádu)
         f = open(log_path, "a", buffering=1, encoding="utf-8")
         # Přesměruj jen ve frozen buildu; při vývoji chceme vidět terminál.
@@ -327,6 +345,7 @@ class Controller:
                 hotwords=self.glossary if config.whisper_hotwords() else None,
             ))
             if raw is _CANCELLED:
+                raw = ""  # ať se sentinel nedostane do stats.record (TypeError)
                 outcome = "cancelled"
                 return
             dt = time.perf_counter() - t0
@@ -334,7 +353,7 @@ class Controller:
                 print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")
                 outcome = "empty"
                 return
-            print(f"📝 přepis ({dt:.1f} s): {raw!r}")
+            print(f"📝 přepis ({dt:.1f} s): {_preview(raw)}")
 
             # Kontext už se mezitím posbíral souběžně s přepisem.
             ctx_thread.join(timeout=3.0)
@@ -356,7 +375,7 @@ class Controller:
             skip_llm = min_s > 0 and audio_secs < min_s and profile != "email"
             if skip_llm:
                 text = basic_cleanup(raw)
-                print(f"⚡ krátký diktát ({audio_secs:.1f} s < {min_s:g} s) → bez AI: {text!r}")
+                print(f"⚡ krátký diktát ({audio_secs:.1f} s < {min_s:g} s) → bez AI: {_preview(text)}")
             elif self.cleaner is not None:
                 # Existující obsah pole jako kontext (jen když povoleno).
                 # E-mail → celé pole (cap 3000); jinak okno před kurzorem.
@@ -380,7 +399,7 @@ class Controller:
                         outcome = "cancelled"
                         return
                     text = result or raw
-                    print(f"✨ upraveno: {text!r}")
+                    print(f"✨ upraveno: {_preview(text)}")
                 except Exception as exc:  # noqa: BLE001 — [O6] chyba, ale text neztratit
                     print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
                     notify("AI úprava selhala", "Vložen syrový přepis. Zkontroluj API klíč / kredit.")
