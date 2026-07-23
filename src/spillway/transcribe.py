@@ -127,7 +127,11 @@ class Transcriber:
         if self.backend == "mlx":
             import mlx_whisper
 
-            mlx_whisper.load_models.load_model(_MLX_MODEL)  # cachuje se
+            # Pozn.: záměrně přes load_models.load_model (ne ModelHolder.get_model)
+            # — get_model v zabalené .app deadlockoval při druhém dotažení modelu
+            # na hlavním vlákně (ctypes/GIL). Tenhle tvar je ověřeně stabilní.
+            # ModelHolder naplní až první `transcribe`; unload pak vyčistí ten.
+            mlx_whisper.load_models.load_model(_MLX_MODEL)
             self._model = True
         else:
             from faster_whisper import WhisperModel
@@ -156,14 +160,23 @@ class Transcriber:
                 return False
             self._model = None
             if self.backend == "mlx":
-                try:
-                    import mlx_whisper
-
-                    mlx_whisper.load_models.load_model.cache_clear()
-                except Exception:  # noqa: BLE001
-                    pass
+                self._unload_mlx_gpu()
         gc.collect()
         return True
+
+    @staticmethod
+    def _unload_mlx_gpu() -> None:
+        """Skutečně uvolní GPU paměť mlx (ověřeno: ~2 GB → 0). mlx drží model
+        na `ModelHolder.model` a k tomu má vlastní GPU cache pool — obojí zahodit."""
+        try:
+            import mlx.core as mx
+            from mlx_whisper.transcribe import ModelHolder
+
+            ModelHolder.model = None
+            ModelHolder.model_path = None
+            mx.clear_cache()
+        except Exception:  # noqa: BLE001
+            pass
 
     # --- přepis ---------------------------------------------------------------
 

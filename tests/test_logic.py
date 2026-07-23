@@ -363,6 +363,46 @@ def _controller_stub(state):
     return c
 
 
+def test_run_cancellable_returns_immediately_on_cancel():
+    # Escape během dlouhého blokujícího volání musí okamžitě opustit čekání
+    # (výsledek se zahodí), ne čekat, až volání doběhne.
+    import threading
+    import time
+
+    from spillway.app import _CANCELLED
+
+    c = _controller_stub("PROCESSING")
+
+    # „pomalé volání" 5 s; po 0,1 s nastavíme cancel z jiného vlákna
+    def slow():
+        time.sleep(5.0)
+        return "hotovo"
+
+    threading.Timer(0.1, c._cancel.set).start()
+    t0 = time.perf_counter()
+    res = c._run_cancellable(slow)
+    took = time.perf_counter() - t0
+    assert res is _CANCELLED, "při zrušení se má vrátit sentinel, ne výsledek"
+    assert took < 1.0, f"zrušení musí být okamžité, trvalo {took:.2f}s"
+
+
+def test_run_cancellable_returns_result_when_not_cancelled():
+    c = _controller_stub("PROCESSING")
+    assert c._run_cancellable(lambda: 42) == 42
+
+
+def test_run_cancellable_propagates_exception():
+    import pytest as _pytest
+
+    c = _controller_stub("PROCESSING")
+
+    def boom():
+        raise ValueError("prásk")
+
+    with _pytest.raises(ValueError, match="prásk"):
+        c._run_cancellable(boom)
+
+
 def test_cancel_during_recording_ends_the_recording(monkeypatch):
     # Regrese: ESC při NAHRÁVÁNÍ jen nastavil příznak a čekal na puštění klávesy
     # → mikrofon běžel dál a HUD visel na „Ruším" bez konce. Musí převzít řízení
