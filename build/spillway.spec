@@ -10,7 +10,11 @@ konfigurační soubory faster_whisper/ctranslate2.
 
 import os
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 
 block_cipher = None
 
@@ -22,10 +26,18 @@ SRC = os.path.join(ROOT, "src")
 # (ONNXRuntimeError NO_SUCHFILE). PyInstaller je z importů neodvodí → přibalit ručně.
 _datas = collect_data_files("faster_whisper")
 
+# mlx GPU backend: nutné přibalit Metal shadery (mlx/lib/mlx.metallib) + nativní
+# knihovny (libmlx.dylib…), jinak GPU cesta v .app spadne a kód spadne na CPU.
+# mlx_whisper má taky nekódové assety (mel filtry, tokenizer).
+_datas += collect_data_files("mlx")            # mlx.metallib
+_datas += collect_data_files("mlx_whisper")    # assety whisperu
+_mlx_binaries = collect_dynamic_libs("mlx")    # libmlx.dylib, core.so…
+_mlx_hidden = collect_submodules("mlx") + collect_submodules("mlx_whisper")
+
 a = Analysis(
     [os.path.join(ROOT, "run_spillway.py")],
     pathex=[SRC],
-    binaries=[],
+    binaries=_mlx_binaries,
     datas=_datas,
     hiddenimports=[
         # pyobjc frameworky použité napříč moduly — PyInstaller je z importů
@@ -40,11 +52,13 @@ a = Analysis(
         "keyring.backends.macOS",
         "faster_whisper",
         "ctranslate2",
-    ],
+    ] + _mlx_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # torch tahá mlx_whisper jako závislost, ale při přepisu se NEnačítá (jen
+    # v konvertoru torch_whisper.py) — vyloučit, ať bundle nenaroste o ~490 MB.
+    excludes=["torch", "torchaudio", "torchvision"],
     noarchive=False,
     cipher=block_cipher,
 )

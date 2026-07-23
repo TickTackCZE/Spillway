@@ -105,11 +105,11 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   </div>
 
   <div class="card"><h3>Statistiky</h3>
-    <div id="statsEmpty" class="hint" style="margin:0;">Zatím žádný diktát — až budeš diktovat, uvidíš tu, kolik času jsi ušetřil.</div>
+    <div id="statsEmpty" class="hint" style="margin:0;">Zatím žádný diktát — až budeš diktovat, uvidíš tu přehled.</div>
     <div id="statsBody" style="display:none;">
       <div class="rowt">
-        <div class="l">Ušetřený čas<small id="statsSavedSub">oproti psaní na klávesnici</small></div>
-        <div class="l" id="statsSaved" style="color:var(--accent);font-weight:600;">—</div>
+        <div class="l">Čas diktování<small>celkem namluveno</small></div>
+        <div class="l" id="statsDictation" style="color:var(--accent);font-weight:600;">—</div>
       </div>
       <div class="rowt">
         <div class="l">Diktátů<small id="statsWords">—</small></div>
@@ -202,8 +202,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     document.getElementById('statsEmpty').style.display = has ? 'none' : 'block';
     document.getElementById('statsBody').style.display = has ? 'block' : 'none';
     if(!has) return;
-    document.getElementById('statsSaved').textContent = st.saved_h;
-    document.getElementById('statsSavedSub').textContent = 'napsal bys to za ' + st.typing_h + ', nadiktoval za ' + st.spoken_h;
+    document.getElementById('statsDictation').textContent = st.dictation_h;
     document.getElementById('statsCount').textContent = st.count;
     document.getElementById('statsWords').textContent = st.words + ' slov celkem';
     var ar = document.getElementById('statsAppsRow');
@@ -366,9 +365,7 @@ class _Bridge(NSObject):
             "stats": {
                 "count": summary["count"],
                 "words": summary["words"],
-                "saved_h": stats.human_duration(summary["saved_s"]),
-                "typing_h": stats.human_duration(summary["typing_s"]),
-                "spoken_h": stats.human_duration(summary["spoken_s"]),
+                "dictation_h": stats.human_duration(summary["dictation_s"]),
                 "top_apps": summary["top_apps"],
             },
             "theme": config.get_theme(),
