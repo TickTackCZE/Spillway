@@ -16,7 +16,6 @@ from AppKit import (
     NSApplicationActivationPolicyAccessory,
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
-    NSColor,
     NSMakeRect,
     NSObject,
     NSWindow,

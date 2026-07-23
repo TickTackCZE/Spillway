@@ -32,6 +32,8 @@ IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
 # (viz `is_cancelling`), ne časovač.
 CANCEL_MIN_VISIBLE_S = 0.6
 
+_CANCELLED = object()  # sentinel: běh přerušen Escapem uprostřed
+
 
 def _setup_logging() -> str | None:
     """Ve zabalené .app (bez terminálu) není kam psát print() — přesměruj
@@ -242,6 +244,29 @@ class Controller:
         # ho celý na worker vlákno; on_release tak zůstane triviální.
         threading.Thread(target=self._process, daemon=True).start()
 
+    def _run_cancellable(self, fn):
+        """Spustí `fn` na vlákně a čeká — ale když během běhu přijde Escape,
+        přestane čekat a vrátí `_CANCELLED` (vlákno dobíhá na pozadí, výsledek
+        se zahodí). Díky tomu je zrušení okamžité i uprostřed přepisu / volání
+        Clauda, místo aby se čekalo, až blokující volání doběhne."""
+        box: dict = {}
+
+        def _run() -> None:
+            try:
+                box["r"] = fn()
+            except BaseException as exc:  # noqa: BLE001 — přenést na hlavní tok
+                box["e"] = exc
+
+        th = threading.Thread(target=_run, daemon=True)
+        th.start()
+        while th.is_alive():
+            if self._cancel.is_set():
+                return _CANCELLED
+            th.join(0.03)
+        if "e" in box:
+            raise box["e"]
+        return box.get("r")
+
     def _process(self) -> None:
         t_start = time.perf_counter()
         audio_secs = 0.0
@@ -295,20 +320,21 @@ class Controller:
             # Slovník do Whisperu (hotwords) jen když si o to uživatel řekne —
             # výchozí VYPNUTO, protože bias vkládá termíny, které nezazněly
             # (viz config.whisper_hotwords). Zkomoleniny opraví bezpečně Claude.
-            raw = self.transcriber.transcribe(
+            # Cancellable: Escape během přepisu ho okamžitě opustí.
+            raw = self._run_cancellable(lambda: self.transcriber.transcribe(
                 audio,
                 language=self.language,
                 hotwords=self.glossary if config.whisper_hotwords() else None,
-            )
+            ))
+            if raw is _CANCELLED:
+                outcome = "cancelled"
+                return
             dt = time.perf_counter() - t0
             if not raw:
                 print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")
                 outcome = "empty"
                 return
             print(f"📝 přepis ({dt:.1f} s): {raw!r}")
-            if self._cancel.is_set():
-                outcome = "cancelled"
-                return  # zrušeno po přepisu → ušetří se aspoň volání Claude
 
             # Kontext už se mezitím posbíral souběžně s přepisem.
             ctx_thread.join(timeout=3.0)
@@ -341,16 +367,19 @@ class Controller:
                     elif caret and caret > 0:
                         before = field_text[:caret][-800:]
                 try:
-                    text = (
-                        self.cleaner.clean(
-                            raw,
-                            app_name=app_ctx,
-                            profile=profile,
-                            before_text=before,
-                            glossary=self.glossary,
-                        )
-                        or raw
-                    )
+                    # Cancellable: Escape během volání Clauda ho okamžitě opustí
+                    # (odpověď dobíhá na pozadí a zahodí se). Nejdelší krok pipeline.
+                    result = self._run_cancellable(lambda: self.cleaner.clean(
+                        raw,
+                        app_name=app_ctx,
+                        profile=profile,
+                        before_text=before,
+                        glossary=self.glossary,
+                    ))
+                    if result is _CANCELLED:
+                        outcome = "cancelled"
+                        return
+                    text = result or raw
                     print(f"✨ upraveno: {text!r}")
                 except Exception as exc:  # noqa: BLE001 — [O6] chyba, ale text neztratit
                     print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
@@ -415,7 +444,7 @@ class Controller:
 def main() -> None:
     from . import lifecycle
 
-    log_path = _setup_logging()
+    _setup_logging()
 
     # [B5] Single-instance zámek — druhá instance by měla dva event tapy,
     # dva mikrofony a 2× Whisper model. Když už běží, skonči.

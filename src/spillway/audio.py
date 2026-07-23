@@ -16,7 +16,7 @@ import sounddevice as sd
 _DEBUG = os.environ.get("SPILLWAY_DEBUG_AUDIO", "0").lower() not in ("0", "false", "no")
 
 SAMPLE_RATE = 16000
-MAX_SECONDS_DEFAULT = 120
+MAX_SECONDS_DEFAULT = 300  # 5 min — pojistka proti ztracenému key-up; 5 min ≈ 19 MB RAM
 
 
 class Recorder:
