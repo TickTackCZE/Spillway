@@ -127,11 +127,29 @@ Kroky jdou sekvenčně (Claude potřebuje hotový přepis). Přepis je díky mlx
 
 **Kompatibilní s tvým požadavkem na zrušení:** Whisper běží lokálně a zdarma i během mluvení; **po puštění pořád zbývá okamžik (poslední segment + volání Claude), kdy Escape stihne zrušit, než se text pošle do Claude** (placený/nevratný krok). Bod zrušení se jen posune z „před Whisperem" na „před Claude" — to je pro nás OK.
 
-**Potřebný zásah (střední–vyšší):** inkrementální snapshoty audia z Recorderu; smyčka na mlx vlákně (přepis rostoucího audia / hotových segmentů); **spojování segmentů** (hranice slov, dedup překryvu — nejchoulostivější část); přesun bodu zrušení. **Riziko:** kvalita na hranicích segmentů (Whisper je nejpřesnější s plným 30s kontextem — sekání může zhoršit přesnost na švech). **Verdikt:** hezké zrychlení pro střední/dlouhé diktáty, ale netriviální a s rizikem kvality → spíš v2, ne teď.
+**Kvalita a skládání — sekání na TICHU kvalitu nezhoršuje, spíš zlepšuje.** Klíčové zjištění z researche: špatné je jen **fixní** sekání (uprostřed slova) — to zhoršuje přesnost. **VAD sekání na tichu** naopak dává čistší hranice, míň driftu a **míň halucinací** (WhisperX přesně tohle dělá: VAD segmenty → slepit na ~30 s okna s řezy v tichu). Takže:
+- **Švy jsou v tichu → slova se nesekají**, spojení segmentů = prosté zřetězení textů (+ doporučený ~2–3 s překryv proti ztrátě slova na kraji). Nejchoulostivější část z minula (dedup slov na švu) je díky řezu v tichu skoro triviální.
+- **Ztráta globálního kontextu** mezi vzdálenými segmenty je u dlouhého souvislého vyprávění reálná, ale u diktátu (krátké, samostatné věty) zanedbatelná — a **Claude v druhém kroku čte celý text**, takže případný šev dorovná.
 
-Zdroje: [ufal/whisper_streaming](https://github.com/ufal/whisper_streaming), [whisper_streaming_web](https://github.com/codesdancing/whisper_streaming_web).
+**Pozn. k dnešnímu VAD:** dnes se audio **neseká** — výchozí mlx cesta má jen energetickou bránu proti tichu (`_is_silence`, boolean na celém klipu), faster-whisper má silero VAD, ale jako jedno volání po puštění. Takže „už se to rozděluje" zatím **neplatí** — streaming by tu segmentaci musel přidat (silero onnx je v bundlu, běží levně na CPU během nahrávání).
+
+**Potřebný zásah (střední):** silero VAD během nahrávání → uzavřené segmenty přepisovat průběžně na mlx vlákně, po puštění dopřepsat poslední (otevřený) segment a zřetězit; přesun bodu zrušení „před Whisper" → „před Claude". **Verdikt:** kvalita **není bloker** (řez v tichu), hlavní práce je streamovací smyčka a VAD za běhu. Hezké zrychlení pro střední/dlouhé diktáty → dobrý kandidát na v2.
+
+Zdroje: [ufal/whisper_streaming](https://github.com/ufal/whisper_streaming), [WhisperX (VAD cut&merge na 30 s)](https://ora.ox.ac.uk/objects/uuid:fece4192-95b7-4db8-a018-3cf728040194), [chunking strategie](https://www.saytowords.com/blogs/Whisper-Audio-Chunking/).
 
 ### 8.2 Odložené doručení — spolehlivost a scénáře
+
+**Jak by to vypadalo — krok za krokem (jednoduše):**
+1. Podržíš klávesu a normálně diktuješ.
+2. Během nahrávání si Spillway **potichu poznamená cíl**: která **appka + okno** má fokus, a krátký **otisk** pole (kousek textu, co v něm byl / že bylo prázdné). *Nezapamatuje si samotné pole* — odkaz na textové pole je křehký (web/Electron ho re-renderem zneplatní).
+3. Pustíš klávesu. Text se **hned nevloží** — vpravo dole naskočí malý chip: `Zpracovávám… → Připraveno ✓`.
+4. Ty jsi mezitím odešel jinam (proto je to „odložené").
+5. **Doručení, dvě cesty:**
+   - **Vrátíš se do pole sám** (klikneš do něj) → Spillway pozná, že jsi zpět v zapamatované appce+okně, ověří otisk a **vloží**.
+   - **Klikneš na chip** → Spillway požádá systém, ať tu appku+okno vytáhne dopředu; když to projde a pole sedí, **vloží**.
+6. **Pojistka:** když cokoli nesedí (appka zavřená, jiné pole, nejde ověřit) → **nevkládá naslepo**, nechá text ve schránce a chip řekne „stiskni ⌘V". Text se nikdy neztratí — v nejhorším zmáčkneš ⌘V.
+
+**Omezení jednoduše:** na novém macOS (Sonoma+) často nepůjde „klik na chip → appka sама dopředu" → dostaneš fallback ⌘V. Ve web/Electron polích Spillway pole neověří → taky ⌘V. Jen jeden čekající text (bez fronty). Po restartu Spillway s čekajícím textem → cíl neplatný → jen zkopírovat.
 
 **Klíčové zjištění (Apple forums):** od **macOS Sonoma (14+) Apple omezil cross-app aktivaci** — `NSRunningApplication.activateWithOptions` / `activate(ignoringOtherApps:)` je nespolehlivé/deprecated; appka už nemůže volně vytáhnout jinou appku do popředí. Existuje kooperativní `activate(from:)` (14+) pro předání aktivace po uživatelově gestu, ale je křehké napříč verzemi.
 
@@ -149,16 +167,22 @@ Zdroje: [ufal/whisper_streaming](https://github.com/ufal/whisper_streaming), [wh
 
 Zdroje: [activateWithOptions na Sonoma](https://developer.apple.com/forums/thread/739524), [bring another app to foreground](https://developer.apple.com/forums/thread/793253).
 
-### 8.3 Automatický slovník — mining oprav z historie
+### 8.3 Automatický slovník — přehodnoceno (původní návrh byl slabý)
 
-**Koncept je zavedený** (učení z post-editace / custom vocabulary), ale máme **výhodu zdarma**: v `history.jsonl` už držíme `raw` (Whisper) i `final` (Claude) u každého diktátu → opravy jde vytěžit bez extra nákladů.
+**Kritika sedí:** stavět slovník jen z historie `raw`→`final` (Whisper→Claude) je **málo užitečné**. Ten diff totiž zachytí jen to, co **Claude už sám opravuje** — takže přidání do slovníku je z velké části **redundantní** (Claude to trefí příště tak jako tak). Jediný přínos: konzistence + hotwords pro Whisper (ty jsou ale vypnuté, protože halucinují). Málo muziky.
 
-**Jak by to fungovalo:**
-1. **Diff `raw` → `final`** na úrovni slov (`difflib.SequenceMatcher`) → seznam nahrazení (co Claude změnil).
-2. **Filtr na „slovníkový materiál"** — jen záměny, kde vznikl anglický/technický termín v kanonickém tvaru (`pool request→pull request`, `komitnul→commitnul`, `hagging fejs→Hugging Face`). Zahodit běžnou gramatiku/interpunkci (to není do slovníku). Heuristika: malá fonetická vzdálenost + cílový tvar je ne-české slovo / camelCase / známý žargon.
-3. **Agregace + práh** — počítat (špatně→správně) napříč historií; když se stejná oprava opakuje ≥N×, je to kandidát.
-4. **Návrh uživateli** v nastavení: „Přidat *Hugging Face* do slovníku? (Claude opravoval 5×)" → klik přidá kanonický termín. Díky tomu ho příště Whisper/Claude trefí konzistentně a je potvrzený (ne odhad Claude).
+**Kde je ta cenná informace:** termíny, které **Whisper i Claude minou zároveň** — vzácné slovo, které ani jeden nezná (název produktu „Domovoy", jméno člověka, niche knihovna). Whisper ho přeslechne, Claude ho nezná → nechá zkomoleninu nebo hádá špatně. **Tohle se v `raw`→`final` NIKDY neobjeví jako oprava** (Claude to neopravil). Objeví se to jen tam, kde to **ty ručně opravíš ve vloženém textu** — a to je přesně signál, který dnes Spillway nevidí (vloží a zapomene).
 
-**Náročnost: nízká–střední** (diff + počítání je triviální; ladění filtru je hlavní práce). **Vše lokálně** (žádná nová data ven). **Riziko: nízké** — je to jen návrh, nic se nepřidá bez potvrzení. **Verdikt:** z těch tří **nejsnadnější a nejpraktičtější** — staví na už existujících datech a řeší dnes ruční slovník.
+**Proč „vidět jen výstup Whisperu a Claude" nestačí** (tvůj postřeh): ten pár ukazuje jen Claudovy jistoty. Neznámé termíny (ty do slovníku patří) v něm chybí, protože se nikde neopravily — jen se vložily špatně a ty jsi je pak přepsal rukou.
+
+**Možné zdroje signálu (od nejlepšího k nejhoršímu na realizaci):**
+
+| Zdroj | Co zachytí | Realizace |
+|---|---|---|
+| **Ruční oprava vloženého textu** (ideál) | přesně to, co Whisper+Claude minuli | **těžké:** po vložení znovu číst pole přes AX a diffovat — kdy vzorkovat? uživatel dál píše, pole se mění z mnoha důvodů → **šumné přiřazení**; navíc **soukromí** (čtení toho, co jsi napsal) a jen v AX-čitelných polích. „Bez vnímání uživatele" = přesně ta invazivní část. |
+| **Claude označí vlastní nejistotu** (realistické) | jména/vzácné termíny, u kterých si Claude nebyl jistý | Claude ve výstupu vrátí navíc malý seznam `uncertain_terms`. Automatické, bez čtení polí, pár tokenů navíc. Zachytí část případu „oba minuli" (Claude přizná nejistotu). |
+| **Re-diktát krátce po sobě** | „řekl jsem to špatně" | signál „něco bylo blbě", ale **nedá správný tvar** → k slovníku k ničemu. |
+
+**Poctivý verdikt:** funkcionalita, jak byla napsaná (jen `raw`→`final`), je **špatně uchopená** — souhlas. Skutečně užitečný automatický slovník potřebuje **ruční opravy uživatele**, které nejde tiše a spolehlivě odečíst (šum + soukromí). Nejlepší **realizovatelný** kompromis je **Claude flagující vlastní nejistotu** (`uncertain_terms`) — automatické, neinvazivní, chytí část gapu; když se termín opakuje, tiše ho navrhne (nebo rovnou přidá do „kandidátů"). Pokud tohle nestačí, spíš **nechat slovník ruční**, než stavět křehké čtení polí. Doporučení: začít experimentem s `uncertain_terms` a změřit, jestli vůbec vrací něco smysluplného, než se do toho investuje.
 
 Zdroje: [post-editing STT korekce](https://aws.amazon.com/blogs/machine-learning/build-a-custom-vocabulary-to-enhance-speech-to-text-transcription-accuracy-with-amazon-transcribe/), [Gladia custom vocabulary](https://www.gladia.io/blog/custom-vocabulary-stt-accuracy).
