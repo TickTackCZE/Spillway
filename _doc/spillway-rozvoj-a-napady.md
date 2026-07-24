@@ -104,3 +104,61 @@ Kroky jdou sekvenčně (Claude potřebuje hotový přepis). Přepis je díky mlx
 - **Automatický slovník.** Sledovat, které termíny Claude opakovaně opravuje (raw → final), a nabídnout je k přidání do uživatelského slovníku. Statistiky „co se nejčastěji opravuje" jako podklad.
 - **Ikona v liště odráží stav** (nahrávám / zpracovávám), nejen plovoucí HUD — přehled i bez pohledu ke kurzoru.
 - **Rychlá pauza / tichý režim** — dočasně vypnout hotkey (např. při hovoru), bez ukončení appky.
+
+---
+
+## 8. Research (24. 7. 2026)
+
+### 8.1 Streaming přepis — zrychlení a zásah
+
+**Dnešní stav (dávkově):** dokud držíš klávesu, Whisper NIC nepřepisuje — celé audio jde do modelu až po puštění. Metrika, na které záleží, je **čekání PO puštění** = RTF × délka. Na Apple GPU (mlx `large-v3-turbo`, RTF ~0,08–0,22): 10 s řeči ≈ **1–2 s** čekání, 20 s ≈ **2–4 s**.
+
+**Se streamingem** se přepisuje průběžně během mluvení; po puštění zbývá jen poslední kousek → čekání spadne na **~0,3–0,6 s** bez ohledu na délku.
+
+| Délka diktátu | Čekání dnes | Se streamingem | Úspora |
+|---|---|---|---|
+| krátký (3–5 s) | ~0,5–1 s | ~0,4 s | malá (nemá cenu) |
+| střední (10 s) | ~1–2 s | ~0,5 s | **~50–70 %** |
+| dlouhý (20 s+) | ~2–4 s | ~0,5 s | **~75 %** |
+
+**Dvě cesty implementace:**
+- **LocalAgreement-n** (ufal `whisper_streaming`) — potvrzuje tokeny, když se N po sobě jdoucích oken shodne na prefixu. Dělané pro živé titulky (latence ~3,3 s u souvislé řeči). Pro nás **overkill** — my živý text nezobrazujeme.
+- **Segmentově (sedí nám líp)** — VAD rozseká audio na pauzách; hotové segmenty se přepisují už během mluvení, po puštění se přepíše jen poslední (otevřený) segment a spojí se. Bez živého zobrazení. Přínos roste s tím, jak moc mezi větami pauzuješ; u souvislé řeči bez pauz benefit zmizí (spadne to na dávku).
+
+**Kompatibilní s tvým požadavkem na zrušení:** Whisper běží lokálně a zdarma i během mluvení; **po puštění pořád zbývá okamžik (poslední segment + volání Claude), kdy Escape stihne zrušit, než se text pošle do Claude** (placený/nevratný krok). Bod zrušení se jen posune z „před Whisperem" na „před Claude" — to je pro nás OK.
+
+**Potřebný zásah (střední–vyšší):** inkrementální snapshoty audia z Recorderu; smyčka na mlx vlákně (přepis rostoucího audia / hotových segmentů); **spojování segmentů** (hranice slov, dedup překryvu — nejchoulostivější část); přesun bodu zrušení. **Riziko:** kvalita na hranicích segmentů (Whisper je nejpřesnější s plným 30s kontextem — sekání může zhoršit přesnost na švech). **Verdikt:** hezké zrychlení pro střední/dlouhé diktáty, ale netriviální a s rizikem kvality → spíš v2, ne teď.
+
+Zdroje: [ufal/whisper_streaming](https://github.com/ufal/whisper_streaming), [whisper_streaming_web](https://github.com/codesdancing/whisper_streaming_web).
+
+### 8.2 Odložené doručení — spolehlivost a scénáře
+
+**Klíčové zjištění (Apple forums):** od **macOS Sonoma (14+) Apple omezil cross-app aktivaci** — `NSRunningApplication.activateWithOptions` / `activate(ignoringOtherApps:)` je nespolehlivé/deprecated; appka už nemůže volně vytáhnout jinou appku do popředí. Existuje kooperativní `activate(from:)` (14+) pro předání aktivace po uživatelově gestu, ale je křehké napříč verzemi.
+
+**Dopad:** krok „klik na popup → Spillway sám aktivuje cílovou appku → vloží" je na nové macOS **nespolehlivý**. Řešení: nespoléhat na auto-aktivaci, ale na **návrat uživatele do pole** (klik do pole = přirozený fokus) a/nebo kooperativní `activate(from:)` po kliku na popup, s **tvrdým fallbackem „text ve schránce + ⌘V"**.
+
+| Scénář | Chování | Odhad spolehlivosti |
+|---|---|---|
+| Nativní appka, otisk sedí, aktivace projde | auto-vloží | vysoká (macOS ≤ Ventura), nižší na Sonoma+ |
+| Cross-app aktivace selže (Sonoma+) | fallback: schránka + „⌘V", nebo počkat na klik do pole | ~100 % (bezpečné) |
+| Web/Electron pole nejde ověřit | neaktivovat naslepo → schránka + „⌘V" | ~100 % (bezpečné) |
+| Uživatel klikl jinam než do původního pole | otisk nesedí → nevkládat | pojistka drží |
+| Cíl zavřený / Spillway restart | jen zkopírování | ~100 % |
+
+**Chybovost:** „plně automatické" doručení vyjde spolehlivě hlavně u nativních appek na starším macOS nebo když se uživatel do pole vrátí sám; na Sonoma+ čekej, že auto-aktivace často selže → spadne na **bezpečný fallback ⌘V** (v nejhorším zmáčkneš ⌘V). Web/Electron nikdy nevkládej naslepo. **Hodnota** tedy není v garantované auto-aktivaci, ale v **zapamatovaném cíli + doručení na jeden klik / při návratu + bezpečném fallbacku**. Takhle je featura užitečná i s Apple omezeními.
+
+Zdroje: [activateWithOptions na Sonoma](https://developer.apple.com/forums/thread/739524), [bring another app to foreground](https://developer.apple.com/forums/thread/793253).
+
+### 8.3 Automatický slovník — mining oprav z historie
+
+**Koncept je zavedený** (učení z post-editace / custom vocabulary), ale máme **výhodu zdarma**: v `history.jsonl` už držíme `raw` (Whisper) i `final` (Claude) u každého diktátu → opravy jde vytěžit bez extra nákladů.
+
+**Jak by to fungovalo:**
+1. **Diff `raw` → `final`** na úrovni slov (`difflib.SequenceMatcher`) → seznam nahrazení (co Claude změnil).
+2. **Filtr na „slovníkový materiál"** — jen záměny, kde vznikl anglický/technický termín v kanonickém tvaru (`pool request→pull request`, `komitnul→commitnul`, `hagging fejs→Hugging Face`). Zahodit běžnou gramatiku/interpunkci (to není do slovníku). Heuristika: malá fonetická vzdálenost + cílový tvar je ne-české slovo / camelCase / známý žargon.
+3. **Agregace + práh** — počítat (špatně→správně) napříč historií; když se stejná oprava opakuje ≥N×, je to kandidát.
+4. **Návrh uživateli** v nastavení: „Přidat *Hugging Face* do slovníku? (Claude opravoval 5×)" → klik přidá kanonický termín. Díky tomu ho příště Whisper/Claude trefí konzistentně a je potvrzený (ne odhad Claude).
+
+**Náročnost: nízká–střední** (diff + počítání je triviální; ladění filtru je hlavní práce). **Vše lokálně** (žádná nová data ven). **Riziko: nízké** — je to jen návrh, nic se nepřidá bez potvrzení. **Verdikt:** z těch tří **nejsnadnější a nejpraktičtější** — staví na už existujících datech a řeší dnes ruční slovník.
+
+Zdroje: [post-editing STT korekce](https://aws.amazon.com/blogs/machine-learning/build-a-custom-vocabulary-to-enhance-speech-to-text-transcription-accuracy-with-amazon-transcribe/), [Gladia custom vocabulary](https://www.gladia.io/blog/custom-vocabulary-stt-accuracy).
