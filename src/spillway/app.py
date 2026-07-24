@@ -23,7 +23,7 @@ from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner, basic_cleanup
 from .paste import copy_to_clipboard, paste_text
-from .transcribe import Transcriber
+from .transcribe import Transcriber, voiced_seconds
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
 
@@ -114,6 +114,8 @@ class Controller:
         # sleepům). Escape po něm nesmí spolknout klávesu ani označit hotový
         # diktát za zrušený.
         self._pasting = False
+        # Kdy (monotonic) začalo PROCESSING — pro watchdog zaseklého zpracování.
+        self._processing_since = 0.0
         # [F2] Vlákno, které otevírá mikrofon; `_process` na něj počká.
         self._start_thread: threading.Thread | None = None
 
@@ -166,6 +168,7 @@ class Controller:
             take_over = self.state == RECORDING
             if take_over:
                 self.state = PROCESSING
+                self._processing_since = time.monotonic()
         self._cancel.set()
         self._cancel_min_until = time.monotonic() + CANCEL_MIN_VISIBLE_S
         print("🚫 ruším… (nic se nevloží)")
@@ -256,6 +259,7 @@ class Controller:
             if self.state != RECORDING:
                 return
             self.state = PROCESSING
+            self._processing_since = time.monotonic()
         self._cancel_watchdog()
         # [B9] recorder.stop() dělá gc.collect() + restart PortAudia (stovky ms).
         # Nesmí běžet na vlákně event tapu (timeout tapu → nepotlačené F5). Přesuň
@@ -288,12 +292,14 @@ class Controller:
     def _process(self) -> None:
         t_start = time.perf_counter()
         audio_secs = 0.0
+        speech_secs = 0.0  # skutečná řeč bez ticha — pro „tempo řeči"
         raw = ""
         text = ""
         app_name = None
         domain = None
         profile = "generic"
         outcome = "error"  # přepíše se, jakmile víme, jak to dopadlo
+        llm_cost = 0.0  # cena AI úpravy tohoto diktátu (0, když se Claude nevolal)
         try:
             # [F2] Počkat, až doběhne otevírání mikrofonu — jinak by `stop()`
             # mohl proběhnout dřív než `start()` a stream by zůstal viset otevřený.
@@ -302,6 +308,12 @@ class Controller:
                 starter.join(timeout=5.0)
             audio = self.recorder.stop()  # [B9] těžké volání až tady, na workeru
             audio_secs = len(audio) / 16000.0
+            speech_secs = voiced_seconds(audio)  # bez ticha/pauz → tempo řeči
+            print(f"🎙️ audio {audio_secs:.1f} s ({len(audio)} vz.) · řeč {speech_secs:.1f} s")
+            if audio.size == 0:
+                # Prázdné audio = nic se nenahrálo (stream se neotevřel včas / moc
+                # krátký stisk). Diagnostika bugu „diktát se ztratil".
+                print("⚠️  prázdné audio — nic se nenahrálo (nic k přepisu).")
             if self._cancel.is_set():
                 outcome = "cancelled"
                 return  # zrušeno ještě před přepisem → nula tokenů, nula práce
@@ -373,18 +385,28 @@ class Controller:
             # zprávy smyslem doplnit strukturu (oslovení/pozdrav).
             min_s = config.llm_min_seconds()
             skip_llm = min_s > 0 and audio_secs < min_s and profile != "email"
-            if skip_llm:
+            # Uživatel může AI úpravu úplně vypnout (přepínač „Odesílání do AI
+            # modelu") — pak nic neodchází k Anthropic, vloží se jen lokální úprava.
+            if not config.ai_edit():
+                text = basic_cleanup(raw)
+                print(f"🔒 AI úprava vypnutá → bez AI: {_preview(text)}")
+            elif skip_llm:
                 text = basic_cleanup(raw)
                 print(f"⚡ krátký diktát ({audio_secs:.1f} s < {min_s:g} s) → bez AI: {_preview(text)}")
             elif self.cleaner is not None:
                 # Existující obsah pole jako kontext (jen když povoleno).
                 # E-mail → celé pole (cap 3000); jinak okno před kurzorem.
+                # Kontext se posílá vždy (pomáhá navázat tón/nezopakovat pozdrav);
+                # aby se NEDOSTAL do výstupu (bug „vkládá se text z minula"), hlídá
+                # to přísně systémový prompt v llm.py (text z <pole> nikdy neopakovat).
                 before = None
                 if config.field_context() and field_text:
                     if profile == "email":
                         before = field_text[:3000]
                     elif caret and caret > 0:
                         before = field_text[:caret][-800:]
+                if before:
+                    print(f"   ↳ kontext pole: {len(before)} zn.")
                 try:
                     # Cancellable: Escape během volání Clauda ho okamžitě opustí
                     # (odpověď dobíhá na pozadí a zahodí se). Nejdelší krok pipeline.
@@ -404,6 +426,10 @@ class Controller:
                     print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
                     notify("AI úprava selhala", "Vložen syrový přepis. Zkontroluj API klíč / kredit.")
                     text = raw
+                # Cenu čti hned po volání (na cleaneru se přepíše dalším diktátem) —
+                # i po chybě: když volání provolalo tokeny a spadlo až na uříznuté
+                # odpovědi (max_tokens), náklad reálně vznikl a musí se započítat.
+                llm_cost = getattr(self.cleaner, "last_cost_usd", 0.0) or 0.0
 
             # Chytrá mezera: jen když kurzor stojí těsně za nemezerovým znakem.
             # `at_line_start` má přednost — rich-text pole (Mail) nevrací koncový
@@ -452,12 +478,57 @@ class Controller:
                 domain=domain,
                 profile=profile,
                 audio_seconds=audio_secs,
+                speech_seconds=speech_secs,
                 process_seconds=time.perf_counter() - t_start,
                 outcome=outcome,
+                cost_usd=llm_cost,
+            )
+            # Jednořádkový souhrn diktátu do logu — kotva pro ladění intermitentních
+            # chyb (ztracený/zdvojený diktát, zamrznutí). Bez obsahu (jen délky).
+            total = time.perf_counter() - t_start
+            print(
+                f"🏁 diktát: outcome={outcome} audio={audio_secs:.1f}s řeč={speech_secs:.1f}s "
+                f"raw={len(raw)}zn final={len(text)}zn app={app_name} "
+                f"cena=${llm_cost:.4f} celkem={total:.1f}s"
             )
             with self._lock:
                 self._pasting = False
-                self.state = IDLE
+                # Reset stavu jen když pořád „patří" tomuhle běhu. Kdyby watchdog
+                # mezitím tvrdě resetoval a uživatel začal NOVÝ diktát (RECORDING),
+                # nesmíme mu stav přepsat na IDLE.
+                if self.state == PROCESSING:
+                    self.state = IDLE
+                    self._processing_since = 0.0
+
+    def watchdog_check(self) -> None:
+        """Odseknutí zaseklého zpracování — volá se z main-thread časovače v trayi.
+
+        Většina zásеků je uvnitř přepisu/volání Clauda (obojí je `_run_cancellable`),
+        takže stačí „soft" cancel jako Escape. Kdyby to nepomohlo (zásek jinde),
+        po delší době stav tvrdě vrátíme do IDLE, ať appka nezůstane zmrzlá.
+        """
+        with self._lock:
+            if self.state != PROCESSING:
+                return
+            since = self._processing_since
+        stuck = time.monotonic() - since if since > 0 else 0.0
+        if stuck < 90:
+            return
+        if stuck < 120:
+            if not self._cancel.is_set():
+                print(f"⏱️ zpracování {stuck:.0f}s → soft cancel (odseknutí).")
+                self._cancel.set()
+                self._cancel_min_until = time.monotonic() + CANCEL_MIN_VISIBLE_S
+            return
+        print(f"⏱️ zpracování {stuck:.0f}s → TVRDÝ reset do IDLE.")
+        notify("Spillway se odseknul", "Zpracování trvalo moc dlouho — vráceno do klidu.")
+        # Nastavit i cancel: kdyby zaseklý worker později ožil, jeho kontrola před
+        # vložením ho zastaví, aby nevložil text opožděně do (teď už jiného) pole.
+        self._cancel.set()
+        with self._lock:
+            self._pasting = False
+            self.state = IDLE
+            self._processing_since = 0.0
 
 
 def main() -> None:

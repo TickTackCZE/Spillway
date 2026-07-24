@@ -47,6 +47,11 @@ class SpillwayTray(rumps.App):
         # Okno nastavení (Domovoy design) — vytvoří se líně při prvním otevření.
         self._settings = None
 
+        # Popover pod ikonou (přehled + historie + model) — napojí se na tlačítko
+        # status itemu až po startu run loopu (status item vzniká uvnitř run()).
+        self._popover = None
+        self._popover_ready = False
+
         # Varovná položka (skrytá, dokud nezjistíme mrtvý event tap — B23).
         self._warn_item = rumps.MenuItem(
             "⚠️ Klávesa nefunguje — povol oprávnění", callback=self._open_privacy
@@ -70,6 +75,11 @@ class SpillwayTray(rumps.App):
         # Kontrola po 5 s, ať uvolnění nezpozdí víc než samotný idle práh.
         self._unload_timer = rumps.Timer(self._check_unload, 5)
         self._unload_timer.start()
+
+        # Watchdog zaseklého zpracování — kdyby přepis/Claude zamrzl, po čase to
+        # odsekne, ať appka nezůstane viset na „Zpracovávám" a nemusí se vypínat.
+        self._stuck_timer = rumps.Timer(self._check_stuck, 5)
+        self._stuck_timer.start()
 
     def _check_tap(self, _sender) -> None:  # noqa: ANN001
         listener = getattr(self.controller, "hotkey_listener", None)
@@ -114,6 +124,46 @@ class SpillwayTray(rumps.App):
         except Exception:  # noqa: BLE001
             pass
 
+    def _check_stuck(self, _sender) -> None:  # noqa: ANN001
+        try:
+            self.controller.watchdog_check()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _install_edit_menu(self) -> None:
+        """Přidá do hlavního menu položku Úpravy s Kopírovat/Vložit/… → teprve tím
+        začnou v oknech (WKWebView popover i nastavení) fungovat ⌘C/⌘V/⌘X/⌘A.
+
+        Bez hlavního menu nemá ⌘C kam poslat akci `copy:`, takže se běžný text
+        v aplikaci nedal zkopírovat. Akce míří na first responder (nil target).
+        """
+        try:
+            from AppKit import NSApp, NSMenu, NSMenuItem
+
+            main = NSApp.mainMenu()
+            if main is None:
+                main = NSMenu.alloc().init()
+                NSApp.setMainMenu_(main)
+            for i in range(main.numberOfItems()):
+                if main.itemAtIndex_(i).title() == "Úpravy":
+                    return  # už tam je
+            holder = NSMenuItem.alloc().init()
+            holder.setTitle_("Úpravy")
+            main.addItem_(holder)
+            edit = NSMenu.alloc().initWithTitle_("Úpravy")
+            holder.setSubmenu_(edit)
+            for title, sel, key in (
+                ("Vyjmout", "cut:", "x"),
+                ("Kopírovat", "copy:", "c"),
+                ("Vložit", "paste:", "v"),
+                ("Vybrat vše", "selectAll:", "a"),
+            ):
+                edit.addItem_(
+                    NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, key)
+                )
+        except Exception as exc:  # noqa: BLE001 — bez Edit menu appka jede dál
+            print(f"(Edit menu nedostupné: {exc})")
+
     def _refresh_stats_when_done(self) -> None:
         """Po dokončení diktátu obnovit kartu Statistiky, je-li okno otevřené.
 
@@ -130,8 +180,48 @@ class SpillwayTray(rumps.App):
         win = self._settings
         if win is not None and win.is_visible():
             win.refresh()
+        pop = getattr(self, "_popover", None)
+        if pop is not None and pop.is_shown():
+            pop.bridge.push_state()  # čerstvá čísla/historie, když je popover zrovna otevřený
+
+    def _setup_popover(self) -> None:
+        """Jednorázově: přesměruj klik na ikonu na vlastní popover místo rumps menu.
+
+        Status item (a jeho tlačítko) vzniká až uvnitř `run()`, takže to nejde
+        udělat v __init__ — zkoušíme to z prvního ticku. Když se to nepovede,
+        necháme původní menu (fallback) a už to nezkoušíme donekonečna.
+        """
+        nsapp = getattr(self, "_nsapp", None)
+        item = getattr(nsapp, "nsstatusitem", None) if nsapp is not None else None
+        button = item.button() if item is not None else None
+        if button is None:
+            return  # status item ještě není — zkusíme za další tick
+        self._install_edit_menu()  # ať Cmd+C/V/A fungují v oknech (WKWebView)
+        try:
+            from .popover import PopoverController
+
+            self._popover = PopoverController(
+                self.controller,
+                on_open_settings=lambda: self.open_settings(None),
+                on_quit=lambda: self.quit_app(None),
+            )
+            self._popover.attach_to_button(button)
+            item.setMenu_(None)  # klik teď otevře popover, ne menu
+            print("🪟 Popover v liště připraven.")
+        except Exception as exc:  # noqa: BLE001 — necháme rumps menu jako fallback
+            import traceback
+
+            # Ve frozen .app jde print do ~/Library/Logs/Spillway/spillway.log,
+            # takže se dá diagnostikovat, proč popover ve zabalené appce nenaskočil.
+            print(f"(popover nedostupný: {exc}) — zůstává klasické menu.\n{traceback.format_exc()}")
+        self._popover_ready = True
 
     def _tick(self, _sender) -> None:  # noqa: ANN001
+        if not getattr(self, "_popover_ready", False):
+            try:
+                self._setup_popover()
+            except Exception:  # noqa: BLE001
+                self._popover_ready = True  # nezkoušet donekonečna
         try:
             self._refresh_stats_when_done()
         except Exception:  # noqa: BLE001 — statistika nesmí rozbít HUD

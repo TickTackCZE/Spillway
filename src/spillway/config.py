@@ -116,18 +116,33 @@ def auto_space() -> bool:
 
 def field_context() -> bool:
     """Posílat Claudeovi existující obsah pole jako kontext (odchází k Anthropic).
-    Env SPILLWAY_FIELD_CONTEXT přebíjí nastavení v liště."""
+    Env SPILLWAY_FIELD_CONTEXT přebíjí nastavení v liště.
+
+    Podřízené „Odesílání do AI modelu": když je AI úprava vypnutá, kontext se
+    stejně nikam neposílá (žádné volání), takže to tu i tvrdě zhasneme."""
+    if not ai_edit():
+        return False
     if "SPILLWAY_FIELD_CONTEXT" in os.environ:
         return _flag("SPILLWAY_FIELD_CONTEXT")
     return bool(settings.get("field_context", True))
 
 
+def ai_edit() -> bool:
+    """Posílat přepis Claudeovi na úpravu a formátování? Když vypnuto, vloží se
+    jen lokálně očištěný syrový přepis (basic_cleanup) — nic neodchází k Anthropic.
+    Env SPILLWAY_AI_EDIT přebíjí nastavení v liště."""
+    if "SPILLWAY_AI_EDIT" in os.environ:
+        return _flag("SPILLWAY_AI_EDIT")
+    return bool(settings.get("ai_edit", True))
+
+
 def get_auto_unload_minutes() -> float:
-    """[R5] Po kolika minutách nečinnosti uvolnit Whisper model z paměti
-    (~1,5–2 GB RAM); znovu se lazy-loadne při dalším diktátu (~1,6 s). 0 = nikdy.
-    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 0,25 min (15 s) — nejde na
-    0 s (viz plán): krátká pauza mezi větami by pak platila 1,6s reload pokaždé."""
-    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 0.25)
+    """[R5] Po kolika minutách nečinnosti uvolnit Whisper model z (unified) paměti
+    (~1,5–2 GB); znovu se lazy-loadne při dalším diktátu (~1,6 s). 0 = nikdy.
+    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 1 min — delší než dřívějších
+    15 s, aby model během aktivní práce nezůstával v cyklu uvolni/načti (churn =
+    zbytečná práce na GPU a teplo). Kratší pauzy mezi větami tak reload neplatí."""
+    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 1.0)
     try:
         return float(raw)
     except (TypeError, ValueError):

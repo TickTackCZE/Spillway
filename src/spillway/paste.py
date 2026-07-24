@@ -15,10 +15,10 @@ import time
 from AppKit import NSPasteboard, NSPasteboardItem, NSPasteboardTypeString
 from Quartz import (
     CGEventCreateKeyboardEvent,
+    CGEventKeyboardSetUnicodeString,
     CGEventPost,
     CGEventSetFlags,
     kCGEventFlagMaskCommand,
-    kCGEventFlagMaskControl,
     kCGHIDEventTap,
 )
 
@@ -27,10 +27,9 @@ NSPASTEBOARD_CONCEALED = "org.nspasteboard.ConcealedType"
 V_KEYCODE = 9  # ANSI pozice "V"
 
 DEFAULT_SETTLE_S = 0.25
-# Vzdálená Windows plocha (RDP/VDI): schránka se do session přenáší po síti přes
-# rdpclip — potřebuje víc času než lokální vložení, jinak by Ctrl+V vložil ještě
-# starý obsah vzdálené schránky.
-REMOTE_SETTLE_S = 0.6
+# Vzdálená Windows plocha (RDP/AVD): text se „naťuká" po chunkech (viz _type_unicode).
+_TYPE_CHUNK = 20
+_TYPE_CHUNK_DELAY_S = 0.012
 
 
 def _write(pb: NSPasteboard, text: str, transient: bool) -> int:
@@ -45,17 +44,33 @@ def _write(pb: NSPasteboard, text: str, transient: bool) -> int:
     return pb.changeCount()
 
 
-def _paste_keystroke(windows_target: bool = False) -> None:
-    """Pošle ⌘+V (macOS), nebo Ctrl+V při diktování do vzdálené Windows plochy.
-
-    RDP klienti (Windows App / AVD) syntetické ⌘+V NEpřeloží na Ctrl — do session
-    dorazí holé „V" a místo vložení se napíše „v". Ctrl+V projde správně.
-    """
-    flags = kCGEventFlagMaskControl if windows_target else kCGEventFlagMaskCommand
+def _paste_keystroke() -> None:
+    """Pošle ⌘+V do aktivní nativní macOS aplikace."""
     for pressed in (True, False):
         ev = CGEventCreateKeyboardEvent(None, V_KEYCODE, pressed)
-        CGEventSetFlags(ev, flags)
+        CGEventSetFlags(ev, kCGEventFlagMaskCommand)
         CGEventPost(kCGHIDEventTap, ev)
+
+
+def _type_unicode(text: str) -> None:
+    """Vloží text „naťukáním" — jako sled znakových událostí, ne přes schránku.
+
+    Pro vzdálenou Windows plochu (RDP/AVD): schránka + ⌘/Ctrl+V tam nefunguje
+    (klient zahazuje modifikátory ze syntetických událostí). Vkládáme proto text
+    přímo přes CGEventKeyboardSetUnicodeString — bez modifikátorů, bez schránky,
+    nezávisle na rozložení. Řetězec nasazujeme na down i up (kanonický vzor).
+
+    POZOR: funguje jen když má „Windows App" nastavený Keyboard Mode = **Unicode**
+    (Connections → Keyboard Mode). Ve „Scancode" režimu klient unicode řetězec
+    ignoruje a použije virtuální keycode události (0 = „a") → napsalo by se „aaa".
+    """
+    for i in range(0, len(text), _TYPE_CHUNK):
+        part = text[i:i + _TYPE_CHUNK]
+        for pressed in (True, False):
+            ev = CGEventCreateKeyboardEvent(None, 0, pressed)
+            CGEventKeyboardSetUnicodeString(ev, len(part), part)
+            CGEventPost(kCGHIDEventTap, ev)
+        time.sleep(_TYPE_CHUNK_DELAY_S)
 
 
 def _backup(pb: NSPasteboard):
@@ -108,27 +123,23 @@ def paste_text(
     """Vloží `text` do právě zaměřeného pole a (volitelně) obnoví schránku
     (vč. ne-textového obsahu). Vyžaduje Accessibility (jinak CGEventPost tiše selže).
 
-    `windows_target=True` (vzdálená Windows plocha přes RDP/VDI) → Ctrl+V místo
-    ⌘+V a delší čekání na síťovou synchronizaci schránky.
+    `windows_target=True` (vzdálená Windows plocha přes RDP/AVD) → text se do session
+    „naťuká" znak po znaku (viz _type_unicode), protože schránka + ⌘/Ctrl+V tam
+    nefunguje spolehlivě (klient přeposílá jen znaky, ne modifikátory). Nesahá na
+    schránku, takže se neobnovuje.
     """
     if not text:
+        return
+    if windows_target:
+        _type_unicode(text)
         return
     if settle_s is None:
         settle_s = DEFAULT_SETTLE_S
     pb = NSPasteboard.generalPasteboard()
 
-    # [F9] U vzdálené plochy schránku NEOBNOVUJEME. rdpclip si obsah stahuje
-    # opožděně (delayed rendering) — kdybychom lokální schránku vrátili zpátky
-    # dřív, než si ho vzdálená strana vyzvedne, vložil by se do Windows STARÝ
-    # text. Tiché a matoucí selhání; ztráta transient obsahu schránky je menší zlo.
-    restore = restore and not windows_target
     snapshot = _backup(pb) if restore else []
-
     change_after_write = _write(pb, text, transient=True)
-    if windows_target:
-        # Dát rdpclip čas přenést schránku do session, teprve pak Ctrl+V.
-        time.sleep(REMOTE_SETTLE_S)
-    _paste_keystroke(windows_target=windows_target)
+    _paste_keystroke()
     time.sleep(settle_s)
 
     # Obnovit jen když schránku mezitím nepřepsal někdo jiný (clipboard manager).

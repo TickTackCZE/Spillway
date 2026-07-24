@@ -17,6 +17,7 @@ from __future__ import annotations
 import gc
 import os
 import platform
+import queue
 import threading
 import time
 
@@ -34,6 +35,7 @@ _HALLUCINATION_MARKERS = (
 _HALLUCINATION_MAX_LEN = 45
 
 _MLX_MODEL = os.environ.get("SPILLWAY_MLX_MODEL") or "mlx-community/whisper-large-v3-turbo"
+SAMPLE_RATE = 16000  # Whisper i Recorder jedou na 16 kHz mono
 
 
 def _beam_size() -> int:
@@ -81,6 +83,60 @@ def _is_silence(audio: np.ndarray) -> bool:
     return voiced < 0.01
 
 
+def voiced_seconds(audio: np.ndarray, frame_ms: int = 30, thresh: float = 0.01) -> float:
+    """Odhad délky SKUTEČNÉ řeči (bez ticha a pauz) — pro „tempo řeči". Sečte
+    30ms rámce, jejichž RMS překročí práh; levné, bez VAD modelu. Ticho/pauzy
+    (RMS pod prahem) se nezapočítají, takže tempo = slova / minuty MLUVENÍ."""
+    if audio is None or audio.size == 0:
+        return 0.0
+    n = int(SAMPLE_RATE * frame_ms / 1000)
+    if n <= 0:
+        return 0.0
+    usable = audio.size - (audio.size % n)
+    if usable <= 0:
+        return float(audio.size) / SAMPLE_RATE
+    frames = audio[:usable].astype(np.float32).reshape(-1, n)
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    return int(np.count_nonzero(rms > thresh)) * frame_ms / 1000.0
+
+
+class _MlxWorker:
+    """Jedno vyhrazené vlákno pro VŠECHNY mlx GPU operace.
+
+    mlx drží GPU stream per-vlákno, takže model načtený na jednom vlákně nejde
+    použít na jiném („There is no Stream(gpu, N) in current thread" → spadlý přepis
+    = ztracený diktát). Každý `_process` je navíc jiné vlákno. Řešení: načtení,
+    přepis i uvolnění posíláme sem a běží serializovaně na jednom stálém vlákně.
+    """
+
+    def __init__(self) -> None:
+        self._q: queue.Queue = queue.Queue()
+        self._t = threading.Thread(target=self._run, name="mlx-gpu", daemon=True)
+        self._t.start()
+
+    def _run(self) -> None:
+        while True:
+            fn, box, ev = self._q.get()
+            if fn is None:
+                return
+            try:
+                box["r"] = fn()
+            except BaseException as exc:  # noqa: BLE001 — přenést na volajícího
+                box["e"] = exc
+            finally:
+                ev.set()
+
+    def submit(self, fn):
+        """Spustí `fn` na mlx vlákně a počká na výsledek (výjimku propaguje)."""
+        box: dict = {}
+        ev = threading.Event()
+        self._q.put((fn, box, ev))
+        ev.wait()
+        if "e" in box:
+            raise box["e"]
+        return box.get("r")
+
+
 class Transcriber:
     """[R5] Model (~1,5–2 GB) jde uvolnit po nečinnosti a znovu lazy-loadnout."""
 
@@ -97,19 +153,23 @@ class Transcriber:
         self._model = None  # faster: WhisperModel; mlx: sentinel True po warmu
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
+        # Vyhrazené vlákno pro VŠECHNY mlx GPU operace (viz _MlxWorker) — mlx drží
+        # stream per-vlákno, takže načtení/přepis/unload musí běžet na jednom vlákně.
+        self._mlx = _MlxWorker() if self.backend == "mlx" else None
         # V zabalené .app se mlx Metal shadery (mlx.metallib) můžou nezabalit —
         # ověř, že mlx reálně počítá na GPU, jinak spadni na CPU (žádná regrese).
         if self.backend == "mlx" and not self._mlx_ok():
             print("⚠️  mlx nefunguje (shadery?) → fallback na faster-whisper (CPU).")
             self.backend = "faster"
+            self._mlx = None
         print(f"🗣️  Whisper backend: {self.backend}"
               f"{' (' + _MLX_MODEL + ')' if self.backend == 'mlx' else ' (CPU large-v3-turbo)'}")
         self._load_model()
 
     def _mlx_ok(self) -> bool:
         """Skutečně proženeme mlx přes GPU na drobném klipu — odhalí chybějící
-        shadery/knihovny v bundlu ještě před prvním diktátem."""
-        try:
+        shadery/knihovny v bundlu ještě před prvním diktátem. Běží na mlx vlákně."""
+        def _check() -> bool:
             import mlx_whisper
 
             mlx_whisper.transcribe(
@@ -117,6 +177,9 @@ class Transcriber:
                 path_or_hf_repo=_MLX_MODEL, language="cs",
             )
             return True
+
+        try:
+            return bool(self._mlx.submit(_check))
         except Exception as exc:  # noqa: BLE001
             print(f"mlx health-check selhal: {exc}")
             return False
@@ -125,13 +188,23 @@ class Transcriber:
 
     def _load_model(self) -> None:
         if self.backend == "mlx":
-            import mlx_whisper
+            # Načtení běží na mlx vlákně (přes worker) a plní ModelHolder — tam ho
+            # hledá i mlx_whisper.transcribe, takže se model načte JEDNOU a přepis ho
+            # (na stejném vlákně) jen převezme. dtype=float16 musí sedět s `transcribe`
+            # (fp16=True). Přes load_models.load_model, ne ModelHolder.get_model (ta
+            # v zabalené .app deadlockovala, ctypes/GIL).
+            def _load() -> None:
+                import mlx.core as mx
+                import mlx_whisper
+                from mlx_whisper.transcribe import ModelHolder
 
-            # Pozn.: záměrně přes load_models.load_model (ne ModelHolder.get_model)
-            # — get_model v zabalené .app deadlockoval při druhém dotažení modelu
-            # na hlavním vlákně (ctypes/GIL). Tenhle tvar je ověřeně stabilní.
-            # ModelHolder naplní až první `transcribe`; unload pak vyčistí ten.
-            mlx_whisper.load_models.load_model(_MLX_MODEL)
+                if ModelHolder.model is None or ModelHolder.model_path != _MLX_MODEL:
+                    ModelHolder.model = mlx_whisper.load_models.load_model(
+                        _MLX_MODEL, dtype=mx.float16
+                    )
+                    ModelHolder.model_path = _MLX_MODEL
+
+            self._mlx.submit(_load)
             self._model = True
         else:
             from faster_whisper import WhisperModel
@@ -159,8 +232,9 @@ class Transcriber:
             if time.monotonic() - self._last_used < idle_seconds:
                 return False
             self._model = None
-            if self.backend == "mlx":
-                self._unload_mlx_gpu()
+        # Uvolnění GPU paměti taky na mlx vlákně (tam, kde byl model načten).
+        if self.backend == "mlx" and self._mlx is not None:
+            self._mlx.submit(self._unload_mlx_gpu)
         gc.collect()
         return True
 
@@ -206,15 +280,21 @@ class Transcriber:
     def _transcribe_mlx(self, audio: np.ndarray, lang: str) -> str:
         if _is_silence(audio):  # brána proti halucinaci na tichu
             return ""
-        import mlx_whisper
 
-        res = mlx_whisper.transcribe(
-            audio,
-            path_or_hf_repo=_MLX_MODEL,
-            language=lang,
-            condition_on_previous_text=False,  # bez přenosu halucinací mezi okny
-        )
-        return (res.get("text") or "").strip()
+        # Přepis běží na mlx vlákně (stejném, kde je načtený model) — jinak
+        # „There is no Stream(gpu, N) in current thread" a spadlý (ztracený) diktát.
+        def _do() -> str:
+            import mlx_whisper
+
+            res = mlx_whisper.transcribe(
+                audio,
+                path_or_hf_repo=_MLX_MODEL,
+                language=lang,
+                condition_on_previous_text=False,  # bez přenosu halucinací mezi okny
+            )
+            return (res.get("text") or "").strip()
+
+        return self._mlx.submit(_do)
 
     def _transcribe_faster(self, audio: np.ndarray, lang: str,
                            hotwords: list[str] | None) -> str:
