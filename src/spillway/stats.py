@@ -18,6 +18,8 @@ import os
 import threading
 import time
 
+from . import settings
+
 _DIR = os.path.expanduser("~/Library/Application Support/Spillway")
 _PATH = os.path.join(_DIR, "history.jsonl")
 _lock = threading.Lock()
@@ -40,6 +42,7 @@ def record(
     outcome: str = "pasted",
     domain: str | None = None,
     cost_usd: float = 0.0,
+    speech_seconds: float = 0.0,
 ) -> None:
     """Zapíše jeden diktát do historie. Best-effort — chyby polkne.
 
@@ -58,6 +61,7 @@ def record(
             "domain": domain,
             "profile": profile,
             "audio_s": round(audio_seconds, 2),
+            "speech_s": round(float(speech_seconds or 0.0), 2),
             "process_s": round(process_seconds, 2),
             "words": _words(final),
             "raw_chars": len(raw or ""),
@@ -117,6 +121,15 @@ def _counted(entries: list[dict]) -> list[dict]:
     ]
 
 
+def _stats_since() -> float:
+    """Časová hranice pro statistiky (reset statistik). Záznamy starší se do čísel
+    nepočítají — historie nahrávek (`recent`) se tím ale neřídí, ta je nezávislá."""
+    try:
+        return float(settings.get("stats_reset_ts", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def summary() -> dict:
     """Agregace pro popover a nastavení.
 
@@ -124,7 +137,8 @@ def summary() -> dict:
     prázdné a spadlé pokusy nic nevložily, takže by jen kazily čísla.
     Starší záznamy (před polem `outcome`) se poznají podle `cancelled`.
     """
-    rows = _counted(_entries())
+    since = _stats_since()
+    rows = [e for e in _counted(_entries()) if float(e.get("ts", 0) or 0) >= since]
     if not rows:
         return {
             "count": 0, "words": 0, "dictation_s": 0.0, "top_apps": [],
@@ -142,11 +156,17 @@ def summary() -> dict:
         counts[e.get("app", "?")] = counts.get(e.get("app", "?"), 0) + 1
     top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
 
-    # Průměrné tempo řeči = slova / minuty mluvení (jen z diktátů, kde jsme
-    # mluvili aspoň chvíli — pár desetin sekundy dělá nesmyslné špičky).
-    spoke = [e for e in rows if float(e.get("audio_s", 0)) >= 0.5 and int(e.get("words", 0)) > 0]
+    # Průměrné tempo řeči přes všechny (započítané) diktáty = slova / minuty
+    # SKUTEČNÉ řeči. Bereme `speech_s` (délka bez ticha/pauz); u starších záznamů
+    # bez toho pole padáme zpět na `audio_s`. Jen z diktátů, kde se aspoň chvíli
+    # mluvilo — pár desetin sekundy dělá nesmyslné špičky.
+    def _speech(e: dict) -> float:
+        s = float(e.get("speech_s", 0) or 0)
+        return s if s > 0 else float(e.get("audio_s", 0) or 0)
+
+    spoke = [e for e in rows if _speech(e) >= 0.5 and int(e.get("words", 0)) > 0]
     tempo_words = sum(int(e.get("words", 0)) for e in spoke)
-    tempo_min = sum(float(e.get("audio_s", 0)) for e in spoke) / 60.0
+    tempo_min = sum(_speech(e) for e in spoke) / 60.0
     tempo_wpm = int(round(tempo_words / tempo_min)) if tempo_min > 0 else 0
 
     return {
@@ -248,6 +268,35 @@ def recent(limit: int = 10) -> list[dict]:
     return out
 
 
+def reset_stats() -> None:
+    """Vynuluje statistiky (počty, tempo, náklady, aktivita) — nastaví časovou
+    hranici, od které se počítá. Uložené texty diktátů (historie) zůstávají."""
+    settings.set("stats_reset_ts", time.time())
+
+
+def clear_recordings() -> None:
+    """Smaže uložené TEXTY diktátů (raw i final) z historie → seznam „Historie"
+    v popoveru se vyprázdní. Číselné statistiky (words/audio_s/cost) zůstávají,
+    počítají se z uložených polí, ne z textu."""
+    with _lock:
+        try:
+            entries = _entries()
+        except Exception:  # noqa: BLE001
+            return
+        if not entries:
+            return
+        try:
+            tmp = _PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                for e in entries:
+                    e["raw"] = ""
+                    e["final"] = ""
+                    f.write(json.dumps(e, ensure_ascii=False) + "\n")
+            os.replace(tmp, _PATH)
+        except Exception:  # noqa: BLE001 — mazání je best-effort, nesmí shodit UI
+            pass
+
+
 def human_cost(usd: float) -> str:
     """Náklady v USD čitelně („$0,42", „$1,80"). Malé částky nezaokrouhlíme na 0."""
     v = float(usd or 0)
@@ -256,15 +305,3 @@ def human_cost(usd: float) -> str:
     if v < 0.01:
         return "<$0,01"
     return ("$%.2f" % v).replace(".", ",")
-
-
-def human_duration(seconds: float) -> str:
-    """Sekundy → čitelně (např. „2 h 14 min", „3 min 20 s")."""
-    s = int(max(0, seconds))
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    if h:
-        return f"{h} h {m} min"
-    if m:
-        return f"{m} min {sec} s"
-    return f"{sec} s"

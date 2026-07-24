@@ -83,7 +83,13 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .kvrow > span:first-child{color:var(--muted);white-space:nowrap;}
   .kvrow b{font-weight:600;color:var(--text);text-align:right;font-variant-numeric:tabular-nums;}
   .chart{padding:2px 10px 4px;}
+  .barsWrap{position:relative;}
+  .bartip{position:absolute;top:-4px;transform:translate(-50%,-100%);background:rgba(15,17,23,0.96);color:#F5F5F7;
+    font-size:11px;font-weight:600;white-space:nowrap;padding:3px 8px;border-radius:6px;pointer-events:none;
+    opacity:0;transition:opacity .1s;box-shadow:0 2px 8px rgba(0,0,0,.4);z-index:5;}
+  .bartip.show{opacity:1;}
   .bars{display:flex;align-items:flex-end;gap:6px;height:42px;}
+  .bars .b{cursor:default;}
   .bars .b{flex:1;background:color-mix(in srgb,var(--accent) 32%,transparent);border-radius:3px 3px 0 0;min-height:3px;}
   .bars .b.hi{background:var(--accent);}
   .days{display:flex;gap:6px;margin-top:5px;}
@@ -128,14 +134,14 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
   <div class="panel">
     <div class="kvrow"><span>Náklady (tento měsíc)</span><b id="kvCost">—</b></div>
-    <div class="kvrow"><span>⌀ tempo řeči</span><b id="kvTempo">—</b></div>
+    <div class="kvrow"><span>Ø tempo řeči</span><b id="kvTempo">—</b></div>
     <div class="kvrow"><span>Nejčastější</span><b id="kvTop">—</b></div>
   </div>
 
   <div class="sep"></div>
   <div class="lbl">Aktivita · 7 dní</div>
   <div class="chart">
-    <div class="bars" id="bars"></div>
+    <div class="barsWrap"><div class="bars" id="bars"></div><div class="bartip" id="bartip"></div></div>
     <div class="days" id="days"></div>
   </div>
 
@@ -176,11 +182,25 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     if(t==='light'||t==='dark'){ document.documentElement.setAttribute('data-theme', t); }
     else { document.documentElement.removeAttribute('data-theme'); }
   }
+  function pluralDiktat(n){ n=Math.abs(n); if(n===1) return 'diktát'; if(n>=2&&n<=4) return 'diktáty'; return 'diktátů'; }
   function renderBars(a){
     var max=1; a.forEach(function(x){ if(x.v>max) max=x.v; });
-    var bars=a.map(function(x){ var h=Math.max(4, Math.round(x.v/max*100)); var hi=(x.v===max&&max>0)?' hi':''; return '<div class="b'+hi+'" style="height:'+h+'%"></div>'; }).join('');
-    var days=a.map(function(x){ return '<span>'+esc(x.d)+'</span>'; }).join('');
-    document.getElementById('bars').innerHTML=bars; document.getElementById('days').innerHTML=days;
+    var bars=document.getElementById('bars'), tip=document.getElementById('bartip');
+    bars.innerHTML=a.map(function(x){
+      var h=Math.max(4, Math.round(x.v/max*100)); var hi=(x.v===max&&max>0)?' hi':'';
+      return '<div class="b'+hi+'" data-d="'+esc(x.d)+'" data-v="'+x.v+'" style="height:'+h+'%"></div>';
+    }).join('');
+    document.getElementById('days').innerHTML=a.map(function(x){ return '<span>'+esc(x.d)+'</span>'; }).join('');
+    // Hover na sloupec → tooltip s hodnotou a metrikou (nad grafem, u daného dne).
+    Array.prototype.forEach.call(bars.children, function(bar){
+      bar.addEventListener('mouseenter', function(){
+        var v=parseInt(bar.dataset.v,10)||0;
+        tip.textContent=bar.dataset.d+' · '+v+' '+pluralDiktat(v);
+        tip.style.left=(bar.offsetLeft+bar.offsetWidth/2)+'px';
+        tip.classList.add('show');
+      });
+      bar.addEventListener('mouseleave', function(){ tip.classList.remove('show'); });
+    });
   }
   function renderHist(items){
     var box=document.getElementById('hist'); var empty=document.getElementById('histEmpty');
@@ -324,7 +344,13 @@ class _PopBridge(NSObject):
                 "top_h": (" · ".join(a[0] for a in top[:3]) if top else "—"),
                 "activity_7d": summary["activity_7d"],
             },
-            "recent": self._recent,
+            # Do WKWebView jen náhledy (avatar/snippet/age) — plný text diktátu si
+            # necháváme na Python straně (self._recent) pro kopírování přes most,
+            # ať se celý obsah zbytečně nesype do JS.
+            "recent": [
+                {"avatar": r["avatar"], "snippet": r["snippet"], "age": r["age"]}
+                for r in self._recent
+            ],
         }
         js = "applyState(" + json.dumps(state, ensure_ascii=False) + ")"
         self.webview.evaluateJavaScript_completionHandler_(js, None)

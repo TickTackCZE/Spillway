@@ -215,23 +215,29 @@ def test_windows_target_false_for_native_apps():
     assert not is_windows_target(None, None)
 
 
-def test_paste_uses_ctrl_for_windows_target_and_cmd_otherwise():
-    # Regrese k bugu „do AVD se vloží jen 'v'": RDP klient nepřeloží ⌘ na Ctrl.
-    from Quartz import kCGEventFlagMaskCommand, kCGEventFlagMaskControl
+def test_windows_target_types_unicode_native_uses_cmd_v(monkeypatch):
+    # Regrese k bugu „do AVD se vloží jen 'v'": RDP/AVD klient nepřeloží ⌘/Ctrl ze
+    # syntetické události (modifikátor zahodí), ale ZNAKY projdou → do Windows cíle
+    # text „naťukáme" přes unicode, ne přes schránku + klávesovou zkratku.
+    from Quartz import kCGEventFlagMaskCommand
 
     from spillway import paste
 
-    seen = []
-    orig = paste.CGEventSetFlags
-    paste.CGEventSetFlags = lambda ev, flags: seen.append(flags)
-    try:
-        paste._paste_keystroke(windows_target=True)
-        assert set(seen) == {kCGEventFlagMaskControl}
-        seen.clear()
-        paste._paste_keystroke(windows_target=False)
-        assert set(seen) == {kCGEventFlagMaskCommand}
-    finally:
-        paste.CGEventSetFlags = orig
+    monkeypatch.setattr(paste, "CGEventPost", lambda *a, **k: None)  # neinjektovat reálné eventy
+
+    # Nativní macOS cesta = ⌘+V.
+    flags = []
+    monkeypatch.setattr(paste, "CGEventSetFlags", lambda ev, f: flags.append(f))
+    paste._paste_keystroke()
+    assert set(flags) == {kCGEventFlagMaskCommand}
+
+    # Windows/AVD cíl = naťukat celý text přes unicode; NEsmí spouštět ⌘/Ctrl+V.
+    typed = []
+    monkeypatch.setattr(paste, "CGEventKeyboardSetUnicodeString", lambda ev, n, s: typed.append(s))
+    monkeypatch.setattr(paste, "_paste_keystroke", lambda *a, **k: pytest.fail("Windows cíl nemá spouštět _paste_keystroke"))
+    paste.paste_text("Ahoj světe", windows_target=True)
+    # Řetězec se nasazuje na down i up → beru jen down eventy (sudé indexy).
+    assert "".join(typed[::2]) == "Ahoj světe"
 
 
 # --- Slovník → Whisper hotwords (biasuje samotný přepis) ---------------------
@@ -335,14 +341,6 @@ def test_stats_empty_summary_does_not_crash(_stats_tmp):
     s = _stats_tmp
     assert s.summary()["count"] == 0  # prázdná historie nespadne
     assert s.summary()["dictation_s"] == 0.0
-
-
-def test_human_duration_formats():
-    from spillway.stats import human_duration
-
-    assert human_duration(45) == "45 s"
-    assert human_duration(200) == "3 min 20 s"
-    assert human_duration(8100) == "2 h 15 min"
 
 
 # --- Zrušení diktátu (Escape) -------------------------------------------------

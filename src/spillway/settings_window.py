@@ -27,7 +27,7 @@ from WebKit import WKWebView, WKWebViewConfiguration
 
 from PyObjCTools import AppHelper
 
-from . import autostart, config, design, keymap, settings
+from . import autostart, config, design, keymap, settings, stats
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 
 _LOGO = design.logo_svg(color="#818CF8", width=30, height=30, drops=False)
@@ -70,7 +70,8 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   textarea{resize:vertical;min-height:84px;line-height:1.5;}
   input:focus,textarea:focus,select:focus{border-color:var(--accent);}
   .btn{background:var(--accent);color:var(--onaccent);border:none;border-radius:9px;padding:9px 16px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;white-space:nowrap;}
-  .btn.danger{background:transparent;border:0.5px solid var(--danger);color:var(--danger);}
+  .btn.danger{background:transparent;border:0.5px solid var(--danger);color:var(--danger);min-width:112px;text-align:center;}
+  .btn:disabled{opacity:.5;cursor:default;}
   .hint{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5;}
   .status{font-size:12px;margin-bottom:10px;display:flex;align-items:center;gap:7px;color:var(--text);}
   .status .dot{width:7px;height:7px;border-radius:50%;background:var(--success);}
@@ -124,12 +125,25 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
   <div class="card"><h3>Anthropic API klíč</h3>
     <div id="keyset" style="display:none">
-      <div class="status"><span class="dot"></span>Klíč je nastavený (uložený v Keychain)</div>
-      <button class="btn danger" onclick="send({action:'delkey'})">Smazat klíč</button>
+      <div class="rowt" style="border-bottom:none;padding:0;">
+        <div class="l"><span style="color:var(--success)">●</span> Klíč je nastavený<small>uložený v macOS Keychain</small></div>
+        <button class="btn danger" onclick="send({action:'delkey'})">Smazat</button>
+      </div>
     </div>
     <div id="keyunset" style="display:none">
       <div class="field"><input id="key" type="password" placeholder="sk-ant-…"><button class="btn" onclick="saveKey()">Uložit</button></div>
       <div class="hint">Klíč se uloží do macOS Keychain, ne do souboru.</div>
+    </div>
+  </div>
+
+  <div class="card"><h3>Data a soukromí</h3>
+    <div class="rowt">
+      <div class="l">Reset statistik<small>Vynuluje počty, tempo, náklady i aktivitu</small></div>
+      <button class="btn danger" data-label="Resetovat" onclick="armReset(this,'reset_stats')">Resetovat</button>
+    </div>
+    <div class="rowt">
+      <div class="l">Reset historie nahrávek<small>Smaže uložené texty diktátů</small></div>
+      <button class="btn danger" data-label="Vymazat" onclick="armReset(this,'reset_history')">Vymazat</button>
     </div>
   </div>
 
@@ -184,6 +198,29 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   function setTheme(t){ applyTheme(t); send({action:'theme',value:t}); }
   function saveKey(){ var v=document.getElementById('key').value; if(v.trim()){ send({action:'apikey',value:v.trim()}); document.getElementById('key').value=''; } }
   function saveGloss(){ send({action:'glossary',value:document.getElementById('gloss').value}); }
+  // Destruktivní akce: první klik spustí 5s odpočet, po který JDE tlačítko zamčené
+  // (ať omylem nedvojklikneš). Teprve pak jde potvrdit; bez potvrzení se za chvíli
+  // vrátí do klidu.
+  function resetBtn(btn){ clearInterval(btn._iv); clearTimeout(btn._to); btn.dataset.state=''; btn.disabled=false; btn.textContent=btn.dataset.label; }
+  function armReset(btn, action){
+    if(btn.dataset.state==='ready'){          // potvrzovací klik
+      clearTimeout(btn._to); btn.dataset.state='';
+      send({action:action});
+      btn.textContent='Hotovo'; btn.disabled=true;
+      setTimeout(function(){ resetBtn(btn); }, 1500);
+      return;
+    }
+    if(btn.dataset.state) return;             // během odpočtu klik ignoruj
+    btn.dataset.state='arming'; btn.disabled=true;
+    var left=5; btn.textContent=left+' s';
+    btn._iv=setInterval(function(){
+      left--;
+      if(left>0){ btn.textContent=left+' s'; return; }
+      clearInterval(btn._iv);
+      btn.disabled=false; btn.dataset.state='ready'; btn.textContent='Potvrdit';
+      btn._to=setTimeout(function(){ resetBtn(btn); }, 5000);  // bez potvrzení → klid
+    }, 1000);
+  }
   // „Číst kontext pole" je podnastavení „Odesílání do AI modelu": vizuálně sleduje
   // rodiče (rodič vypnutý → dítě vypnuté a zašedlé/zamčené), master ho zapíná i vypíná.
   function syncAiEdit(){
@@ -249,6 +286,10 @@ class _Bridge(NSObject):
                 self.controller.set_language(lang)
             elif action == "theme":
                 settings.set("theme", str(body.get("value", "system")))
+            elif action == "reset_stats":
+                stats.reset_stats()
+            elif action == "reset_history":
+                stats.clear_recordings()
             elif action == "apikey":
                 key = str(body.get("value", "")).strip()
                 if key:
