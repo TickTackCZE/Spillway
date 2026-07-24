@@ -180,6 +180,7 @@ def focused_field() -> tuple[str | None, int | None]:
         from ApplicationServices import (
             AXUIElementCopyAttributeValue,
             AXUIElementCreateSystemWide,
+            AXUIElementSetMessagingTimeout,
             AXValueGetValue,
             kAXFocusedUIElementAttribute,
             kAXSelectedTextRangeAttribute,
@@ -197,11 +198,13 @@ def focused_field() -> tuple[str | None, int | None]:
 
     try:
         system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 1.0)  # [hang] AX nesmí blokovat
         err, focused = AXUIElementCopyAttributeValue(
             system, kAXFocusedUIElementAttribute, None
         )
         if err or focused is None:
             return (None, None)
+        AXUIElementSetMessagingTimeout(focused, 1.0)
         err, text = AXUIElementCopyAttributeValue(focused, kAXValueAttribute, None)
         if err or not isinstance(text, str):
             return (None, None)
@@ -254,6 +257,7 @@ def caret_at_line_start() -> bool | None:
             AXUIElementCopyAttributeValue,
             AXUIElementCopyParameterizedAttributeValue,
             AXUIElementCreateSystemWide,
+            AXUIElementSetMessagingTimeout,
             AXValueGetValue,
             kAXFocusedUIElementAttribute,
             kAXInsertionPointLineNumberAttribute,
@@ -284,11 +288,13 @@ def caret_at_line_start() -> bool | None:
 
     try:
         system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 1.0)  # [hang] AX nesmí blokovat
         err, focused = AXUIElementCopyAttributeValue(
             system, kAXFocusedUIElementAttribute, None
         )
         if err or focused is None:
             return None
+        AXUIElementSetMessagingTimeout(focused, 1.0)
         err, line = AXUIElementCopyAttributeValue(
             focused, kAXInsertionPointLineNumberAttribute, None
         )
@@ -333,6 +339,7 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
             AXUIElementCopyAttributeValue,
             AXUIElementCopyParameterizedAttributeValue,
             AXUIElementCreateSystemWide,
+            AXUIElementSetMessagingTimeout,
             AXValueGetValue,
             kAXFocusedUIElementAttribute,
             kAXSelectedTextRangeAttribute,
@@ -390,12 +397,16 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
 
     try:
         system = AXUIElementCreateSystemWide()
+        # [hang] AX volání nemají default timeout — na hlavním vlákně (HUD) by
+        # nereagující cílová appka zmrazila celou aplikaci. Strop 1 s.
+        AXUIElementSetMessagingTimeout(system, 1.0)
         err, focused = AXUIElementCopyAttributeValue(
             system, kAXFocusedUIElementAttribute, None
         )
         if err or focused is None:
             _dbg(f"žádný focused element (err={err})")
             return None
+        AXUIElementSetMessagingTimeout(focused, 1.0)
         err, rng_val = AXUIElementCopyAttributeValue(
             focused, kAXSelectedTextRangeAttribute, None
         )

@@ -10,28 +10,12 @@ Stav nahrávání/zpracování se ukazuje v plovoucím HUD u kurzoru (`hud.py`),
 
 from __future__ import annotations
 
-import os
-import time as _time
-
 import rumps
 
 from . import config
 from .app import IDLE, PROCESSING, RECORDING
 
 _BAR_ICON = "🎙️"  # placeholder; Spillway logo přijde s .app bundlem (ikonové assety)
-
-# Ladicí zápis napojení popoveru do souboru — ve vývoji (bez frozen .app) jdou
-# printy do terminálu, takže bychom je jinak z tohohle prostředí nepřečetli.
-_DBG_PATH = os.path.expanduser("~/Library/Logs/Spillway/popover-debug.log")
-
-
-def _dbg(msg: str) -> None:
-    try:
-        os.makedirs(os.path.dirname(_DBG_PATH), exist_ok=True)
-        with open(_DBG_PATH, "a", encoding="utf-8") as f:
-            f.write(f"{_time.strftime('%H:%M:%S')} {msg}\n")
-    except Exception:  # noqa: BLE001
-        pass
 
 
 class SpillwayTray(rumps.App):
@@ -92,6 +76,11 @@ class SpillwayTray(rumps.App):
         self._unload_timer = rumps.Timer(self._check_unload, 5)
         self._unload_timer.start()
 
+        # Watchdog zaseklého zpracování — kdyby přepis/Claude zamrzl, po čase to
+        # odsekne, ať appka nezůstane viset na „Zpracovávám" a nemusí se vypínat.
+        self._stuck_timer = rumps.Timer(self._check_stuck, 5)
+        self._stuck_timer.start()
+
     def _check_tap(self, _sender) -> None:  # noqa: ANN001
         listener = getattr(self.controller, "hotkey_listener", None)
         if listener is None or listener.tap_ok is None:
@@ -135,6 +124,46 @@ class SpillwayTray(rumps.App):
         except Exception:  # noqa: BLE001
             pass
 
+    def _check_stuck(self, _sender) -> None:  # noqa: ANN001
+        try:
+            self.controller.watchdog_check()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _install_edit_menu(self) -> None:
+        """Přidá do hlavního menu položku Úpravy s Kopírovat/Vložit/… → teprve tím
+        začnou v oknech (WKWebView popover i nastavení) fungovat ⌘C/⌘V/⌘X/⌘A.
+
+        Bez hlavního menu nemá ⌘C kam poslat akci `copy:`, takže se běžný text
+        v aplikaci nedal zkopírovat. Akce míří na first responder (nil target).
+        """
+        try:
+            from AppKit import NSApp, NSMenu, NSMenuItem
+
+            main = NSApp.mainMenu()
+            if main is None:
+                main = NSMenu.alloc().init()
+                NSApp.setMainMenu_(main)
+            for i in range(main.numberOfItems()):
+                if main.itemAtIndex_(i).title() == "Úpravy":
+                    return  # už tam je
+            holder = NSMenuItem.alloc().init()
+            holder.setTitle_("Úpravy")
+            main.addItem_(holder)
+            edit = NSMenu.alloc().initWithTitle_("Úpravy")
+            holder.setSubmenu_(edit)
+            for title, sel, key in (
+                ("Vyjmout", "cut:", "x"),
+                ("Kopírovat", "copy:", "c"),
+                ("Vložit", "paste:", "v"),
+                ("Vybrat vše", "selectAll:", "a"),
+            ):
+                edit.addItem_(
+                    NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, key)
+                )
+        except Exception as exc:  # noqa: BLE001 — bez Edit menu appka jede dál
+            print(f"(Edit menu nedostupné: {exc})")
+
     def _refresh_stats_when_done(self) -> None:
         """Po dokončení diktátu obnovit kartu Statistiky, je-li okno otevřené.
 
@@ -167,6 +196,7 @@ class SpillwayTray(rumps.App):
         button = item.button() if item is not None else None
         if button is None:
             return  # status item ještě není — zkusíme za další tick
+        self._install_edit_menu()  # ať Cmd+C/V/A fungují v oknech (WKWebView)
         try:
             from .popover import PopoverController
 
@@ -181,10 +211,9 @@ class SpillwayTray(rumps.App):
         except Exception as exc:  # noqa: BLE001 — necháme rumps menu jako fallback
             import traceback
 
-            # Chybu zapiš i do souboru — ve frozen .app jde print jinam a takhle
-            # se dá diagnostikovat, proč popover ve zabalené appce nenaskočil.
-            _dbg("setup FAIL\n" + traceback.format_exc())
-            print(f"(popover nedostupný: {exc}) — zůstává klasické menu.")
+            # Ve frozen .app jde print do ~/Library/Logs/Spillway/spillway.log,
+            # takže se dá diagnostikovat, proč popover ve zabalené appce nenaskočil.
+            print(f"(popover nedostupný: {exc}) — zůstává klasické menu.\n{traceback.format_exc()}")
         self._popover_ready = True
 
     def _tick(self, _sender) -> None:  # noqa: ANN001
