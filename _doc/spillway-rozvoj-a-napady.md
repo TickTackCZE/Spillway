@@ -55,7 +55,7 @@ Když opustím okno, popup se přesune **doprava dolů** a ukazuje `Zpracovává
 
 Kroky jdou sekvenčně (Claude potřebuje hotový přepis). Přepis je díky mlx GPU rychlý (~1,5–2 s na 10 s řeči); dominantní zbývá Claude (~2–3 s síť + inference).
 
-- **Streaming přepis během mluvení** — přepisovat po segmentech, už zatímco mluvíš (VAD je v pipeline). Po puštění klávesy zbývá poslední kousek → vnímaná latence Whisperu skoro zmizí. Velký přínos, ale koliduje s modelem „Escape zruší celý diktát před zaplacením" → vyšší riziko.
+- **Streaming přepis během mluvení.** Dnes je to **dávkově**: dokud držíš klávesu, NIC se nepřepisuje — celé audio se pošle Whisperu až po puštění, takže na přepis čekáš teprve tehdy. Streaming = přepisovat průběžně **po segmentech, už zatímco mluvíš**; po puštění klávesy zbývá jen poslední kousek → čekání po puštění skoro zmizí. Velký přínos, ale koliduje s modelem „Escape zruší celý diktát před zaplacením" a je to větší architektonický zásah → vyšší riziko.
 - **Auto-výběr modelu** — Haiku pro krátké/jednoduché (nižší latence), Sonnet pro delší/složité; přepínat podle délky.
 - **Prompt caching** systémového promptu — ~100–300 ms na opakovaných voláních v krátkém sledu.
 - Streamovaná odpověď Claude **nepomůže** — text se vkládá až celý.
@@ -66,7 +66,12 @@ Kroky jdou sekvenčně (Claude potřebuje hotový přepis). Přepis je díky mlx
 
 - **Adaptivní unload** — místo fixní 1 min držet model, dokud „aktivně diktuješ" (hodně diktátů v poslední době → delší práh), a uvolnit až po delší pauze. Míň churnu při souvislé práci.
 - **Auto-detekce jazyka per diktát** s prahem jistoty — default primární jazyk, přepnout jen když je detekovaný jazyk jiný A jistota vysoká (plná auto-detekce by česko-anglický mix zhoršila).
-- **Undo posledního vložení.**
+- **Undo posledního vložení** — „oops" klávesa, která smaže právě vložený text.
+  Nejjednodušší spolehlivě: poslat cílové appce `⌘Z` (paste je ve většině appek
+  jeden undo krok). Alternativa: pamatovat vložený text a smazat N znaků
+  Backspacem — křehké, když se mezitím pohnul kurzor. K čemu: rychlá náprava po
+  špatném přepisu / vložení do jiného pole, bez ručního mazání. (Nižší priorita —
+  Escape už ruší před vložením a `⌘Z` zvládneš i sám.)
 - **Slovník jako páry „špatně → správně"** místo plochého seznamu.
 - **Zvuk při startu/konci nahrávání** (diktování „naslepo").
 
@@ -86,3 +91,16 @@ Kroky jdou sekvenčně (Claude potřebuje hotový přepis). Přepis je díky mlx
 
 - **Export historie na RPi / DB + analytiky** — kolik/kde/jaké termíny diktuji, WER trendy. Historie se od začátku ukládá strojově čitelně (`history.jsonl`).
 - **Windows port** — jádro (Whisper, Claude, statistiky) je přenositelné (~1/3 kódu), přepsat platformní vrstvu (klávesa, vkládání, kontext, UI). Princip držet jednotný: **schránka + zkratka / naťukání, Accessibility jen na čtení.**
+
+---
+
+## 7. Další nápady (nové, k rozmyšlení)
+
+- **Náhled / potvrzení před vložením (volitelně).** Režim, kdy se upravený text ukáže v malém okně, můžeš ho doupravit a teprve `Enter` ho vloží. Pro důležitá pole (e-mail zákazníkovi) — jistota před nevratným vložením. Vypnuté by default (přidává klik).
+- **Vynucení profilu klávesou.** Druhá zkratka, která diktuje rovnou v režimu `email` / `ai` bez ohledu na aktivní appku (např. psát prompt do AI, i když nejsi zrovna v AI okně).
+- **Kopírovat místo vložit.** Modifikátor při puštění klávesy (podržet ⇧) → výsledek jen do schránky, nevkládat. Užitečné, když chceš text jinam, než kde zrovna jsi.
+- **„Přemluvit" — nahradit poslední vložení.** Podržet poslední audio; zkratka = přepsat/znovu upravit poslední diktát a nahradit vložený text (undo + nové vložení). Řeší „řekl jsem to blbě".
+- **Hlasové editační příkazy** — „nový odstavec", „odrážka", „smazat větu", „velké písmeno". Rozpoznat je v přepisu a promítnout do formátování, ne je vložit jako text.
+- **Automatický slovník.** Sledovat, které termíny Claude opakovaně opravuje (raw → final), a nabídnout je k přidání do uživatelského slovníku. Statistiky „co se nejčastěji opravuje" jako podklad.
+- **Ikona v liště odráží stav** (nahrávám / zpracovávám), nejen plovoucí HUD — přehled i bez pohledu ke kurzoru.
+- **Rychlá pauza / tichý režim** — dočasně vypnout hotkey (např. při hovoru), bez ukončení appky.

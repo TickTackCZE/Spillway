@@ -1,88 +1,83 @@
 # Spillway
 
-Lokální diktovací nástroj pro macOS: **Whisper** (lokální přepis) → **Claude** (úprava textu) → **univerzální vložení** do libovolné aplikace. Konfigurovatelná klávesa, běh na pozadí.
+Osobní diktovací nástroj pro macOS. Podrž klávesu, mluv, pusť → text se přepíše
+lokálně, upraví přes AI a vloží do libovolné aplikace.
 
-- 📄 Plán a stav implementace: [`_doc/spillway-plan-implementace.md`](_doc/spillway-plan-implementace.md)
-- 📄 Původní analýza: [`_doc/spillway-analyza.md`](_doc/spillway-analyza.md)
+**Pipeline:** hold-to-talk (výchozí F5) → **mlx-whisper na Apple GPU** (lokální
+přepis) → **Claude** (úprava/formátování) → **univerzální vložení** (`⌘V`, nebo
+naťukání do RDP/AVD). Běží na pozadí jako **menu-bar app**.
 
-Stav: **fáze F2 — AI úprava + kontext** (F0 spiky + F1 pipeline ověřeny; viz plán).
+> Stav: **v1.0** — funkční, nasazeno. Data neopouštějí stroj kromě jednoho
+> textového API volání do Claude. API klíč jen v macOS Keychain.
 
-## Spuštění
+- 📄 [Analýza](_doc/spillway-analyza.md) · [Plán implementace](_doc/spillway-plan-implementace.md) · [Rozvoj a nápady](_doc/spillway-rozvoj-a-napady.md)
+
+## Co umí
+
+- **Vícejazyčnost** — čeština i anglické termíny (code-switching), `language="cs"` napevno.
+- **Znalost cílové aplikace** — profily formátování (e-mail / chat / kód / prompt pro AI / obecné).
+- **Popover v liště** — statistiky, ⌀ tempo řeči, náklady za měsíc, 7denní graf, historie diktátů (klik = zpět do schránky), přepínač modelu.
+- **Nastavení** — klávesy, jazyk, chování (autostart, chytrá mezera, odesílání do AI + čtení kontextu pole), uživatelský slovník, API klíč, vzhled (Systém / Light / Dark), reset statistik a historie.
+- **Zrušení diktátu** klávesou (Escape) před placeným voláním AI.
+- **Uživatelský slovník** — termíny, které má Claude psát přesně (opraví k nim i přeslechy).
+
+## Instalace (.app)
 
 ```bash
-uv run python run_spillway.py          # s AI úpravou (pokud je nastaven API klíč)
+bash build/make_codesign_cert.sh   # JEDNOU na stroji — stabilní podpisový cert
+bash build/build_app.sh            # PyInstaller + codesign → build/dist/Spillway.app
+rm -rf /Applications/Spillway.app && ditto build/dist/Spillway.app /Applications/Spillway.app
+open /Applications/Spillway.app
+bash build/make_dmg.sh             # volitelně DMG instalátor
+```
+
+Podpis stabilním self-signed certem znamená, že **udělená oprávnění přežijí
+rebuildy** (jinak by je macOS při každém buildu resetoval). `.app` není
+notarizovaná → první spuštění: pravý klik → **Otevřít**.
+
+**Oprávnění (jednorázově):** Microphone · Input Monitoring · Accessibility.
+API klíč (Anthropic): nastavíš v okně Nastavení; uloží se do Keychain.
+
+## Spuštění ze zdrojáků (vývoj)
+
+```bash
+uv sync                                # .venv + závislosti (Python 3.12 doinstaluje uv)
+uv run python run_spillway.py          # s AI úpravou (když je klíč v Keychain)
 uv run python run_spillway.py --raw    # jen syrový přepis, bez Claude
-```
-Podrž **F5**, mluv česky, pusť → přepsaný a upravený text se vloží do aktivní
-aplikace. Ctrl+C ukončí. **Oprávnění:** Microphone + Input Monitoring +
-Accessibility (pro aplikaci, ze které spouštíš). Model se při prvním běhu stáhne
-(~1,5 GB) do HuggingFace cache.
-
-### AI úprava (F2) — nastavení API klíče
-
-Claude (Haiku 4.5) opraví interpunkci, gramatiku a zkomolené anglické termíny.
-Vyžaduje Anthropic API klíč — uloží se do macOS Keychain, **nikdy do repa**:
-
-```bash
-uv run python set_api_key.py     # klíč zadáš skrytě (getpass)
-```
-Bez klíče nástroj běží v raw režimu (jen přepis). Cena ~1–3 $/měsíc.
-
----
-
-## Vývojové prostředí
-
-Používá se [uv](https://docs.astral.sh/uv/). Python 3.12 si uv doinstaluje sám.
-
-```bash
-uv sync            # vytvoří .venv a nainstaluje závislosti
+uv run python set_api_key.py           # uloží API klíč do Keychain (getpass)
 ```
 
-> ⚠️ **Google Drive:** repo je ve složce synchronizované Google Drivem. Pokud
-> začne být sync `.venv` otravný (hlavně po přidání faster-whisper), založ
-> virtualenv mimo Drive: `uv venv ~/.venvs/spillway` a nastav
+Podrž **F5**, mluv, pusť → text se vloží do aktivní aplikace. Model se při prvním
+běhu stáhne (~1,5 GB) do HuggingFace cache.
+
+> ⚠️ **Google Drive:** repo je v synchronizované složce. Když sync `.venv` zlobí,
+> založ virtualenv mimo Drive: `uv venv ~/.venvs/spillway` +
 > `export UV_PROJECT_ENVIRONMENT=~/.venvs/spillway`.
 
----
+## Model a náklady
 
-## Spiky (F0)
+Výchozí **`claude-sonnet-5`** (`temperature=0`), Haiku volitelný v Nastavení.
+Přepis běží lokálně (0 $). AI úprava = jednotky $/měsíc (počítá se z tokenů,
+vidíš ji v popoveru). Bez API klíče běží raw režim (jen přepis).
 
-Před psaním zbytku ověřujeme 4 nejrizikovější věci. Každý spike vyžaduje udělení
-macOS oprávnění aplikaci, ze které ho spouštíš (Terminal / iTerm / VS Code).
+Přepis: výchozí **mlx-whisper na Apple GPU** (`large-v3-turbo`), fallback
+**faster-whisper na CPU** (přepínač `SPILLWAY_WHISPER_BACKEND=mlx|faster`).
 
-### Spike A — paste (největší riziko, R1)
-```bash
-uv run python spikes/spike_a_paste.py ["vlastní text"]
-```
-**Oprávnění:** System Settings → Privacy & Security → **Accessibility** (jinak
-`CGEventPost` tiše nic neudělá). Skript odpočítá pár sekund — klikni do cílového
-pole. Otestuj v 6 aplikacích (Safari, Chrome, VS Code, Terminal, Slack, Mail) +
-password poli (očekáván fail). **Kritérium:** OK v ≥ 6/6 běžných polí, obnova
-schránky bez ztráty i s běžícím clipboard managerem (Maccy/Raycast).
+## Vzdálená Windows plocha (RDP / AVD)
 
-### Spike C — hotkey (R4/R9/R11)
-```bash
-uv run python spikes/spike_c_hotkey.py
-```
-**Oprávnění:** System Settings → Privacy & Security → **Input Monitoring**
-(pro potlačení eventů i **Accessibility**). Drž a pusť pravý ⌥ → START/STOP
-"nahrávání". Ověř [R9] (potlačení klávesy macOS diktování — spíš neúspěch → radši
-diktování v Nastavení vypnout) a [R11] (chování při Secure Keyboard Entry).
+Vkládání do „Windows App" funguje **naťukáním znaků** — vyžaduje v klientu
+**Connections → Keyboard Mode → Unicode** (ve Scancode režimu se modifikátory
+i unicode zahazují).
 
-### Spike B — Whisper benchmark (R2) · Spike D — bundle (F3)
-Zatím nezahájeny — viz plán §5.
+## Konfigurace a data
 
----
+- Nastavení: `~/Library/Application Support/Spillway/settings.json`
+- Historie/statistiky: `~/Library/Application Support/Spillway/history.jsonl`
+- Log: `~/Library/Logs/Spillway/spillway.log`
+- API klíč: macOS Keychain (služba `spillway`), **nikdy v repu**.
 
-## Testy a ukázky
+## Testy
 
 ```bash
-uv run pytest                              # testy čisté logiky (bez GUI/API)
-uv run python spikes/demo_formatting.py    # ukázky formátování (email/SMS/ai…) — nutný API klíč
-uv run python spikes/spend_estimate.py     # predikce měsíčního spendu Claude API
+uv run pytest      # testy čisté logiky (bez GUI/API)
 ```
-
-## Výsledky spiků
-
-Zapisuj do bug trackeru / poznámek v plánu (`_doc/spillway-plan-implementace.md`,
-§5 a §6). To je zdroj pravdy o stavu.
