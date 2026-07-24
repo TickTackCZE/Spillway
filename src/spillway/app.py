@@ -23,7 +23,7 @@ from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner, basic_cleanup
 from .paste import copy_to_clipboard, paste_text
-from .transcribe import Transcriber, voiced_seconds
+from .transcribe import Transcriber, next_segment_boundary, voiced_seconds
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
 
@@ -118,6 +118,11 @@ class Controller:
         self._processing_since = 0.0
         # [F2] Vlákno, které otevírá mikrofon; `_process` na něj počká.
         self._start_thread: threading.Thread | None = None
+        # Streaming přepis: vlákno segmentuje řeč v tichu a přepisuje segmenty už
+        # během mluvení; `_process` pak dopřepíše jen poslední úsek a zřetězí.
+        self._stream_thread: threading.Thread | None = None
+        self._stream_committed = 0            # kolik vzorků už je v segmentech
+        self._stream_segments: list[str] = []  # přepsané segmenty (v pořadí)
 
         # [F2/F3] AI úprava přes Claude — konfigurovatelná za běhu z menu.
         self.raw_mode = raw_mode
@@ -220,6 +225,15 @@ class Controller:
         # jinak čekalo ~1,6 s až po puštění klávesy. Takhle se reload schová.
         if not self.transcriber.is_loaded:
             threading.Thread(target=self.transcriber.preload, daemon=True).start()
+        # Streaming přepis během mluvení (když zapnuto). Krátký diktát bez pauz
+        # nevytvoří segmenty → `_process` spadne na dávkový přepis.
+        self._stream_committed = 0
+        self._stream_segments = []
+        if config.streaming():
+            self._stream_thread = threading.Thread(target=self._stream_loop, daemon=True)
+            self._stream_thread.start()
+        else:
+            self._stream_thread = None
         # [B7] Watchdog: kdyby se ztratil key-up (spánek, lock, Secure Input),
         # po max_seconds nahrávání vynuceně ukončíme, ať appka nezůstane v RECORDING.
         self._arm_watchdog()
@@ -236,6 +250,41 @@ class Controller:
             with self._lock:
                 self.state = IDLE
             self._cancel_watchdog()
+
+    def _stream_loop(self) -> None:
+        """Během nahrávání segmentuje řeč v tichu a přepisuje segmenty průběžně.
+        Výsledky ukládá do `self._stream_segments` / `self._stream_committed`,
+        které `_process` po puštění klávesy převezme. Chyba tu nikdy nesmí shodit
+        diktát — v nejhorším zůstane committed, kde je, a `_process` dopřepíše zbytek."""
+        committed = 0
+        try:
+            while True:
+                if self._cancel.is_set():
+                    return
+                with self._lock:
+                    if self.state != RECORDING:
+                        return
+                time.sleep(0.35)
+                audio = self.recorder.snapshot()
+                while True:
+                    if self._cancel.is_set():
+                        return
+                    b = next_segment_boundary(audio, committed)
+                    if b is None:
+                        break
+                    seg = audio[committed:b]
+                    committed = b
+                    self._stream_committed = committed
+                    if seg.size >= int(0.3 * 16000):  # < 0,3 s segment nemá cenu
+                        try:
+                            txt = self.transcriber.transcribe(seg, language=self.language)
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"(streaming segment selhal: {exc})")
+                            txt = ""
+                        if txt:
+                            self._stream_segments.append(txt)
+        except Exception as exc:  # noqa: BLE001 — streaming nesmí shodit diktát
+            print(f"(streaming loop error: {exc})")
 
     def _arm_watchdog(self) -> None:
         self._cancel_watchdog()
@@ -307,6 +356,11 @@ class Controller:
             if starter is not None:
                 starter.join(timeout=5.0)
             audio = self.recorder.stop()  # [B9] těžké volání až tady, na workeru
+            # Počkat, až streamovací vlákno dokončí poslední segment — tím doběhne
+            # ještě před dalším diktátem a nezapíše do jeho (resetnutého) seznamu.
+            stream_th = getattr(self, "_stream_thread", None)
+            if stream_th is not None:
+                stream_th.join(timeout=3.0)
             audio_secs = len(audio) / 16000.0
             speech_secs = voiced_seconds(audio)  # bez ticha/pauz → tempo řeči
             print(f"🎙️ audio {audio_secs:.1f} s ({len(audio)} vz.) · řeč {speech_secs:.1f} s")
@@ -345,21 +399,38 @@ class Controller:
             secs = len(audio) / 16000.0
             if not self.transcriber.is_loaded:
                 print("💤→🔄 model byl uvolněný z paměti, znovu se načítá…")
-            print(f"⏳ přepisuji {secs:.1f} s audia…")
             t0 = time.perf_counter()
-            # Slovník do Whisperu (hotwords) jen když si o to uživatel řekne —
-            # výchozí VYPNUTO, protože bias vkládá termíny, které nezazněly
-            # (viz config.whisper_hotwords). Zkomoleniny opraví bezpečně Claude.
-            # Cancellable: Escape během přepisu ho okamžitě opustí.
-            raw = self._run_cancellable(lambda: self.transcriber.transcribe(
-                audio,
-                language=self.language,
-                hotwords=self.glossary if config.whisper_hotwords() else None,
-            ))
-            if raw is _CANCELLED:
-                raw = ""  # ať se sentinel nedostane do stats.record (TypeError)
-                outcome = "cancelled"
-                return
+            # Streaming: segmenty (řez v tichu) se přepsaly už během mluvení —
+            # po puštění dopřepíšeme jen poslední úsek a zřetězíme. Když streaming
+            # nic nesegmentoval (krátký diktát bez pauz) → committed=0 → přepíše se
+            # celé audio (dávka, jako dřív). Slovník (hotwords) jde jen do dávky.
+            if stream_th is not None:  # streaming byl aktivní (joinuto po stop())
+                committed = int(getattr(self, "_stream_committed", 0))
+                segments = list(getattr(self, "_stream_segments", []))
+                tail = audio[committed:] if 0 <= committed < audio.size else audio[:0]
+                print(f"⏳ přepisuji zbytek {tail.size / 16000.0:.1f} s "
+                      f"(streaming: {len(segments)} segm. za mluvení)…")
+                tail_text = self._run_cancellable(
+                    lambda: self.transcriber.transcribe(tail, language=self.language)
+                )
+                if tail_text is _CANCELLED:
+                    raw = ""
+                    outcome = "cancelled"
+                    return
+                parts = segments + ([tail_text] if tail_text else [])
+                raw = " ".join(p for p in parts if p).strip()
+            else:
+                print(f"⏳ přepisuji {secs:.1f} s audia…")
+                # Cancellable: Escape během přepisu ho okamžitě opustí.
+                raw = self._run_cancellable(lambda: self.transcriber.transcribe(
+                    audio,
+                    language=self.language,
+                    hotwords=self.glossary if config.whisper_hotwords() else None,
+                ))
+                if raw is _CANCELLED:
+                    raw = ""  # ať se sentinel nedostane do stats.record (TypeError)
+                    outcome = "cancelled"
+                    return
             dt = time.perf_counter() - t0
             if not raw:
                 print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")

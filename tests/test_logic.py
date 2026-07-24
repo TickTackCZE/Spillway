@@ -252,6 +252,35 @@ def test_hotwords_str_joins_terms_and_handles_empty():
     assert _hotwords_str(["  ", ""]) is None  # samé prázdné → žádný bias
 
 
+def test_next_segment_boundary_cuts_in_silence():
+    # Streaming: řez segmentu musí padnout DO ticha (ne uprostřed řeči) a až po
+    # dostatečné řeči — jinak by se slova sekala a segmenty nešly čistě zřetězit.
+    import numpy as np
+
+    from spillway.transcribe import next_segment_boundary
+
+    sr = 16000
+    rng = np.random.default_rng(0)
+
+    def speech(sec):
+        return (0.05 * rng.standard_normal(int(sr * sec))).astype("float32")
+
+    def sil(sec):
+        return np.zeros(int(sr * sec), dtype="float32")
+
+    audio = np.concatenate([speech(3), sil(0.6), speech(3), sil(0.6), speech(2)])
+
+    b1 = next_segment_boundary(audio, 0)
+    assert b1 is not None and 3.0 * sr < b1 < 3.6 * sr  # v první mezeře ticha
+
+    b2 = next_segment_boundary(audio, b1)
+    assert b2 is not None and 6.0 * sr < b2 < 7.0 * sr  # v druhé mezeře
+
+    # Málo řeči bez ticha / krátký souvislý diktát → žádný řez (spadne na dávku).
+    assert next_segment_boundary(speech(1.0), 0) is None
+    assert next_segment_boundary(speech(5.0), 0) is None  # 5 s souvislé řeči, bez pauzy
+
+
 def test_silence_gate_for_mlx():
     # mlx nemá VAD → energetická brána musí ticho/šum poznat, ať nehalucinuje,
     # a přitom nepustit dolů skutečnou (i tichou) řeč.

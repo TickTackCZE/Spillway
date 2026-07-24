@@ -100,6 +100,50 @@ def voiced_seconds(audio: np.ndarray, frame_ms: int = 30, thresh: float = 0.01) 
     return int(np.count_nonzero(rms > thresh)) * frame_ms / 1000.0
 
 
+def next_segment_boundary(
+    audio: np.ndarray,
+    start: int,
+    *,
+    min_speech_s: float = 2.0,
+    min_silence_s: float = 0.45,
+    thresh: float = 0.01,
+    frame_ms: int = 30,
+) -> int | None:
+    """Řez segmentu pro streaming přepis: index vzorku > `start` **uprostřed
+    dostatečně dlouhého ticha**, které přišlo po dostatečné řeči. `None`, když
+    takový řez zatím není (mluví se dál / ještě málo řeči).
+
+    Řeže se ZÁMĚRNĚ v tichu (ne fixně) — slova se tak nesekají uprostřed a
+    segmenty jdou prostě zřetězit (viz research: VAD řez kvalitu nezhoršuje)."""
+    if audio is None or start < 0 or start >= audio.size:
+        return None
+    n = int(SAMPLE_RATE * frame_ms / 1000)
+    tail = audio[start:]
+    usable = tail.size - (tail.size % n)
+    if usable < n:
+        return None
+    rms = np.sqrt(np.mean(tail[:usable].astype(np.float32).reshape(-1, n) ** 2, axis=1))
+    voiced = rms > thresh
+    min_speech_frames = max(1, int(min_speech_s * 1000 / frame_ms))
+    min_silence_frames = max(1, int(min_silence_s * 1000 / frame_ms))
+    voiced_count = 0
+    i = 0
+    m = len(voiced)
+    while i < m:
+        if voiced[i]:
+            voiced_count += 1
+            i += 1
+            continue
+        j = i
+        while j < m and not voiced[j]:
+            j += 1
+        if voiced_count >= min_speech_frames and (j - i) >= min_silence_frames:
+            cut_frame = i + (j - i) // 2  # řez doprostřed ticha
+            return start + cut_frame * n
+        i = j
+    return None
+
+
 class _MlxWorker:
     """Jedno vyhrazené vlákno pro VŠECHNY mlx GPU operace.
 

@@ -49,6 +49,14 @@ class Recorder:
         )
         self._stream.start()
 
+    def snapshot(self) -> np.ndarray:
+        """Zatím nahrané audio jako 1-D float32, BEZ zastavení streamu (pro
+        streaming přepis během mluvení). Levné — jen zřetězení dosavadních rámců."""
+        with self._lock:
+            if not self._frames:
+                return np.zeros(0, dtype=np.float32)
+            return np.concatenate(self._frames, axis=0).reshape(-1)
+
     def stop(self) -> np.ndarray:
         """Zastaví nahrávání, uvolní mikrofon a vrátí audio jako 1-D float32."""
         stream = self._stream
