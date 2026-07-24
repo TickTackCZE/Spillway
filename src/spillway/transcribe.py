@@ -125,13 +125,24 @@ class Transcriber:
 
     def _load_model(self) -> None:
         if self.backend == "mlx":
+            import mlx.core as mx
             import mlx_whisper
+            from mlx_whisper.transcribe import ModelHolder
 
-            # Pozn.: záměrně přes load_models.load_model (ne ModelHolder.get_model)
-            # — get_model v zabalené .app deadlockoval při druhém dotažení modelu
-            # na hlavním vlákně (ctypes/GIL). Tenhle tvar je ověřeně stabilní.
-            # ModelHolder naplní až první `transcribe`; unload pak vyčistí ten.
-            mlx_whisper.load_models.load_model(_MLX_MODEL)
+            # Model plníme rovnou do ModelHolder — tam ho hledá i mlx_whisper.transcribe,
+            # takže se načte JEDNOU a přepis ho jen převezme. Dřív se tu přes
+            # load_models.load_model model načetl a ZAHODIL (self._model = True), a
+            # `transcribe` ho vzápětí načítal znovu → dvojitá práce na GPU (a zbytečné
+            # teplo + pomalejší studený start) při každém diktátu po uvolnění.
+            #
+            # Plníme ho ručně (ne přes ModelHolder.get_model — ta v zabalené .app
+            # deadlockovala na hlavním vlákně, ctypes/GIL). dtype=float16 musí sedět
+            # s `transcribe` (fp16=True), jinak by přepis dostal nesedící typ.
+            if ModelHolder.model is None or ModelHolder.model_path != _MLX_MODEL:
+                ModelHolder.model = mlx_whisper.load_models.load_model(
+                    _MLX_MODEL, dtype=mx.float16
+                )
+                ModelHolder.model_path = _MLX_MODEL
             self._model = True
         else:
             from faster_whisper import WhisperModel

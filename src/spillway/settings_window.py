@@ -27,7 +27,7 @@ from WebKit import WKWebView, WKWebViewConfiguration
 
 from PyObjCTools import AppHelper
 
-from . import autostart, config, design, keymap, settings, stats
+from . import autostart, config, design, keymap, settings
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 
 _LOGO = design.logo_svg(color="#818CF8", width=30, height=30, drops=False)
@@ -42,24 +42,24 @@ _LANG_OPTIONS = "".join(f'<option value="{c}">{n}</option>' for c, n in _LANGS)
 _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   *{margin:0;padding:0;box-sizing:border-box;}
   :root{ /* DARK · Půlnoční (výchozí) */
-    --bg:#0F1117;--surface:#1A1F2E;--surface2:#252D42;--text:#E2E8F0;--muted:#64748B;
-    --accent:#818CF8;--border:rgba(129,140,248,0.2);--onaccent:#0F1117;--success:#4ADE80;--danger:#E11D48;}
+    --bg:#0F1117;--surface:#1A1F2E;--surface2:#252D42;--text:#E2E8F0;--muted:#94A3B8;
+    --accent:#818CF8;--border:rgba(129,140,248,0.2);--onaccent:#0F1117;--success:#4ADE80;--danger:#E11D48;--shadow:rgba(0,0,0,0.5);}
   @media (prefers-color-scheme: light){ :root:not([data-theme]){
-    --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#E9EEF5;--text:#1E293B;--muted:#64748B;
-    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--danger:#E11D48;} }
+    --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#EEF2F8;--text:#1E293B;--muted:#64748B;
+    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--danger:#E11D48;--shadow:rgba(30,41,59,0.18);} }
   :root[data-theme="light"]{
-    --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#E9EEF5;--text:#1E293B;--muted:#64748B;
+    --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#EEF2F8;--text:#1E293B;--muted:#64748B;--shadow:rgba(30,41,59,0.18);
     --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--danger:#E11D48;}
-  html,body{background:var(--bg);}
+  html,body{background:var(--surface);}
   body{font-family:-apple-system,'Raleway',sans-serif;color:var(--text);padding:22px;}
   .head{display:flex;align-items:center;gap:12px;margin-bottom:4px;}
   .head svg{display:block;} .head .name{font-size:19px;font-weight:700;letter-spacing:4px;}
   .head .sub{font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--muted);margin-top:2px;}
-  .card{background:var(--surface);border:0.5px solid var(--border);border-radius:12px;padding:16px;margin-top:14px;}
+  .card{background:var(--surface2);border:0.5px solid var(--border);border-radius:12px;padding:16px;margin-top:14px;}
   .card h3{font-size:11px;font-weight:600;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:12px;}
-  .seg{display:flex;background:var(--surface2);border-radius:9px;padding:3px;gap:3px;}
-  .seg button{flex:1;border:none;background:transparent;color:var(--muted);font-family:inherit;font-size:12px;font-weight:600;padding:7px;border-radius:7px;cursor:pointer;}
-  .seg button.active{background:var(--surface);color:var(--text);}
+  .seg{display:flex;background:var(--bg);border:0.5px solid var(--border);border-radius:9px;padding:3px;gap:3px;}
+  .seg button{flex:1;border:0.5px solid transparent;background:transparent;color:var(--muted);font-family:inherit;font-size:12px;font-weight:600;padding:7px;border-radius:7px;cursor:pointer;}
+  .seg button.active{background:var(--surface2);color:var(--text);border-color:var(--border);box-shadow:0 1px 3px var(--shadow);}
   .pills{display:flex;gap:8px;}
   .pill{flex:1;border:0.5px solid var(--border);border-radius:9px;padding:11px 12px;cursor:pointer;transition:.15s;background:transparent;}
   .pill.active{border-color:var(--accent);background:rgba(129,140,248,0.12);}
@@ -77,6 +77,9 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .rowt{display:flex;align-items:center;justify-content:space-between;padding:9px 0;gap:12px;}
   .rowt:not(:last-child){border-bottom:0.5px solid var(--border);}
   .rowt .l{font-size:13px;} .rowt .l small{display:block;font-size:11px;color:var(--muted);margin-top:1px;}
+  .rowt.sub{margin-left:12px;padding-left:12px;border-left:2px solid var(--border);border-bottom:none;}
+  .rowt.disabled{opacity:.45;}
+  .sw.locked{cursor:default;}
   .sw{width:38px;height:22px;border-radius:11px;background:var(--surface2);position:relative;cursor:pointer;transition:.15s;flex-shrink:0;}
   .sw.on{background:var(--accent);}
   .sw::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.15s;}
@@ -87,14 +90,14 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
   <div class="card"><h3>Klávesy</h3>
     <div class="rowt">
-      <div class="l">Diktování<small>Podrž, mluv, pusť → text se vloží</small></div>
+      <div class="l">Diktování</div>
       <div class="field" style="width:auto;align-items:center;gap:8px;">
         <span class="l" id="hotkeyLabel" style="color:var(--accent);font-weight:600;">F5</span>
         <button class="btn" id="hotkeyBtn" onclick="recordHotkey()">Změnit</button>
       </div>
     </div>
     <div class="rowt">
-      <div class="l">Zrušit zpracování<small>Zahodí diktát dřív, než se zaplatí AI úprava</small></div>
+      <div class="l">Zrušit zpracování</div>
       <div class="field" style="width:auto;align-items:center;gap:8px;">
         <span class="l" id="cancelLabel" style="color:var(--accent);font-weight:600;">Escape</span>
         <button class="btn" id="cancelBtn" onclick="recordCancel()">Změnit</button>
@@ -103,32 +106,20 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="hint">Klikni na Změnit a stiskni novou klávesu (funguje kdekoliv v systému). Rušicí klávesa se spolkne jen během zpracování — jinde funguje normálně.</div>
   </div>
 
-  <div class="card"><h3>Statistiky</h3>
-    <div id="statsEmpty" class="hint" style="margin:0;">Zatím žádný diktát — až budeš diktovat, uvidíš tu přehled.</div>
-    <div id="statsBody" style="display:none;">
-      <div class="rowt">
-        <div class="l">Čas diktování<small>celkem namluveno</small></div>
-        <div class="l" id="statsDictation" style="color:var(--accent);font-weight:600;">—</div>
-      </div>
-      <div class="rowt">
-        <div class="l">Diktátů<small id="statsWords">—</small></div>
-        <div class="l" id="statsCount" style="font-weight:600;">—</div>
-      </div>
-      <div class="rowt" id="statsAppsRow" style="border:none;">
-        <div class="l">Nejčastěji<small id="statsApps">—</small></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card"><h3>Model úpravy</h3>
-    <div class="pills">
-      <div class="pill" data-model="claude-haiku-4-5" onclick="pickModel(this)"><div class="t">Haiku</div><div class="d">rychlé · levné</div></div>
-      <div class="pill" data-model="claude-sonnet-5" onclick="pickModel(this)"><div class="t">Sonnet</div><div class="d">chytřejší · dražší</div></div>
-    </div>
-  </div>
-
   <div class="card"><h3>Primární jazyk (řeč)</h3>
     <select id="lang" onchange="send({action:'language',value:this.value})">__LANGS__</select>
+  </div>
+
+  <div class="card"><h3>Customizace</h3>
+    <div class="rowt"><div class="l">Automatické spuštění po přihlášení<small>Spustí se s přihlášením do macOS</small></div><div class="sw" data-key="autostart" onclick="tog(this)"></div></div>
+    <div class="rowt"><div class="l">Chytrá mezera<small>Mezera před textem, když jsi na konci slova</small></div><div class="sw" data-key="auto_space" onclick="tog(this)"></div></div>
+    <div class="rowt"><div class="l">Odesílání do AI modelu<small>Úprava a formátování diktátu přes Claude</small></div><div class="sw" data-key="ai_edit" onclick="tog(this)"></div></div>
+    <div class="rowt sub" id="fieldCtxRow"><div class="l">Číst kontext pole<small>Odesílání obsahu pole AI modelu</small></div><div class="sw" data-key="field_context" onclick="tog(this)"></div></div>
+  </div>
+
+  <div class="card"><h3>Slovník výrazů</h3>
+    <textarea id="gloss" rows="4" placeholder="commit, pull request, repository, Trackio…" onchange="saveGloss()"></textarea>
+    <div class="hint">Termíny oddělujte čárkou „,". Vstupuje až do AI modelu.</div>
   </div>
 
   <div class="card"><h3>Anthropic API klíč</h3>
@@ -142,22 +133,11 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     </div>
   </div>
 
-  <div class="card"><h3>Slovník výrazů</h3>
-    <textarea id="gloss" rows="4" placeholder="commit, pull request, repository, Trackio…" onchange="saveGloss()"></textarea>
-    <div class="hint">Termíny oddělené čárkou — zůstanou beze změny a přeslechy se opraví k nim.</div>
-  </div>
-
-  <div class="card"><h3>Chování</h3>
-    <div class="rowt"><div class="l">Spouštět po přihlášení<small>Běží na pozadí po startu Macu</small></div><div class="sw" data-key="autostart" onclick="tog(this)"></div></div>
-    <div class="rowt"><div class="l">Číst kontext pole<small>Formátování dle obsahu (e-mail) — text jde k Anthropic</small></div><div class="sw" data-key="field_context" onclick="tog(this)"></div></div>
-    <div class="rowt"><div class="l">Chytrá mezera<small>Mezera před textem, když jsi na konci slova</small></div><div class="sw" data-key="auto_space" onclick="tog(this)"></div></div>
-  </div>
-
   <div class="card"><h3>Vzhled</h3>
     <div class="seg" id="seg">
       <button data-theme="system" onclick="setTheme('system')">Systém</button>
-      <button data-theme="light" onclick="setTheme('light')">Světlý</button>
-      <button data-theme="dark" onclick="setTheme('dark')">Tmavý</button>
+      <button data-theme="light" onclick="setTheme('light')">Light</button>
+      <button data-theme="dark" onclick="setTheme('dark')">Dark</button>
     </div>
   </div>
 
@@ -196,41 +176,51 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     send({action:'state'});  // vrátit původní popisek klávesy
     setTimeout(function(){ b.textContent = 'Změnit'; }, 1600);
   }
-  function applyStats(st){
-    var has = st && st.count > 0;
-    document.getElementById('statsEmpty').style.display = has ? 'none' : 'block';
-    document.getElementById('statsBody').style.display = has ? 'block' : 'none';
-    if(!has) return;
-    document.getElementById('statsDictation').textContent = st.dictation_h;
-    document.getElementById('statsCount').textContent = st.count;
-    document.getElementById('statsWords').textContent = st.words + ' slov celkem';
-    var ar = document.getElementById('statsAppsRow');
-    if(!st.top_apps || !st.top_apps.length){ ar.style.display='none'; }
-    else { ar.style.display='flex'; document.getElementById('statsApps').textContent = st.top_apps.map(function(a){return a[0]+' ('+a[1]+')';}).join(' · '); }
-  }
   function applyTheme(t){
     if(t==='system'){ document.documentElement.removeAttribute('data-theme'); }
     else { document.documentElement.setAttribute('data-theme', t); }
     document.querySelectorAll('#seg button').forEach(b=>b.classList.toggle('active', b.dataset.theme===t));
   }
   function setTheme(t){ applyTheme(t); send({action:'theme',value:t}); }
-  function pickModel(el){ document.querySelectorAll('.pill').forEach(p=>p.classList.remove('active')); el.classList.add('active'); send({action:'model',value:el.dataset.model}); }
   function saveKey(){ var v=document.getElementById('key').value; if(v.trim()){ send({action:'apikey',value:v.trim()}); document.getElementById('key').value=''; } }
   function saveGloss(){ send({action:'glossary',value:document.getElementById('gloss').value}); }
-  function tog(el){ var on=!el.classList.contains('on'); el.classList.toggle('on',on); send({action:'toggle',key:el.dataset.key,value:on}); }
+  // „Číst kontext pole" je podnastavení „Odesílání do AI modelu": vizuálně sleduje
+  // rodiče (rodič vypnutý → dítě vypnuté a zašedlé/zamčené), master ho zapíná i vypíná.
+  function syncAiEdit(){
+    var master=document.querySelector('.sw[data-key="ai_edit"]');
+    var on=master.classList.contains('on');
+    var child=document.querySelector('.sw[data-key="field_context"]');
+    document.getElementById('fieldCtxRow').classList.toggle('disabled', !on);
+    child.classList.toggle('locked', !on);
+    if(!on) child.classList.remove('on');  // vypnutý master → dítě i opticky vypnuté
+  }
+  function tog(el){
+    if(el.classList.contains('locked')) return;  // zamčené dítě nereaguje
+    var on=!el.classList.contains('on'); el.classList.toggle('on',on);
+    send({action:'toggle',key:el.dataset.key,value:on});
+    if(el.dataset.key==='ai_edit'){
+      // Master přepíná i dítě: zapnout → zapne, vypnout → vypne (obojí uloží).
+      var child=document.querySelector('.sw[data-key="field_context"]');
+      if(on && !child.classList.contains('on')){
+        child.classList.add('on'); send({action:'toggle',key:'field_context',value:true});
+      } else if(!on && child.classList.contains('on')){
+        child.classList.remove('on'); send({action:'toggle',key:'field_context',value:false});
+      }
+      syncAiEdit();
+    }
+  }
   function applyState(s){
     document.getElementById('hotkeyLabel').textContent = s.hotkey_label || 'F5';
     document.getElementById('cancelLabel').textContent = s.cancel_label || 'Escape';
-    if(s.stats) applyStats(s.stats);
     applyTheme(s.theme||'system');
-    document.querySelectorAll('.pill').forEach(p=>p.classList.toggle('active', p.dataset.model===s.model));
     document.getElementById('lang').value = s.language || 'cs';
     document.getElementById('keyset').style.display = s.has_key ? 'block' : 'none';
     document.getElementById('keyunset').style.display = s.has_key ? 'none' : 'block';
     document.getElementById('gloss').value = s.glossary || '';
-    [['autostart',s.autostart],['field_context',s.field_context],['auto_space',s.auto_space]].forEach(function(kv){
+    [['autostart',s.autostart],['ai_edit',s.ai_edit],['field_context',s.field_context],['auto_space',s.auto_space]].forEach(function(kv){
       var el=document.querySelector('.sw[data-key="'+kv[0]+'"]'); if(el) el.classList.toggle('on', !!kv[1]);
     });
+    syncAiEdit();
   }
   window.addEventListener('DOMContentLoaded', function(){ send({action:'ready'}); });
 </script>
@@ -253,11 +243,6 @@ class _Bridge(NSObject):
             action = str(body.get("action", ""))
             if action in ("ready", "state"):
                 self._push_state()
-            elif action == "model":
-                mid = str(body.get("value", ""))
-                if mid:
-                    settings.set("model", mid)
-                    self.controller.set_model(mid)
             elif action == "language":
                 lang = str(body.get("value", "")) or "cs"
                 settings.set("language", lang)
@@ -300,7 +285,7 @@ class _Bridge(NSObject):
                 val = bool(body.get("value"))
                 if key == "autostart":
                     (autostart.enable if val else autostart.disable)()
-                elif key in ("field_context", "auto_space"):
+                elif key in ("field_context", "auto_space", "ai_edit"):
                     settings.set(key, val)
         except Exception as exc:  # noqa: BLE001
             print(f"[settings] bridge error: {exc}")
@@ -357,23 +342,18 @@ class _Bridge(NSObject):
             return
         _keycode, hotkey_label = config.get_hotkey()
         _cancel_kc, cancel_label = config.get_cancel_hotkey()
-        summary = stats.summary()
         state = {
             "hotkey_label": hotkey_label,
             "cancel_label": cancel_label,
-            "stats": {
-                "count": summary["count"],
-                "words": summary["words"],
-                "dictation_h": stats.human_duration(summary["dictation_s"]),
-                "top_apps": summary["top_apps"],
-            },
             "theme": config.get_theme(),
-            "model": config.get_model(),
             "language": config.get_language(),
             "has_key": bool(config.get_api_key()),
             "glossary": ", ".join(config.glossary()),
             "autostart": autostart.is_enabled(),
-            "field_context": config.field_context(),
+            "ai_edit": bool(settings.get("ai_edit", True)),
+            # Uložená hodnota (ne přes config.field_context, který ji při vypnuté
+            # AI úpravě maskuje na False) — dítě má v UI ukazovat vlastní stav.
+            "field_context": bool(settings.get("field_context", True)),
             "auto_space": config.auto_space(),
         }
         js = "applyState(" + json.dumps(state, ensure_ascii=False) + ")"

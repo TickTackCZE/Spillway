@@ -294,6 +294,7 @@ class Controller:
         domain = None
         profile = "generic"
         outcome = "error"  # přepíše se, jakmile víme, jak to dopadlo
+        llm_cost = 0.0  # cena AI úpravy tohoto diktátu (0, když se Claude nevolal)
         try:
             # [F2] Počkat, až doběhne otevírání mikrofonu — jinak by `stop()`
             # mohl proběhnout dřív než `start()` a stream by zůstal viset otevřený.
@@ -373,7 +374,12 @@ class Controller:
             # zprávy smyslem doplnit strukturu (oslovení/pozdrav).
             min_s = config.llm_min_seconds()
             skip_llm = min_s > 0 and audio_secs < min_s and profile != "email"
-            if skip_llm:
+            # Uživatel může AI úpravu úplně vypnout (přepínač „Odesílání do AI
+            # modelu") — pak nic neodchází k Anthropic, vloží se jen lokální úprava.
+            if not config.ai_edit():
+                text = basic_cleanup(raw)
+                print(f"🔒 AI úprava vypnutá → bez AI: {_preview(text)}")
+            elif skip_llm:
                 text = basic_cleanup(raw)
                 print(f"⚡ krátký diktát ({audio_secs:.1f} s < {min_s:g} s) → bez AI: {_preview(text)}")
             elif self.cleaner is not None:
@@ -404,6 +410,10 @@ class Controller:
                     print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
                     notify("AI úprava selhala", "Vložen syrový přepis. Zkontroluj API klíč / kredit.")
                     text = raw
+                # Cenu čti hned po volání (na cleaneru se přepíše dalším diktátem) —
+                # i po chybě: když volání provolalo tokeny a spadlo až na uříznuté
+                # odpovědi (max_tokens), náklad reálně vznikl a musí se započítat.
+                llm_cost = getattr(self.cleaner, "last_cost_usd", 0.0) or 0.0
 
             # Chytrá mezera: jen když kurzor stojí těsně za nemezerovým znakem.
             # `at_line_start` má přednost — rich-text pole (Mail) nevrací koncový
@@ -454,6 +464,7 @@ class Controller:
                 audio_seconds=audio_secs,
                 process_seconds=time.perf_counter() - t_start,
                 outcome=outcome,
+                cost_usd=llm_cost,
             )
             with self._lock:
                 self._pasting = False

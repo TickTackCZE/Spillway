@@ -17,6 +17,28 @@ DEFAULT_MODEL = "claude-sonnet-5"
 # Modely s adaptivním myšlením zapnutým by default → u korektury ho vypneme.
 _THINKING_ON = ("claude-sonnet-5", "claude-opus-4", "claude-fable-5")
 
+# Orientační ceny za milion tokenů (USD, vstup / výstup) — pro odhad „Náklady
+# za měsíc" v popoveru. Nejde o účetnictví, jen o řádový přehled; klíč se hledá
+# podle nejdelšího prefixu, takže konkrétnější ID přebije obecné.
+_PRICING = {
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-haiku": (1.0, 5.0),
+    "claude-sonnet-5": (3.0, 15.0),
+    "claude-sonnet": (3.0, 15.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus": (15.0, 75.0),
+    "claude-fable-5": (3.0, 15.0),
+}
+_PRICING_DEFAULT = (3.0, 15.0)  # neznámý model → sazba jako Sonnet
+
+
+def _price_for(model: str) -> tuple[float, float]:
+    best = None
+    for prefix, price in _PRICING.items():
+        if model.startswith(prefix) and (best is None or len(prefix) > len(best)):
+            best = prefix
+    return _PRICING[best] if best else _PRICING_DEFAULT
+
 _PROFILE_GUIDANCE = {
     "email": (
         "Cíl: E-MAIL — o stupeň uhlazenější a strukturuj do řádků, NE do jednoho řádku:\n"
@@ -114,6 +136,9 @@ class Cleaner:
 
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
+        # Cena posledního volání `clean()` (USD) — pipeline si ji přečte hned po
+        # návratu a zapíše do statistik. 0, když se API nevolalo nebo selhalo.
+        self.last_cost_usd = 0.0
         # Korektura má být deterministická (temperature=0) — výchozí 1.0 způsobovala
         # náhodné „kreativní" záměny slov. Novější modely (Sonnet 5+) ale parametr
         # odmítají jako deprecated → u známých rovnou neposílat; u ostatních
@@ -129,6 +154,7 @@ class Cleaner:
         before_text: str | None = None,
         glossary: list[str] | None = None,
     ) -> str:
+        self.last_cost_usd = 0.0  # reset; naplní se, až když volání projde
         if not text.strip():
             return ""
 
@@ -198,6 +224,20 @@ class Cleaner:
                 messages=[{"role": "user", "content": user_content}],
                 **kwargs,
             )
+        # Odhad ceny z tokenů (best-effort — nikdy nesmí shodit úpravu). Počítá se
+        # i u uříznuté odpovědi: tokeny se provolaly, takže náklad vznikl.
+        try:
+            usage = getattr(resp, "usage", None)
+            inp = int(getattr(usage, "input_tokens", 0) or 0)
+            out = int(getattr(usage, "output_tokens", 0) or 0)
+            # Zápis do cache (levnější) přičteme ke vstupu — orientačně stačí.
+            inp += int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+            inp += int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+            p_in, p_out = _price_for(self.model)
+            self.last_cost_usd = inp / 1_000_000 * p_in + out / 1_000_000 * p_out
+        except Exception:  # noqa: BLE001 — cena je kosmetika, ne kritická cesta
+            self.last_cost_usd = 0.0
+
         # [B15] Uříznutá odpověď → radši vyhodit chybu, ať volající vloží raw přepis
         # (O6: neztratit text), místo tichého vložení půlky věty.
         if getattr(resp, "stop_reason", None) == "max_tokens":

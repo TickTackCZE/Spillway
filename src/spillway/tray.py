@@ -10,12 +10,28 @@ Stav nahrávání/zpracování se ukazuje v plovoucím HUD u kurzoru (`hud.py`),
 
 from __future__ import annotations
 
+import os
+import time as _time
+
 import rumps
 
 from . import config
 from .app import IDLE, PROCESSING, RECORDING
 
 _BAR_ICON = "🎙️"  # placeholder; Spillway logo přijde s .app bundlem (ikonové assety)
+
+# Ladicí zápis napojení popoveru do souboru — ve vývoji (bez frozen .app) jdou
+# printy do terminálu, takže bychom je jinak z tohohle prostředí nepřečetli.
+_DBG_PATH = os.path.expanduser("~/Library/Logs/Spillway/popover-debug.log")
+
+
+def _dbg(msg: str) -> None:
+    try:
+        os.makedirs(os.path.dirname(_DBG_PATH), exist_ok=True)
+        with open(_DBG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{_time.strftime('%H:%M:%S')} {msg}\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class SpillwayTray(rumps.App):
@@ -46,6 +62,11 @@ class SpillwayTray(rumps.App):
 
         # Okno nastavení (Domovoy design) — vytvoří se líně při prvním otevření.
         self._settings = None
+
+        # Popover pod ikonou (přehled + historie + model) — napojí se na tlačítko
+        # status itemu až po startu run loopu (status item vzniká uvnitř run()).
+        self._popover = None
+        self._popover_ready = False
 
         # Varovná položka (skrytá, dokud nezjistíme mrtvý event tap — B23).
         self._warn_item = rumps.MenuItem(
@@ -130,8 +151,48 @@ class SpillwayTray(rumps.App):
         win = self._settings
         if win is not None and win.is_visible():
             win.refresh()
+        pop = getattr(self, "_popover", None)
+        if pop is not None and pop.is_shown():
+            pop.bridge.push_state()  # čerstvá čísla/historie, když je popover zrovna otevřený
+
+    def _setup_popover(self) -> None:
+        """Jednorázově: přesměruj klik na ikonu na vlastní popover místo rumps menu.
+
+        Status item (a jeho tlačítko) vzniká až uvnitř `run()`, takže to nejde
+        udělat v __init__ — zkoušíme to z prvního ticku. Když se to nepovede,
+        necháme původní menu (fallback) a už to nezkoušíme donekonečna.
+        """
+        nsapp = getattr(self, "_nsapp", None)
+        item = getattr(nsapp, "nsstatusitem", None) if nsapp is not None else None
+        button = item.button() if item is not None else None
+        if button is None:
+            return  # status item ještě není — zkusíme za další tick
+        try:
+            from .popover import PopoverController
+
+            self._popover = PopoverController(
+                self.controller,
+                on_open_settings=lambda: self.open_settings(None),
+                on_quit=lambda: self.quit_app(None),
+            )
+            self._popover.attach_to_button(button)
+            item.setMenu_(None)  # klik teď otevře popover, ne menu
+            print("🪟 Popover v liště připraven.")
+        except Exception as exc:  # noqa: BLE001 — necháme rumps menu jako fallback
+            import traceback
+
+            # Chybu zapiš i do souboru — ve frozen .app jde print jinam a takhle
+            # se dá diagnostikovat, proč popover ve zabalené appce nenaskočil.
+            _dbg("setup FAIL\n" + traceback.format_exc())
+            print(f"(popover nedostupný: {exc}) — zůstává klasické menu.")
+        self._popover_ready = True
 
     def _tick(self, _sender) -> None:  # noqa: ANN001
+        if not getattr(self, "_popover_ready", False):
+            try:
+                self._setup_popover()
+            except Exception:  # noqa: BLE001
+                self._popover_ready = True  # nezkoušet donekonečna
         try:
             self._refresh_stats_when_done()
         except Exception:  # noqa: BLE001 — statistika nesmí rozbít HUD
