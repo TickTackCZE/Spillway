@@ -43,7 +43,7 @@ Když opustím okno, popup se přesune **doprava dolů** a ukazuje `Zpracovává
 | Cíl zmizel | nabídne jen zkopírování |
 
 ### 2.4 Mezní situace
-- Víc čekajících textů → fronta s náhledem cíle. Nevyzvednutý text → timeout (~5–10 min) → do historie, nezahazovat. Restart Spillway s čekajícím textem → cíl neplatný → jen zkopírování. Perzistence fronty je nová bezpečnostní plocha (citlivý obsah) → zvážit šifrování/kratší timeout.
+- **Bez fronty — jen jeden čekající text** (rozhodnutí uživatele). Nový diktát během čekání ho nahradí (starý → do historie, nezahazovat). Nevyzvednutý text → timeout (~5–10 min) → do historie. Restart Spillway s čekajícím textem → cíl neplatný → jen zkopírování.
 
 ### 2.5 Náročnost a doporučení
 - macOS ~1,5–2,5 týdne na existující bázi. **Levné 80 % užitku:** k dnešnímu „text ve schránce + upozornění" přidat jen **klik → aktivuj appku + vlož** (pár dní, bez fronty/perzistence). Plnou verzi dostavět, až se ukáže, že jednoduchá nestačí.
@@ -55,7 +55,7 @@ Když opustím okno, popup se přesune **doprava dolů** a ukazuje `Zpracovává
 
 Kroky jdou sekvenčně (Claude potřebuje hotový přepis). Přepis je díky mlx GPU rychlý (~1,5–2 s na 10 s řeči); dominantní zbývá Claude (~2–3 s síť + inference).
 
-- **Streaming přepis během mluvení.** Dnes je to **dávkově**: dokud držíš klávesu, NIC se nepřepisuje — celé audio se pošle Whisperu až po puštění, takže na přepis čekáš teprve tehdy. Streaming = přepisovat průběžně **po segmentech, už zatímco mluvíš**; po puštění klávesy zbývá jen poslední kousek → čekání po puštění skoro zmizí. Velký přínos, ale koliduje s modelem „Escape zruší celý diktát před zaplacením" a je to větší architektonický zásah → vyšší riziko.
+- ✅ **Streaming přepis během mluvení — IMPLEMENTOVÁNO** (segmentace v tichu, `SPILLWAY_STREAMING`, viz git; čeká na živé ověření kvality). Po puštění zbývá jen poslední úsek → kratší čekání u středních/dlouhých diktátů.
 - **Auto-výběr modelu** — Haiku pro krátké/jednoduché (nižší latence), Sonnet pro delší/složité; přepínat podle délky.
 - **Prompt caching** systémového promptu — ~100–300 ms na opakovaných voláních v krátkém sledu.
 - Streamovaná odpověď Claude **nepomůže** — text se vkládá až celý.
@@ -109,33 +109,12 @@ Kroky jdou sekvenčně (Claude potřebuje hotový přepis). Přepis je díky mlx
 
 ## 8. Research (24. 7. 2026)
 
-### 8.1 Streaming přepis — zrychlení a zásah
+### 8.1 Streaming přepis — ✅ IMPLEMENTOVÁNO
 
-**Dnešní stav (dávkově):** dokud držíš klávesu, Whisper NIC nepřepisuje — celé audio jde do modelu až po puštění. Metrika, na které záleží, je **čekání PO puštění** = RTF × délka. Na Apple GPU (mlx `large-v3-turbo`, RTF ~0,08–0,22): 10 s řeči ≈ **1–2 s** čekání, 20 s ≈ **2–4 s**.
-
-**Se streamingem** se přepisuje průběžně během mluvení; po puštění zbývá jen poslední kousek → čekání spadne na **~0,3–0,6 s** bez ohledu na délku.
-
-| Délka diktátu | Čekání dnes | Se streamingem | Úspora |
-|---|---|---|---|
-| krátký (3–5 s) | ~0,5–1 s | ~0,4 s | malá (nemá cenu) |
-| střední (10 s) | ~1–2 s | ~0,5 s | **~50–70 %** |
-| dlouhý (20 s+) | ~2–4 s | ~0,5 s | **~75 %** |
-
-**Dvě cesty implementace:**
-- **LocalAgreement-n** (ufal `whisper_streaming`) — potvrzuje tokeny, když se N po sobě jdoucích oken shodne na prefixu. Dělané pro živé titulky (latence ~3,3 s u souvislé řeči). Pro nás **overkill** — my živý text nezobrazujeme.
-- **Segmentově (sedí nám líp)** — VAD rozseká audio na pauzách; hotové segmenty se přepisují už během mluvení, po puštění se přepíše jen poslední (otevřený) segment a spojí se. Bez živého zobrazení. Přínos roste s tím, jak moc mezi větami pauzuješ; u souvislé řeči bez pauz benefit zmizí (spadne to na dávku).
-
-**Kompatibilní s tvým požadavkem na zrušení:** Whisper běží lokálně a zdarma i během mluvení; **po puštění pořád zbývá okamžik (poslední segment + volání Claude), kdy Escape stihne zrušit, než se text pošle do Claude** (placený/nevratný krok). Bod zrušení se jen posune z „před Whisperem" na „před Claude" — to je pro nás OK.
-
-**Kvalita a skládání — sekání na TICHU kvalitu nezhoršuje, spíš zlepšuje.** Klíčové zjištění z researche: špatné je jen **fixní** sekání (uprostřed slova) — to zhoršuje přesnost. **VAD sekání na tichu** naopak dává čistší hranice, míň driftu a **míň halucinací** (WhisperX přesně tohle dělá: VAD segmenty → slepit na ~30 s okna s řezy v tichu). Takže:
-- **Švy jsou v tichu → slova se nesekají**, spojení segmentů = prosté zřetězení textů (+ doporučený ~2–3 s překryv proti ztrátě slova na kraji). Nejchoulostivější část z minula (dedup slov na švu) je díky řezu v tichu skoro triviální.
-- **Ztráta globálního kontextu** mezi vzdálenými segmenty je u dlouhého souvislého vyprávění reálná, ale u diktátu (krátké, samostatné věty) zanedbatelná — a **Claude v druhém kroku čte celý text**, takže případný šev dorovná.
-
-**Pozn. k dnešnímu VAD:** dnes se audio **neseká** — výchozí mlx cesta má jen energetickou bránu proti tichu (`_is_silence`, boolean na celém klipu), faster-whisper má silero VAD, ale jako jedno volání po puštění. Takže „už se to rozděluje" zatím **neplatí** — streaming by tu segmentaci musel přidat (silero onnx je v bundlu, běží levně na CPU během nahrávání).
-
-**Potřebný zásah (střední):** silero VAD během nahrávání → uzavřené segmenty přepisovat průběžně na mlx vlákně, po puštění dopřepsat poslední (otevřený) segment a zřetězit; přesun bodu zrušení „před Whisper" → „před Claude". **Verdikt:** kvalita **není bloker** (řez v tichu), hlavní práce je streamovací smyčka a VAD za běhu. Hezké zrychlení pro střední/dlouhé diktáty → dobrý kandidát na v2.
-
-Zdroje: [ufal/whisper_streaming](https://github.com/ufal/whisper_streaming), [WhisperX (VAD cut&merge na 30 s)](https://ora.ox.ac.uk/objects/uuid:fece4192-95b7-4db8-a018-3cf728040194), [chunking strategie](https://www.saytowords.com/blogs/Whisper-Audio-Chunking/).
+Hotovo (viz git / `SPILLWAY_STREAMING`), čeká na živé ověření kvality. Shrnutí rozhodnutí (detailní research je v git historii):
+- **Segmentace v tichu** (energetická brána, ne fixní okno) — řez v tichu slova nesekají, takže spojení segmentů = prosté zřetězení a **kvalita se nezhoršuje** (research: WhisperX cut&merge v tichu snižuje drift i halucinace).
+- **Úspora**: čekání po puštění spadne z ~1–4 s (střední/dlouhý diktát) na ~0,3–0,6 s. U krátkých diktátů bez pauz benefit není → **spadne na dávku** (fallback).
+- **Zrušení zůstává před Claude** (placený krok) — splněno.
 
 ### 8.2 Odložené doručení — spolehlivost a scénáře
 

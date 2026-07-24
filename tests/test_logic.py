@@ -281,6 +281,108 @@ def test_next_segment_boundary_cuts_in_silence():
     assert next_segment_boundary(speech(5.0), 0) is None  # 5 s souvislé řeči, bez pauzy
 
 
+def test_next_segment_boundary_edge_cases():
+    import numpy as np
+
+    from spillway.transcribe import next_segment_boundary
+
+    assert next_segment_boundary(np.zeros(0, dtype="float32"), 0) is None
+    audio = np.zeros(16000, dtype="float32")
+    assert next_segment_boundary(audio, 16000) is None  # start == velikost
+    assert next_segment_boundary(audio, 20000) is None  # start za koncem
+    assert next_segment_boundary(audio, -1) is None      # záporný start
+    assert next_segment_boundary(audio, 0) is None        # samé ticho → žádná řeč
+
+
+def test_streaming_segments_partition_and_cut_in_silence():
+    # Řezy z next_segment_boundary musí: (a) padnout do ticha, (b) rozdělit audio
+    # beze ztráty (segmenty + poslední úsek pokryjí celé audio).
+    import numpy as np
+
+    from spillway.transcribe import next_segment_boundary
+
+    sr = 16000
+    rng = np.random.default_rng(2)
+    sp = lambda s: (0.05 * rng.standard_normal(int(sr * s))).astype("float32")  # noqa: E731
+    si = lambda s: np.zeros(int(sr * s), dtype="float32")  # noqa: E731
+    audio = np.concatenate([sp(2.5), si(0.6), sp(2.5), si(0.6), sp(2.5)])
+
+    cuts, start = [], 0
+    while True:
+        b = next_segment_boundary(audio, start)
+        if b is None:
+            break
+        cuts.append(b)
+        start = b
+
+    assert len(cuts) == 2                                   # dvě pauzy → dva řezy
+    for b in cuts:
+        assert abs(float(audio[b])) < 1e-6                 # řez leží v tichu (nula)
+    covered = sum(b - a for a, b in zip([0] + cuts, cuts + [audio.size]))
+    assert covered == audio.size                            # bez ztráty
+
+
+def test_recorder_snapshot_returns_accumulated_without_stopping():
+    import numpy as np
+
+    from spillway.audio import Recorder
+
+    r = Recorder()
+    assert r.snapshot().size == 0                           # nic nenahráno
+    r._frames = [np.ones(100, dtype="float32"), np.ones(50, dtype="float32")]
+    snap = r.snapshot()
+    assert snap.shape == (150,) and snap.dtype == np.float32
+    assert r._stream is None                                # snapshot NEzastavil stream
+    assert r.snapshot().size == 150                         # opakovaně = totéž (nemaže)
+
+
+def test_stream_loop_collects_segments_with_stubs():
+    # Ověří samotnou streamovací smyčku: se stub recorderem (audio se 2 pauzami)
+    # a stub transcriberem má nasbírat 2 segmenty a posunout committed.
+    import threading
+    import time
+
+    import numpy as np
+
+    from spillway import app as A
+
+    c = A.Controller.__new__(A.Controller)  # bez těžkého __init__
+    c._lock = threading.Lock()
+    c._cancel = threading.Event()
+    c.state = A.RECORDING
+    c.language = "cs"
+    c._stream_committed = 0
+    c._stream_segments = []
+
+    sr = 16000
+    rng = np.random.default_rng(3)
+    sp = lambda s: (0.05 * rng.standard_normal(int(sr * s))).astype("float32")  # noqa: E731
+    si = lambda s: np.zeros(int(sr * s), dtype="float32")  # noqa: E731
+    full = np.concatenate([sp(3), si(0.6), sp(3), si(0.6), sp(2)])
+
+    class _Rec:
+        def snapshot(self):
+            return full
+
+    n = []
+
+    class _Tx:
+        def transcribe(self, seg, language=None):
+            n.append(1)
+            return f"S{len(n)}"
+
+    c.recorder, c.transcriber = _Rec(), _Tx()
+
+    th = threading.Thread(target=c._stream_loop, daemon=True)
+    th.start()
+    time.sleep(1.0)
+    c.state = A.IDLE          # zastav smyčku
+    th.join(timeout=3.0)
+
+    assert c._stream_segments == ["S1", "S2"]
+    assert c._stream_committed > 0
+
+
 def test_silence_gate_for_mlx():
     # mlx nemá VAD → energetická brána musí ticho/šum poznat, ať nehalucinuje,
     # a přitom nepustit dolů skutečnou (i tichou) řeč.
