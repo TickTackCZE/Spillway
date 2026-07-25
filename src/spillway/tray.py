@@ -41,6 +41,8 @@ class SpillwayTray(rumps.App):
             from .hud import StatusHUD
 
             self.hud = StatusHUD()
+            # Klik na lístek „Připraveno k vložení" = už ho nechci.
+            self.hud.on_dismiss = self.controller.clear_awaiting_paste
         except Exception as exc:  # noqa: BLE001
             print(f"(HUD nedostupný: {exc})")
 
@@ -124,6 +126,23 @@ class SpillwayTray(rumps.App):
         except Exception:  # noqa: BLE001
             pass
 
+    def _left_target_app(self) -> bool:
+        """Odešel uživatel z aplikace, do které diktoval (přepnul jinam / zavřel ji)?
+
+        Pak nemá smysl držet okénko u kurzoru v cizí appce — přeskočí k ikoně
+        v liště, kde ukáže reálný stav (Zpracovávám → Připraveno k vložení).
+        """
+        target = getattr(self.controller, "target_bundle", None)
+        if not target:
+            return False
+        try:
+            from . import context
+
+            _, now = context.frontmost_app()
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(now) and now != target
+
     def _check_stuck(self, _sender) -> None:  # noqa: ANN001
         try:
             self.controller.watchdog_check()
@@ -197,6 +216,8 @@ class SpillwayTray(rumps.App):
         if button is None:
             return  # status item ještě není — zkusíme za další tick
         self._install_edit_menu()  # ať Cmd+C/V/A fungují v oknech (WKWebView)
+        if self.hud is not None:
+            self.hud.status_button = button  # HUD se podle ní ukotví pod lištu
         try:
             from .popover import PopoverController
 
@@ -236,9 +257,13 @@ class SpillwayTray(rumps.App):
                 return
             state = self.controller.state
             if state == RECORDING:
-                self.hud.show("rec")
+                self.hud.show("rec", at_icon=self._left_target_app())
             elif state == PROCESSING:
-                self.hud.show("proc")
+                self.hud.show("proc", at_icon=self._left_target_app())
+            elif getattr(self.controller, "awaiting_paste", False):
+                # Text čeká ve schránce → lístek u ikony. Zmizí klikem na něj
+                # nebo jakmile uživatel kdekoliv stiskne ⌘V (viz hotkey.py).
+                self.hud.show("ready")
             else:
                 self.hud.hide()
         except Exception:  # noqa: BLE001

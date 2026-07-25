@@ -1,188 +1,346 @@
 # Spillway — rozvoj a nápady
 
-> Otevřené problémy a směry rozvoje. **Nic tady není hotové ani rozhodnuté** — podklad k diskuzi, ne plán (ten je v [spillway-plan-implementace.md](spillway-plan-implementace.md)).
-> Aktualizováno: 24. 7. 2026 (po v1.0). Hotové věci vyškrtnuty.
+> Kam dál. **Nic tady není hotové ani slíbené** — je to podklad k rozhodování, ne plán práce
+> (ten je v [spillway-plan-implementace.md](spillway-plan-implementace.md)).
+> Stav aplikace: **v1.1** · Aktualizováno: 25. 7. 2026
 
 ---
 
-## 1. Otevřené problémy
+## Co Spillway dnes umí
 
-### 1.1 Rychlé druhé stisknutí F5 = zahozený diktát
-- Když stiskneš F5 znovu dřív, než doběhne zpracování předchozího diktátu (`PROCESSING`), nový se **zahodí** („zaneprázdněno") — schválně žádná fronta, aby text nespadl do špatného pole.
-- **Dopad:** při rychlém tempu se občas diktát „ztratí".
-- **Možnosti:** krátká fronta s revalidací cíle (viz 2 — odložené doručení), nebo aspoň zvukový/vizuální signál „zaneprázdněno", ať je jasné, že se nenahrává.
+**Diktování**
+- Podržíš klávesu (výchozí **F5**), mluvíš, pustíš → text se vloží tam, kde píšeš.
+- Přepis běží **lokálně na GPU** (mlx-whisper, model `large-v3-turbo`); záloha na CPU.
+- **Streaming**: přepisuje se už během mluvení (řeže se v tichu), takže po puštění klávesy čekáš jen na poslední kousek.
+- **Escape** zruší diktát dřív, než se zaplatí AI úprava.
+- Limit jednoho diktátu: 5 minut.
 
-### 1.2 Vkládání po přepnutí okna
-- Když během zpracování přepneš do jiné appky, text se nevloží do cizího pole — skončí ve schránce + upozornění. Bezpečné, ale musíš ho vložit sám. **Řešení viz 2.**
+**Úprava textu (Claude)**
+- Opraví interpunkci, pády, zkomolené anglické termíny; vycpávky („ehm", „prostě") vyhodí.
+- **Pozná přeřeknutí**: „sejdeme se ve 4 nebo teda v 5" → „sejdeme se v 5".
+- **Formátuje podle cílové aplikace** — jiný tón pro e-mail, chat, editor, prompt do AI.
+- **Angličtina zůstává anglicky** (nepřekládá „meeting" na „schůzka").
+- **Uživatelský slovník** — termíny, které má psát přesně.
+- AI úpravu jde úplně vypnout (pak nic neodchází ven).
 
-### 1.3 Tvrdý zásek mlx přepisu blokuje GPU vlákno
-- Všechny GPU operace jdou přes jedno vlákno. Kdyby mlx přepis někdy tvrdě zamrzl (ne jen zpomalil), další diktáty by se do něj řadily až do restartu (UI ale díky watchdogu nezmrzne).
-- **Možnost:** detekovat zaseklý submit a **restartovat GPU vlákno** (znovu vytvořit `_MlxWorker`), místo čekání na restart appky.
+**Vkládání**
+- Kamkoliv přes schránku + `⌘V`; do **vzdálené Windows plochy** (RDP/AVD) naťukáním znaků.
+- **Chytrá mezera** — doplní mezeru, když navazuješ uprostřed věty.
+- Když **odejdeš z pole nebo z aplikace**, text se nevloží jinam — zůstane ve schránce.
 
----
+**Okénko u kurzoru (HUD)**
+- Ukazuje `Nahrávám` / `Zpracovávám` / `Ruším` přímo u textu, kam píšeš.
+- Když odejdeš z cílové aplikace, **přeskočí nahoru k ikoně v liště** (se špičkou na ikonu).
+- Po dokončení tam zůstane lístek **„Připraveno k vložení ⌘V"** — zmizí klikem, po `⌘V`, nebo novým diktátem.
 
-## 2. Odložené doručení přes popup („text je připraven")
+**Menu v liště (popover)**
+- Statistiky (počet diktátů, slova, čas mluvení), průměrné tempo řeči, náklady za měsíc.
+- Graf aktivity za 7 dní, **historie diktátů** (klik = zkopírovat).
+- Přepínač modelu (Haiku / Sonnet), stav GPU.
 
-Když opustím okno, popup se přesune **doprava dolů** a ukazuje `Zpracovávám → Zpracováno`. Kliknutím se aktivuje původní aplikace a text se vloží do pole, které jsem měl vybrané. Řeší 1.1 i 1.2.
-
-### 2.1 Jak by to fungovalo
-1. Při diktování si Spillway zapamatuje **cíl** (viz 2.2).
-2. Text se **automaticky nevloží**. Indikátor se přesune na pevné místo (vpravo dole): `Zpracovávám…` → `Zpracováno ✓`.
-3. Doručení: **klik na popup** → aktivuje appku + okno, vloží; nebo **návrat do pole sám** → vloží se.
-
-### 2.2 Jak BEZPEČNĚ zapamatovat pole (ověřeno experimenty)
-- **Nespoléhat na „podržený" odkaz na prvek** (`AXUIElement`) — u webu/Electronu ho re-render zneplatní.
-- **Spolehlivé:** zapamatovat **aplikaci + okno** a při doručení ji **aktivovat** — appka si sama obnoví fokus do pole (ověřeno: aktivace + `⌘V` trefilo správné pole, i když odkaz na prvek selhal).
-- **Pojistka = otisk obsahu:** uložit prefix textu v poli + PID + číslo okna. Před vložením revalidovat (žije PID? sedí otisk?). Když nesedí → nevkládat naslepo, jen schránka + „stiskni ⌘V".
-
-### 2.3 Odstupňované chování podle jistoty
-| Jistota | Chování |
-|---|---|
-| Vysoká (nativní appka, otisk sedí) | vloží automaticky |
-| Střední (appka běží, pole nejde ověřit — web) | aktivuje appku, nevkládá naslepo; schránka + „⌘V" |
-| Cíl zmizel | nabídne jen zkopírování |
-
-### 2.4 Mezní situace
-- Víc čekajících textů → fronta s náhledem cíle. Nevyzvednutý text → timeout (~5–10 min) → do historie, nezahazovat. Restart Spillway s čekajícím textem → cíl neplatný → jen zkopírování. Perzistence fronty je nová bezpečnostní plocha (citlivý obsah) → zvážit šifrování/kratší timeout.
-
-### 2.5 Náročnost a doporučení
-- macOS ~1,5–2,5 týdne na existující bázi. **Levné 80 % užitku:** k dnešnímu „text ve schránce + upozornění" přidat jen **klik → aktivuj appku + vlož** (pár dní, bez fronty/perzistence). Plnou verzi dostavět, až se ukáže, že jednoduchá nestačí.
-- Klik na popup navíc **legitimně** splňuje windowsí podmínku pro `SetForegroundWindow` → přenáší se čistě na budoucí Windows port.
+**Nastavení**
+- Klávesy, jazyk, autostart, chytrá mezera, slovník, API klíč (v Keychain), vzhled (Systém/Light/Dark).
+- Reset statistik a historie.
 
 ---
 
-## 3. Zrychlení pipeline
+## 1. Otevřený problém: text uvázne ve schránce
 
-Kroky jdou sekvenčně (Claude potřebuje hotový přepis). Přepis je díky mlx GPU rychlý (~1,5–2 s na 10 s řeči); dominantní zbývá Claude (~2–3 s síť + inference).
+**Co se děje:** když během zpracování odejdeš z pole nebo přepneš aplikaci, Spillway text
+**nevloží** (aby nespadl do cizího pole) — nechá ho ve schránce a u ikony ukáže lístek
+„Připraveno k vložení". Musíš si ho vložit sám přes `⌘V`.
 
-- **Streaming přepis během mluvení.** Dnes je to **dávkově**: dokud držíš klávesu, NIC se nepřepisuje — celé audio se pošle Whisperu až po puštění, takže na přepis čekáš teprve tehdy. Streaming = přepisovat průběžně **po segmentech, už zatímco mluvíš**; po puštění klávesy zbývá jen poslední kousek → čekání po puštění skoro zmizí. Velký přínos, ale koliduje s modelem „Escape zruší celý diktát před zaplacením" a je to větší architektonický zásah → vyšší riziko.
-- **Auto-výběr modelu** — Haiku pro krátké/jednoduché (nižší latence), Sonnet pro delší/složité; přepínat podle délky.
-- **Prompt caching** systémového promptu — ~100–300 ms na opakovaných voláních v krátkém sledu.
-- Streamovaná odpověď Claude **nepomůže** — text se vkládá až celý.
+**Co by šlo zlepšit:** aby stačilo **kliknout na lístek** a Spillway text doručil sám tam,
+kam jsi původně diktoval.
 
----
+### Jak by to fungovalo (krok za krokem)
+1. Při diktování si Spillway zapamatuje **aplikaci a okno** + krátký „otisk" pole
+   (typ prvku a jeho pozice). *Nepamatuje si samotné pole* — odkaz na textové pole je křehký
+   a u webu/Electronu ho překreslení stránky zneplatní.
+2. Po dokončení visí lístek u ikony.
+3. **Klikneš na lístek** → Spillway zkusí vytáhnout to původní okno dopředu, ověří otisk pole
+   a vloží.
+4. **Nebo se do pole vrátíš sám** → Spillway to pozná a vloží.
+5. **Když cokoli nesedí** (jiné pole, zavřené okno, nejde ověřit) → nevkládá naslepo,
+   nechá text ve schránce s hláškou „stiskni ⌘V".
 
-## 4. Kvalita a chování
+### Kde je háček
+- **Apple od macOS Sonoma omezil, aby aplikace vytahovaly jiné aplikace dopředu.** Takže
+  krok 3 často **neprojde** a spadne to na `⌘V`. Hodnota featury tím klesá — reálně zbývá
+  hlavně „vloží se to samo, když se vrátíš" (krok 4).
+- **Webová pole** (Gmail, Slack v prohlížeči) se ověřit nedají → tam vždycky jen `⌘V`.
+- **Dvě prázdná pole vedle sebe** se od sebe poznají jen podle pozice.
 
-- **Adaptivní unload** — místo fixní 1 min držet model, dokud „aktivně diktuješ" (hodně diktátů v poslední době → delší práh), a uvolnit až po delší pauze. Míň churnu při souvislé práci.
-- **Auto-detekce jazyka per diktát** s prahem jistoty — default primární jazyk, přepnout jen když je detekovaný jazyk jiný A jistota vysoká (plná auto-detekce by česko-anglický mix zhoršila).
-- **Undo posledního vložení** — „oops" klávesa, která smaže právě vložený text.
-  Nejjednodušší spolehlivě: poslat cílové appce `⌘Z` (paste je ve většině appek
-  jeden undo krok). Alternativa: pamatovat vložený text a smazat N znaků
-  Backspacem — křehké, když se mezitím pohnul kurzor. K čemu: rychlá náprava po
-  špatném přepisu / vložení do jiného pole, bez ručního mazání. (Nižší priorita —
-  Escape už ruší před vložením a `⌘Z` zvládneš i sám.)
-- **Slovník jako páry „špatně → správně"** místo plochého seznamu.
-- **Zvuk při startu/konci nahrávání** (diktování „naslepo").
+**Bez fronty.** Čeká vždy nanejvýš jeden text; nový diktát ten starý nahradí.
 
----
-
-## 5. UI a distribuce
-
-- **Onboarding wizard oprávnění** — mikrofon / Accessibility / Input Monitoring, živá detekce + deep-linky do Nastavení; první spuštění po instalaci.
-- **Editor per-app / per-doména profilů v UI** — teď pevná mapa v `context.py`.
-- **Zabalit Raleway font** (jinak UI padá na systémový — funkčně OK).
-- **Polish HUD:** multi-monitor pozice, první stav před doload WKWebView HTML.
-- **Notarizace** (Developer ID) — odstraní Gatekeeper varování; předpoklad komerční distribuce (licencování, onboarding cizích uživatelů).
+**Verdikt:** střední přínos, protože nejhezčí část (klik → doruč) macOS blokuje.
+Levná varianta = jen krok 4 (vloží se, když se vrátíš do pole).
 
 ---
 
-## 6. Data a platformy
+## 2. Rychlost a chování modelu
 
-- **Export historie na RPi / DB + analytiky** — kolik/kde/jaké termíny diktuji, WER trendy. Historie se od začátku ukládá strojově čitelně (`history.jsonl`).
-- **Windows port** — jádro (Whisper, Claude, statistiky) je přenositelné (~1/3 kódu), přepsat platformní vrstvu (klávesa, vkládání, kontext, UI). Princip držet jednotný: **schránka + zkratka / naťukání, Accessibility jen na čtení.**
+### 2.1 Adaptivní uvolňování modelu z paměti
+
+**Jak to je dnes:** model (~1,6 GB) se drží v paměti a po **1 minutě** nečinnosti se uvolní.
+Při dalším diktátu se znovu načte (~1,6 s) — načítání se schová do doby, kdy mluvíš, takže
+o něm většinou nevíš.
+
+**Kde je problém:** když pracuješ a diktuješ třeba každých 90 sekund, model se pořád dokola
+**uvolňuje a načítá**. To je zbytečná práce pro GPU → **topí to a žere baterku**, a u krátkých
+diktátů se načítání nestihne schovat, takže chvíli čekáš.
+
+**Jak by to fungovalo:** práh by se řídil tím, jak aktivně diktuješ.
+- Diktoval jsi v poslední době často → jsi „v zápřahu" → drž model dýl (třeba 5 minut).
+- Nic dlouho → uvolni rychle (1 minuta jako dnes).
+
+Prakticky: počítat diktáty za posledních pár minut a podle toho posouvat práh.
+
+**Co to přinese**
+| | Dnes (pevná 1 min) | Adaptivně |
+|---|---|---|
+| Souvislá práce (diktát každou minutu) | pořád uvolnit/načíst | model zůstane, klid |
+| Občasný diktát | uvolní se | uvolní se stejně |
+| Obsazená paměť | méně | ~1,6 GB držená déle |
+
+**Cena:** drží se víc paměti během aktivní práce. Na 16 GB stroji zanedbatelné.
+**Náročnost:** malá (pár řádků v jednom souboru). **Riziko:** nízké.
+**Verdikt:** rozumné vylepšení, hlavně kvůli teplu a plynulosti.
+
+### 2.2 Automatické rozpoznání jazyka pro každý diktát
+
+**Jak to je dnes:** jazyk je natvrdo nastavený (čeština). Když nadiktuješ něco anglicky,
+Whisper to stejně zkusí psát česky.
+
+**Proč to není jen „zapnout"**: Whisper hádá jazyk z prvních vteřin nahrávky. U nás je běžné,
+že česká věta začne anglickým termínem („commitnul jsem to…") — a to ho může přepnout do
+angličtiny a **rozsypat celý diktát**. Proto je dnes jazyk pevně daný.
+
+**Tři možnosti**
+
+| Varianta | Jak funguje | Riziko |
+|---|---|---|
+| **A. Plné rozpoznání** | Whisper si jazyk určí sám | ❌ Vysoké — česko-anglický mix překlopí do angličtiny |
+| **B. S prahem jistoty** ⭐ | Základ je čeština; přepne jen když si je Whisper **hodně jistý**, že je to jiný jazyk | Nízké |
+| **C. Krátký seznam** | Rozpoznává jen mezi 2–3 jazyky, které si nastavíš (např. CZ/EN) | Nejnižší |
+
+**Dopad na rychlost:** rozpoznání jazyka potřebuje průchod „enkodérem", což je stejně
+většina práce, kterou přepis dělá tak jako tak → přirážka je **malá (řádově desetiny
+sekundy)**. U streamingu by se jazyk určil **jednou z prvního úseku** a dál se držel — jinak
+by se mohl mezi větami přepínat a text by byl nesourodý.
+
+**Dopad na přesnost:**
+- Čistě anglický diktát: **výrazné zlepšení** (dnes se komolí do češtiny).
+- Česko-anglický mix: **riziko zhoršení** u varianty A; u B/C prakticky beze změny.
+- Krátké diktáty (1–2 s) jsou na rozpoznání nejhorší → tam raději zůstat u výchozího jazyka.
+
+**Navazuje na to i AI úprava** — Claude by měl vědět, v jakém jazyce text je, aby ho
+nepřeložil.
+
+**Verdikt:** jít cestou **B** (nebo C). Plné automatické rozpoznání by hlavní scénář zhoršilo.
 
 ---
 
-## 7. Další nápady (nové, k rozmyšlení)
+## 3. Ovládání hlasem a stav v liště
 
-- **Náhled / potvrzení před vložením (volitelně).** Režim, kdy se upravený text ukáže v malém okně, můžeš ho doupravit a teprve `Enter` ho vloží. Pro důležitá pole (e-mail zákazníkovi) — jistota před nevratným vložením. Vypnuté by default (přidává klik).
-- **Vynucení profilu klávesou.** Druhá zkratka, která diktuje rovnou v režimu `email` / `ai` bez ohledu na aktivní appku (např. psát prompt do AI, i když nejsi zrovna v AI okně).
-- **Kopírovat místo vložit.** Modifikátor při puštění klávesy (podržet ⇧) → výsledek jen do schránky, nevkládat. Užitečné, když chceš text jinam, než kde zrovna jsi.
-- **„Přemluvit" — nahradit poslední vložení.** Podržet poslední audio; zkratka = přepsat/znovu upravit poslední diktát a nahradit vložený text (undo + nové vložení). Řeší „řekl jsem to blbě".
-- **Hlasové editační příkazy** — „nový odstavec", „odrážka", „smazat větu", „velké písmeno". Rozpoznat je v přepisu a promítnout do formátování, ne je vložit jako text.
-- **Automatický slovník.** Sledovat, které termíny Claude opakovaně opravuje (raw → final), a nabídnout je k přidání do uživatelského slovníku. Statistiky „co se nejčastěji opravuje" jako podklad.
-- **Ikona v liště odráží stav** (nahrávám / zpracovávám), nejen plovoucí HUD — přehled i bez pohledu ke kurzoru.
-- **Rychlá pauza / tichý režim** — dočasně vypnout hotkey (např. při hovoru), bez ukončení appky.
+### 3.1 Hlasové editační příkazy
 
----
+**Nápad:** říct „nový odstavec", „odrážka", „velké písmeno" a Spillway to promítne do
+**formátování**, místo aby ta slova napsal.
 
-## 8. Research (24. 7. 2026)
+**Dobrá zpráva:** máme na to už hotový mechanismus. Oprava přeřeknutí („teda v 5") funguje
+úplně stejně — Claude rozliší, co je **obsah** a co je **pokyn**. Takže je to hlavně otázka
+rozšíření zadání pro Claude, ne nová technika.
 
-### 8.1 Streaming přepis — zrychlení a zásah
+**Kde je háček — rozeznat pokyn od obsahu.** Když nadiktuješ větu *„napiš mu, ať smaže tu
+větu o cenách"*, nesmí to Spillway pochopit jako povel a text smazat.
 
-**Dnešní stav (dávkově):** dokud držíš klávesu, Whisper NIC nepřepisuje — celé audio jde do modelu až po puštění. Metrika, na které záleží, je **čekání PO puštění** = RTF × délka. Na Apple GPU (mlx `large-v3-turbo`, RTF ~0,08–0,22): 10 s řeči ≈ **1–2 s** čekání, 20 s ≈ **2–4 s**.
+**Proto navrhuji dělit příkazy na dvě skupiny:**
 
-**Se streamingem** se přepisuje průběžně během mluvení; po puštění zbývá jen poslední kousek → čekání spadne na **~0,3–0,6 s** bez ohledu na délku.
-
-| Délka diktátu | Čekání dnes | Se streamingem | Úspora |
+| Skupina | Příklady | Riziko | Doporučení |
 |---|---|---|---|
-| krátký (3–5 s) | ~0,5–1 s | ~0,4 s | malá (nemá cenu) |
-| střední (10 s) | ~1–2 s | ~0,5 s | **~50–70 %** |
-| dlouhý (20 s+) | ~2–4 s | ~0,5 s | **~75 %** |
+| **Formátovací** (jen přidávají) | „nový odstavec", „nový řádek", „odrážka", „číslovaný seznam" | Nízké — když se splete, jen jinak zalomí text | ✅ začít tady |
+| **Ničivé** (mažou obsah) | „smazat větu", „smazat poslední slovo", „začni znovu" | Vysoké — chyba znamená **ztracený text** | ⚠️ až později, opatrně |
 
-**Dvě cesty implementace:**
-- **LocalAgreement-n** (ufal `whisper_streaming`) — potvrzuje tokeny, když se N po sobě jdoucích oken shodne na prefixu. Dělané pro živé titulky (latence ~3,3 s u souvislé řeči). Pro nás **overkill** — my živý text nezobrazujeme.
-- **Segmentově (sedí nám líp)** — VAD rozseká audio na pauzách; hotové segmenty se přepisují už během mluvení, po puštění se přepíše jen poslední (otevřený) segment a spojí se. Bez živého zobrazení. Přínos roste s tím, jak moc mezi větami pauzuješ; u souvislé řeči bez pauz benefit zmizí (spadne to na dávku).
+**Návrh postupu:** nejdřív jen formátovací příkazy, pevně daný seznam, sepsaný v nastavení,
+ať víš, co Spillway poslouchá. Ničivé příkazy až potom — a jen v jasně rozeznatelné podobě.
 
-**Kompatibilní s tvým požadavkem na zrušení:** Whisper běží lokálně a zdarma i během mluvení; **po puštění pořád zbývá okamžik (poslední segment + volání Claude), kdy Escape stihne zrušit, než se text pošle do Claude** (placený/nevratný krok). Bod zrušení se jen posune z „před Whisperem" na „před Claude" — to je pro nás OK.
+**Náročnost:** malá (zadání pro Claude + testy). **Riziko:** nízké u formátovacích.
 
-**Kvalita a skládání — sekání na TICHU kvalitu nezhoršuje, spíš zlepšuje.** Klíčové zjištění z researche: špatné je jen **fixní** sekání (uprostřed slova) — to zhoršuje přesnost. **VAD sekání na tichu** naopak dává čistší hranice, míň driftu a **míň halucinací** (WhisperX přesně tohle dělá: VAD segmenty → slepit na ~30 s okna s řezy v tichu). Takže:
-- **Švy jsou v tichu → slova se nesekají**, spojení segmentů = prosté zřetězení textů (+ doporučený ~2–3 s překryv proti ztrátě slova na kraji). Nejchoulostivější část z minula (dedup slov na švu) je díky řezu v tichu skoro triviální.
-- **Ztráta globálního kontextu** mezi vzdálenými segmenty je u dlouhého souvislého vyprávění reálná, ale u diktátu (krátké, samostatné věty) zanedbatelná — a **Claude v druhém kroku čte celý text**, takže případný šev dorovná.
+### 3.2 Malá ikona v liště, která ukazuje stav
 
-**Pozn. k dnešnímu VAD:** dnes se audio **neseká** — výchozí mlx cesta má jen energetickou bránu proti tichu (`_is_silence`, boolean na celém klipu), faster-whisper má silero VAD, ale jako jedno volání po puštění. Takže „už se to rozděluje" zatím **neplatí** — streaming by tu segmentaci musel přidat (silero onnx je v bundlu, běží levně na CPU během nahrávání).
+**Otázka:** jak do drobné jednobarevné ikony dostat stav (nahrávám / zpracovávám)?
 
-**Potřebný zásah (střední):** silero VAD během nahrávání → uzavřené segmenty přepisovat průběžně na mlx vlákně, po puštění dopřepsat poslední (otevřený) segment a zřetězit; přesun bodu zrušení „před Whisper" → „před Claude". **Verdikt:** kvalita **není bloker** (řez v tichu), hlavní práce je streamovací smyčka a VAD za běhu. Hezké zrychlení pro střední/dlouhé diktáty → dobrý kandidát na v2.
+**Jak to je dnes:** ikona je vlnovka (logo) a je **statická** — je to „šablona", takže si ji
+macOS sám obarví podle světlého/tmavého motivu. Stav se ukazuje jen v okénku u kurzoru.
 
-Zdroje: [ufal/whisper_streaming](https://github.com/ufal/whisper_streaming), [WhisperX (VAD cut&merge na 30 s)](https://ora.ox.ac.uk/objects/uuid:fece4192-95b7-4db8-a018-3cf728040194), [chunking strategie](https://www.saytowords.com/blogs/Whisper-Audio-Chunking/).
+**Ikona v liště je maličká (asi 18×18 bodů)**, takže se do ní nevejde detail — musí se
+pracovat s **tvarem a výplní**, ne s obrázky.
 
-### 8.2 Odložené doručení — spolehlivost a scénáře
-
-**Jak by to vypadalo — krok za krokem (jednoduše):**
-1. Podržíš klávesu a normálně diktuješ.
-2. Během nahrávání si Spillway **potichu poznamená cíl**: která **appka + okno** má fokus, a krátký **otisk** pole (kousek textu, co v něm byl / že bylo prázdné). *Nezapamatuje si samotné pole* — odkaz na textové pole je křehký (web/Electron ho re-renderem zneplatní).
-3. Pustíš klávesu. Text se **hned nevloží** — vpravo dole naskočí malý chip: `Zpracovávám… → Připraveno ✓`.
-4. Ty jsi mezitím odešel jinam (proto je to „odložené").
-5. **Doručení, dvě cesty:**
-   - **Vrátíš se do pole sám** (klikneš do něj) → Spillway pozná, že jsi zpět v zapamatované appce+okně, ověří otisk a **vloží**.
-   - **Klikneš na chip** → Spillway požádá systém, ať tu appku+okno vytáhne dopředu; když to projde a pole sedí, **vloží**.
-6. **Pojistka:** když cokoli nesedí (appka zavřená, jiné pole, nejde ověřit) → **nevkládá naslepo**, nechá text ve schránce a chip řekne „stiskni ⌘V". Text se nikdy neztratí — v nejhorším zmáčkneš ⌘V.
-
-**Omezení jednoduše:** na novém macOS (Sonoma+) často nepůjde „klik na chip → appka sама dopředu" → dostaneš fallback ⌘V. Ve web/Electron polích Spillway pole neověří → taky ⌘V. Jen jeden čekající text (bez fronty). Po restartu Spillway s čekajícím textem → cíl neplatný → jen zkopírovat.
-
-**Klíčové zjištění (Apple forums):** od **macOS Sonoma (14+) Apple omezil cross-app aktivaci** — `NSRunningApplication.activateWithOptions` / `activate(ignoringOtherApps:)` je nespolehlivé/deprecated; appka už nemůže volně vytáhnout jinou appku do popředí. Existuje kooperativní `activate(from:)` (14+) pro předání aktivace po uživatelově gestu, ale je křehké napříč verzemi.
-
-**Dopad:** krok „klik na popup → Spillway sám aktivuje cílovou appku → vloží" je na nové macOS **nespolehlivý**. Řešení: nespoléhat na auto-aktivaci, ale na **návrat uživatele do pole** (klik do pole = přirozený fokus) a/nebo kooperativní `activate(from:)` po kliku na popup, s **tvrdým fallbackem „text ve schránce + ⌘V"**.
-
-| Scénář | Chování | Odhad spolehlivosti |
+| Způsob | Jak to vypadá | Poznámka |
 |---|---|---|
-| Nativní appka, otisk sedí, aktivace projde | auto-vloží | vysoká (macOS ≤ Ventura), nižší na Sonoma+ |
-| Cross-app aktivace selže (Sonoma+) | fallback: schránka + „⌘V", nebo počkat na klik do pole | ~100 % (bezpečné) |
-| Web/Electron pole nejde ověřit | neaktivovat naslepo → schránka + „⌘V" | ~100 % (bezpečné) |
-| Uživatel klikl jinam než do původního pole | otisk nesedí → nevkládat | pojistka drží |
-| Cíl zavřený / Spillway restart | jen zkopírování | ~100 % |
+| **Změna výplně** ⭐ | Klid = tenké obrysové čárky · Nahrávám = plné, silné čárky · Zpracovávám = čárky „poloviční" | Zůstane šablona → funguje v obou motivech. Nejčistší. |
+| **Animace** ⭐ | Vlnovka během nahrávání „dýchá" (2–3 obrázky se střídají) | Nejlíp viditelné koutkem oka. Trochu víc práce. |
+| **Barevný puntík** | Malá červená tečka v rohu vlnovky | Musí se vypnout režim šablony → ikona se přestane sama přizpůsobovat motivu |
+| **Změna symbolu** | Vlnovka → mikrofon → přesýpací hodiny | ❌ Ztratí se identita loga, mate |
 
-**Chybovost:** „plně automatické" doručení vyjde spolehlivě hlavně u nativních appek na starším macOS nebo když se uživatel do pole vrátí sám; na Sonoma+ čekej, že auto-aktivace často selže → spadne na **bezpečný fallback ⌘V** (v nejhorším zmáčkneš ⌘V). Web/Electron nikdy nevkládej naslepo. **Hodnota** tedy není v garantované auto-aktivaci, ale v **zapamatovaném cíli + doručení na jeden klik / při návratu + bezpečném fallbacku**. Takhle je featura užitečná i s Apple omezeními.
+**Doporučení:** kombinace prvních dvou — **stejná vlnovka, jiná „hlasitost"**:
+- **Klid** — tenké nízké čárky
+- **Nahrávám** — vysoké plné čárky, jemně se vlní (animace)
+- **Zpracovávám** — čárky ustálené v půli, pomalé blikání
+- **Připraveno k vložení** — vlnovka s malou tečkou (nebo prostě lístek u ikony, který už máme)
 
-Zdroje: [activateWithOptions na Sonoma](https://developer.apple.com/forums/thread/739524), [bring another app to foreground](https://developer.apple.com/forums/thread/793253).
+Tím zůstane ikona minimalistická a rozeznatelná i periferním viděním.
 
-### 8.3 Automatický slovník — přehodnoceno (původní návrh byl slabý)
+**Náročnost:** střední — je potřeba nakreslit 3–4 varianty ikony a přepínat je podle stavu.
 
-**Kritika sedí:** stavět slovník jen z historie `raw`→`final` (Whisper→Claude) je **málo užitečné**. Ten diff totiž zachytí jen to, co **Claude už sám opravuje** — takže přidání do slovníku je z velké části **redundantní** (Claude to trefí příště tak jako tak). Jediný přínos: konzistence + hotwords pro Whisper (ty jsou ale vypnuté, protože halucinují). Málo muziky.
+### 3.3 Diktování bez zaklikaného pole
 
-**Kde je ta cenná informace:** termíny, které **Whisper i Claude minou zároveň** — vzácné slovo, které ani jeden nezná (název produktu „Domovoy", jméno člověka, niche knihovna). Whisper ho přeslechne, Claude ho nezná → nechá zkomoleninu nebo hádá špatně. **Tohle se v `raw`→`final` NIKDY neobjeví jako oprava** (Claude to neopravil). Objeví se to jen tam, kde to **ty ručně opravíš ve vloženém textu** — a to je přesně signál, který dnes Spillway nevidí (vloží a zapomene).
+**Nápad:** začnu diktovat, aniž bych někam klikl (nemám otevřené žádné textové pole).
+Spillway to pozná, okénko si drží nahoře u ikony a výsledek dá **rovnou do schránky**
+s lístkem „Připraveno k vložení".
 
-**Proč „vidět jen výstup Whisperu a Claude" nestačí** (tvůj postřeh): ten pár ukazuje jen Claudovy jistoty. Neznámé termíny (ty do slovníku patří) v něm chybí, protože se nikde neopravily — jen se vložily špatně a ty jsi je pak přepsal rukou.
+**Proč to dává smysl:** často chceš jen „rychle si něco nadiktovat" a teprve pak se rozhodnout,
+kam to dáš. Dnes by se Spillway pokusil vložit to do čehokoliv, co má zrovna fokus.
 
-**Možné zdroje signálu (od nejlepšího k nejhoršímu na realizaci):**
+**Jak by to poznal:** při startu diktování se podívá, jestli je zaměřené **editovatelné pole**.
+Když ne → rovnou režim „do schránky". Když si není jistý → chová se jako dnes (vloží).
 
-| Zdroj | Co zachytí | Realizace |
+**Návaznost:** vizuálně už je to hotové — okénko se umí ukotvit k ikoně a lístek existuje.
+Chybí jen ta detekce „není kam psát".
+
+**Náročnost:** malá. **Riziko:** nízké (nejhorší případ = text ve schránce místo vložení).
+
+---
+
+## 4. Uživatelské rozhraní
+
+### 4.1 Průvodce oprávněními při prvním spuštění
+Spillway potřebuje tři povolení (mikrofon, sledování klávesnice, zpřístupnění). Dnes si je
+musíš najít sám a když jedno chybí, projeví se to jen tím, že „to nefunguje".
+
+**Návrh:** při prvním spuštění okno, které u každého oprávnění ukáže **živě zelenou/červenou**,
+tlačítkem otevře přesné místo v Nastavení systému, a na konci nabídne **zkušební diktát**
+s potvrzením „funguje".
+
+### 4.2 Stránka „Co Spillway umí" přímo v aplikaci
+Dnes je veškerý popis jen v těchhle dokumentech. **Návrh:** v menu položka, která otevře
+přehlednou stránku:
+- co která funkce dělá, jednou větou,
+- **ukázky workflow** („diktuji e-mail", „diktuji prompt do AI", „diktuji do vzdálené plochy"),
+- seznam klávesových zkratek,
+- tipy (např. že přeřeknutí umí opravit, nebo že ⌘V schová lístek).
+
+Je to nejlevnější způsob, jak zpřístupnit funkce, o kterých uživatel neví že existují.
+
+### 4.3 Úprava zadání pro AI (promptu) s resetem
+**Návrh:** v nastavení textové pole s tím, co se posílá Claudovi, plus tlačítko
+**„Vrátit na výchozí"**. Kdo chce, doladí si tón; kdo ne, nesahá na to.
+
+**Pozor:** prompt je nejchoulostivější část celé aplikace — drží pravidla jako „nic si
+nevymýšlej" nebo „angličtinu nepřekládej". Když si ho někdo přepíše, kvalita se může tiše
+zhoršit.
+
+**Proto navrhuji dvouúrovňově:**
+- **Běžná úroveň:** jen pár přepínačů a **vlastní doplněk** („piš mi vždycky neformálně",
+  „nepoužívej pomlčky") — připojí se k našemu promptu, nepřepíše ho.
+- **Expertní úroveň:** celý prompt k přepsání, schované za varováním, s resetem na výchozí.
+
+### 4.4 Úprava profilů aplikací
+Dnes je pevně dané, že Mail = formální e-mail, Slack = neformální chat, editor = kód atd.
+**Návrh:** v nastavení tabulka „aplikace → profil", kde si to přepíšeš (třeba že Slack u tebe
+má být formální), a možnost přidat vlastní aplikaci nebo webovou doménu.
+
+### 4.5 Drobnosti
+- **Zabalit font Raleway** do aplikace (dnes padá na systémový, když ho nemáš).
+- **Doladit okénko u kurzoru** na více monitorech.
+- **Notarizace u Apple** (Developer ID, ~$99/rok) — odstraní varování „nelze ověřit vývojáře"
+  při prvním spuštění. Nutné, jestli to má používat někdo další.
+
+---
+
+## 5. Data a další platformy
+
+### 5.1 Export historie a statistik
+Historie se od začátku ukládá strojově čitelně (`history.jsonl`), takže jde poslat jinam —
+na Raspberry Pi nebo do databáze — a dělat nad tím přehledy: kolik toho denně nadiktuji,
+kde nejvíc, jaké termíny se opakují, jestli se přepis v čase zlepšuje.
+
+### 5.2 Windows
+Jádro (přepis, AI úprava, statistiky) je přenositelné — asi **třetina kódu**. Přepsat by se
+musela „platformní vrstva": odchytávání klávesy, vkládání textu, zjištění aktivní aplikace a UI.
+Princip držet stejný: **schránka + zkratka**, čtení kontextu jen pro informaci.
+
+### 5.3 iPhone
+Tady je to jinak — iOS **nedovolí** aplikaci běžet na pozadí a vkládat text do cizích aplikací.
+Existuje ale jedna dobrá cesta:
+
+| Cesta | Jak by to fungovalo | Reálnost |
 |---|---|---|
-| **Ruční oprava vloženého textu** (ideál) | přesně to, co Whisper+Claude minuli | **těžké:** po vložení znovu číst pole přes AX a diffovat — kdy vzorkovat? uživatel dál píše, pole se mění z mnoha důvodů → **šumné přiřazení**; navíc **soukromí** (čtení toho, co jsi napsal) a jen v AX-čitelných polích. „Bez vnímání uživatele" = přesně ta invazivní část. |
-| **Claude označí vlastní nejistotu** (realistické) | jména/vzácné termíny, u kterých si Claude nebyl jistý | Claude ve výstupu vrátí navíc malý seznam `uncertain_terms`. Automatické, bez čtení polí, pár tokenů navíc. Zachytí část případu „oba minuli" (Claude přizná nejistotu). |
-| **Re-diktát krátce po sobě** | „řekl jsem to špatně" | signál „něco bylo blbě", ale **nedá správný tvar** → k slovníku k ničemu. |
+| **Vlastní klávesnice** ⭐ | Spillway se přidá jako klávesnice; kdekoliv píšeš, přepneš na ni, podržíš mikrofon, mluvíš → text se **vloží rovnou do pole** | Funkční cesta. Jediná, která umí psát do cizích aplikací. |
+| Samostatná aplikace | Nadiktuješ → text do schránky → ručně vložíš | Jednoduché, ale nepohodlné |
+| Sdílení (share sheet) | Diktuješ nad označeným textem | Okrajové použití |
 
-**Poctivý verdikt:** funkcionalita, jak byla napsaná (jen `raw`→`final`), je **špatně uchopená** — souhlas. Skutečně užitečný automatický slovník potřebuje **ruční opravy uživatele**, které nejde tiše a spolehlivě odečíst (šum + soukromí). Nejlepší **realizovatelný** kompromis je **Claude flagující vlastní nejistotu** (`uncertain_terms`) — automatické, neinvazivní, chytí část gapu; když se termín opakuje, tiše ho navrhne (nebo rovnou přidá do „kandidátů"). Pokud tohle nestačí, spíš **nechat slovník ruční**, než stavět křehké čtení polí. Doporučení: začít experimentem s `uncertain_terms` a změřit, jestli vůbec vrací něco smysluplného, než se do toho investuje.
+**Zásadní omezení klávesnice:** klávesnicové rozšíření na iOS má **velmi přísný limit paměti
+(desítky MB)**. Náš model (~1,6 GB) se tam **nevejde**. Možnosti:
+1. **Malý model přímo v telefonu** (horší přesnost, hlavně u češtiny),
+2. **poslat zvuk k sobě na Mac / server** (potřebuje síť a řeší se soukromí),
+3. **použít diktování od Applu** a nechat si od Spillway dělat jen tu **AI úpravu** — to je
+   nejrealističtější: Apple přepíše, Claude vyčistí a naformátuje podle aplikace.
 
-Zdroje: [post-editing STT korekce](https://aws.amazon.com/blogs/machine-learning/build-a-custom-vocabulary-to-enhance-speech-to-text-transcription-accuracy-with-amazon-transcribe/), [Gladia custom vocabulary](https://www.gladia.io/blog/custom-vocabulary-stt-accuracy).
+Varianta 3 je zajímavá i proto, že hodnota Spillway není jen v přepisu, ale právě v té úpravě.
+
+### 5.4 Android
+Android je vstřícnější: aplikace může být **plnohodnotná klávesnice**, smí běžet na pozadí
+a nemá tak tvrdé limity paměti. Šel by tam i model přímo v telefonu (na slabších přístrojích
+menší varianta), nebo stejné rozdělení jako u iPhonu (systémový přepis + naše úprava).
+
+### 5.5 Sdílení nastavení mezi zařízeními
+Kdyby vznikla mobilní verze, dávalo by smysl sdílet aspoň **slovník výrazů** a nastavení stylu,
+aby se termíny psaly všude stejně.
+
+---
+
+## 6. Zamítnuté nápady (a proč)
+
+Ať se nevracejí dokola:
+
+| Nápad | Proč ne |
+|---|---|
+| **Fronta diktátů** (stisk klávesy během zpracování) | Nedává smysl — je správné počkat, než předchozí doběhne. Fronta by jen zvýšila riziko, že text spadne do špatného pole. |
+| **Automatický výběr modelu** (Haiku na krátké, Sonnet na dlouhé) | Ztratila by se kontrola nad tím, co text upravuje. Sonnet je dost rychlý. |
+| **Předplnění promptu (caching)** | Úspora je malá a část zadání se stejně mění podle aplikace. |
+| **Průběžné zobrazování odpovědi Claude** | K ničemu — text se stejně vkládá až celý. |
+| **Vrácení posledního vložení (undo)** | Ve většině aplikací funguje běžné `⌘Z`. |
+| **Náhled a potvrzení před vložením** | Další okno navíc, které zdržuje; smysl diktování je, že text prostě naskočí. |
+| **„Kopírovat místo vložit" zvláštní zkratkou** | Nahrazeno lepším nápadem — diktování bez zaklikaného pole (viz 3.3). |
+| **„Přemluvit" (nahradit poslední vložení)** | Jednodušší je smazat a nadiktovat znovu. |
+| **Tichý režim / pauza** | Řeší se sám — bez řeči se nic nepřepisuje (je tam filtr ticha). |
+| **Slovník jako páry „špatně → správně"** | Ruční slovník stačí; automatické učení je slepá ulička (viz 7). |
+| **Restart GPU vlákna při zaseknutí** | Zaseknutí se po opravách neděje. Řešit až kdyby nastalo. |
+
+---
+
+## 7. Proč nebude automatický slovník (analýza)
+
+**Nápad byl:** ať se Spillway sám učí termíny, které špatně slyší, a přidává si je do slovníku.
+
+**První pokus:** porovnávat, co napsal Whisper, s tím, co z toho udělal Claude, a rozdíly brát
+jako kandidáty do slovníku.
+
+**Proč to nefunguje:** takhle se zachytí jen to, co **Claude už sám opravuje** — takže přidat
+to do slovníku je zbytečné, opravilo by se to i tak. Skutečně cenné jsou termíny, které
+**minou oba** (vlastní název, jméno člověka, neznámá knihovna). Ty se v tom porovnání
+**nikdy neobjeví**, protože je nikdo neopravil — jen se vložily špatně a **ty jsi je pak
+přepsal rukou**.
+
+**Ostatní zdroje a proč taky ne:**
+
+| Zdroj | Co by zachytil | Proč to nejde |
+|---|---|---|
+| Tvoje ruční opravy vloženého textu | přesně ty správné termíny | Muselo by se po vložení sledovat, co v poli měníš — nespolehlivé (píšeš dál, text se mění z mnoha důvodů) a je to zásah do soukromí. |
+| Claude přizná nejistotu | část neznámých jmen | Použitelné jako doplněk, ale zachytí jen zlomek. |
+| Opakovaný diktát po sobě | „řekl jsem to blbě" | Neřekne správný tvar → k slovníku nepoužitelné. |
+
+**Závěr:** slovník **zůstane ruční**. Je to pár termínů, které si zadáš jednou, a funguje to
+spolehlivě. Automatika by buď nepřinesla nic navíc, nebo by musela slídit v tom, co píšeš.

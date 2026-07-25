@@ -127,6 +127,14 @@ def field_context() -> bool:
     return bool(settings.get("field_context", True))
 
 
+def streaming() -> bool:
+    """Streaming přepis: segmentovat řeč v tichu už během mluvení a přepisovat
+    průběžně → po puštění klávesy zbývá jen poslední úsek (kratší čekání).
+    Když nevzniknou segmenty (krátký diktát bez pauz), spadne to na dávkový přepis.
+    Vypnout: SPILLWAY_STREAMING=0."""
+    return _flag("SPILLWAY_STREAMING", "1")
+
+
 def ai_edit() -> bool:
     """Posílat přepis Claudeovi na úpravu a formátování? Když vypnuto, vloží se
     jen lokálně očištěný syrový přepis (basic_cleanup) — nic neodchází k Anthropic.

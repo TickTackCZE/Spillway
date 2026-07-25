@@ -14,7 +14,6 @@ Přepnutí: `SPILLWAY_WHISPER_BACKEND=mlx|faster`. Model uvolnitelný po nečinn
 
 from __future__ import annotations
 
-import gc
 import os
 import platform
 import queue
@@ -100,6 +99,50 @@ def voiced_seconds(audio: np.ndarray, frame_ms: int = 30, thresh: float = 0.01) 
     return int(np.count_nonzero(rms > thresh)) * frame_ms / 1000.0
 
 
+def next_segment_boundary(
+    audio: np.ndarray,
+    start: int,
+    *,
+    min_speech_s: float = 2.0,
+    min_silence_s: float = 0.45,
+    thresh: float = 0.01,
+    frame_ms: int = 30,
+) -> int | None:
+    """Řez segmentu pro streaming přepis: index vzorku > `start` **uprostřed
+    dostatečně dlouhého ticha**, které přišlo po dostatečné řeči. `None`, když
+    takový řez zatím není (mluví se dál / ještě málo řeči).
+
+    Řeže se ZÁMĚRNĚ v tichu (ne fixně) — slova se tak nesekají uprostřed a
+    segmenty jdou prostě zřetězit (viz research: VAD řez kvalitu nezhoršuje)."""
+    if audio is None or start < 0 or start >= audio.size:
+        return None
+    n = int(SAMPLE_RATE * frame_ms / 1000)
+    tail = audio[start:]
+    usable = tail.size - (tail.size % n)
+    if usable < n:
+        return None
+    rms = np.sqrt(np.mean(tail[:usable].astype(np.float32).reshape(-1, n) ** 2, axis=1))
+    voiced = rms > thresh
+    min_speech_frames = max(1, int(min_speech_s * 1000 / frame_ms))
+    min_silence_frames = max(1, int(min_silence_s * 1000 / frame_ms))
+    voiced_count = 0
+    i = 0
+    m = len(voiced)
+    while i < m:
+        if voiced[i]:
+            voiced_count += 1
+            i += 1
+            continue
+        j = i
+        while j < m and not voiced[j]:
+            j += 1
+        if voiced_count >= min_speech_frames and (j - i) >= min_silence_frames:
+            cut_frame = i + (j - i) // 2  # řez doprostřed ticha
+            return start + cut_frame * n
+        i = j
+    return None
+
+
 class _MlxWorker:
     """Jedno vyhrazené vlákno pro VŠECHNY mlx GPU operace.
 
@@ -126,15 +169,30 @@ class _MlxWorker:
             finally:
                 ev.set()
 
-    def submit(self, fn):
-        """Spustí `fn` na mlx vlákně a počká na výsledek (výjimku propaguje)."""
+    def submit(self, fn, timeout: float | None = None):
+        """Spustí `fn` na mlx vlákně a počká na výsledek (výjimku propaguje).
+
+        `timeout` je pojistka proti zatuhnutí: když práce nedoběhne včas, vyhodí
+        TimeoutError místo nekonečného čekání (volající se rozhodne, co dál).
+        NIKDY nevolat bez timeoutu z hlavního vlákna — zablokovalo by celé UI.
+        """
         box: dict = {}
         ev = threading.Event()
         self._q.put((fn, box, ev))
-        ev.wait()
+        if not ev.wait(timeout):
+            raise TimeoutError("mlx worker neodpověděl včas")
         if "e" in box:
             raise box["e"]
         return box.get("r")
+
+    def submit_async(self, fn) -> None:
+        """Zařadí práci a NEČEKÁ na ni — pro volání z hlavního vlákna (UI timery),
+        kde by čekání na vytížené GPU vlákno zmrazilo celou aplikaci."""
+        self._q.put((fn, {}, threading.Event()))
+
+    def pending(self) -> int:
+        """Kolik práce čeká ve frontě (streaming se podle toho brzdí)."""
+        return self._q.qsize()
 
 
 class Transcriber:
@@ -232,11 +290,17 @@ class Transcriber:
             if time.monotonic() - self._last_used < idle_seconds:
                 return False
             self._model = None
-        # Uvolnění GPU paměti taky na mlx vlákně (tam, kde byl model načten).
+        # Uvolnění GPU paměti taky na mlx vlákně (tam, kde byl model načten), ale
+        # BEZ ČEKÁNÍ: tohle volá UI timer na hlavním vlákně a čekání na vytížené
+        # GPU vlákno by zmrazilo celou appku (bug „appka se sekne, nutno vypnout").
         if self.backend == "mlx" and self._mlx is not None:
-            self._mlx.submit(self._unload_mlx_gpu)
-        gc.collect()
+            self._mlx.submit_async(self._unload_mlx_gpu)
         return True
+
+    @property
+    def busy(self) -> bool:
+        """Čeká něco ve frontě GPU vlákna? (streaming se podle toho přiškrtí)."""
+        return self._mlx is not None and self._mlx.pending() > 0
 
     @staticmethod
     def _unload_mlx_gpu() -> None:

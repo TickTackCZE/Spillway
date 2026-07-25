@@ -23,7 +23,7 @@ from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner, basic_cleanup
 from .paste import copy_to_clipboard, paste_text
-from .transcribe import Transcriber, voiced_seconds
+from .transcribe import Transcriber, next_segment_boundary, voiced_seconds
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
 
@@ -116,8 +116,24 @@ class Controller:
         self._pasting = False
         # Kdy (monotonic) začalo PROCESSING — pro watchdog zaseklého zpracování.
         self._processing_since = 0.0
+        # Text skončil ve schránce (odešel jsi z pole / přepnul appku) a čeká, až
+        # si ho vložíš. Drží lístek „Připraveno k vložení" u ikony v liště.
+        self.awaiting_paste = False
+        # Aplikace, do které se diktuje (bundle ID). Podle ní HUD pozná, že jsi
+        # odešel jinam, a přeskočí od kurzoru nahoru k ikoně v liště.
+        self.target_bundle: str | None = None
         # [F2] Vlákno, které otevírá mikrofon; `_process` na něj počká.
         self._start_thread: threading.Thread | None = None
+        # Streaming přepis: vlákno segmentuje řeč v tichu a přepisuje segmenty už
+        # během mluvení; `_process` pak dopřepíše jen poslední úsek a zřetězí.
+        self._stream_thread: threading.Thread | None = None
+        self._stream_committed = 0            # kolik vzorků už je v segmentech
+        self._stream_segments: list[str] = []  # přepsané segmenty (v pořadí)
+        # Pořadové číslo diktátu. Streamovací smyčka si ho na startu zapamatuje a
+        # při každé změně skončí — jinak by smyčka, která nestihla doběhnout do
+        # `join` timeoutu, psala segmenty do NÁSLEDUJÍCÍHO diktátu (a zahlcovala
+        # GPU frontu). To byl jeden z důvodů zaseknutí po opakovaném stisku klávesy.
+        self._dictation_id = 0
 
         # [F2/F3] AI úprava přes Claude — konfigurovatelná za běhu z menu.
         self.raw_mode = raw_mode
@@ -179,6 +195,11 @@ class Controller:
             threading.Thread(target=self._process, daemon=True).start()
         return True
 
+    def clear_awaiting_paste(self) -> None:
+        """Lístek „Připraveno k vložení" pryč — uživatel text vložil (⌘V), klikl
+        na lístek, nebo začal nový diktát."""
+        self.awaiting_paste = False
+
     def is_cancelling(self) -> bool:
         """True, dokud má HUD ukazovat „Ruším".
 
@@ -204,8 +225,11 @@ class Controller:
                 print(f"⏳ zaneprázdněno ({self.state}) — počkej na dokončení.")
                 return
             self.state = RECORDING
+            self._dictation_id += 1
+            dictation_id = self._dictation_id
         self._cancel.clear()  # nový diktát → zahodit staré zrušení
         self._cancel_min_until = 0.0  # ať „Ruším" nepřebíjí nové „Nahrávám"
+        self.awaiting_paste = False   # starý lístek pryč, jede nový diktát
         print("🔴 nahrávám… (drž F5)")
         # [F2] `recorder.start()` otevírá vstupní zařízení — u Bluetooth mikrofonu
         # (přepnutí do HFP) i stovky ms až sekundu. Na vlákně tapu by to hrozilo
@@ -220,6 +244,17 @@ class Controller:
         # jinak čekalo ~1,6 s až po puštění klávesy. Takhle se reload schová.
         if not self.transcriber.is_loaded:
             threading.Thread(target=self.transcriber.preload, daemon=True).start()
+        # Streaming přepis během mluvení (když zapnuto). Krátký diktát bez pauz
+        # nevytvoří segmenty → `_process` spadne na dávkový přepis.
+        self._stream_committed = 0
+        self._stream_segments = []
+        if config.streaming():
+            self._stream_thread = threading.Thread(
+                target=self._stream_loop, args=(dictation_id,), daemon=True
+            )
+            self._stream_thread.start()
+        else:
+            self._stream_thread = None
         # [B7] Watchdog: kdyby se ztratil key-up (spánek, lock, Secure Input),
         # po max_seconds nahrávání vynuceně ukončíme, ať appka nezůstane v RECORDING.
         self._arm_watchdog()
@@ -229,6 +264,12 @@ class Controller:
         stihne pustit klávesu dřív, než se stream otevře, `stop()` v `_process`
         stejně proběhne až po nás — pořadí drží zámek uvnitř Recorderu."""
         try:
+            # Zapamatovat cílovou aplikaci — HUD podle ní pozná odchod jinam.
+            # (Tady, ne v `on_press`: to běží na vlákně tapu a musí být triviální.)
+            try:
+                self.target_bundle = context.frontmost_app()[1]
+            except Exception:  # noqa: BLE001
+                self.target_bundle = None
             self.recorder.start()
         except Exception as exc:  # noqa: BLE001 — [O6] viditelná chyba, ne tichý pád
             print(f"❌ mikrofon se nepodařilo spustit: {exc}")
@@ -236,6 +277,63 @@ class Controller:
             with self._lock:
                 self.state = IDLE
             self._cancel_watchdog()
+
+    def _stream_loop(self, dictation_id: int) -> None:
+        """Během nahrávání segmentuje řeč v tichu a přepisuje segmenty průběžně.
+        Výsledky ukládá do `self._stream_segments` / `self._stream_committed`,
+        které `_process` po puštění klávesy převezme. Chyba tu nikdy nesmí shodit
+        diktát — v nejhorším zůstane committed, kde je, a `_process` dopřepíše zbytek.
+
+        `dictation_id` váže smyčku na KONKRÉTNÍ diktát: jakmile začne další (nebo
+        se stav změní), smyčka okamžitě skončí a už nic nezapíše. Bez toho by
+        smyčka, která nestihla doběhnout do `join` timeoutu, kontaminovala další
+        diktát a hromadila práci v GPU frontě (→ zaseknutí appky)."""
+        committed = 0
+
+        def _mine() -> bool:
+            with self._lock:
+                return self.state == RECORDING and self._dictation_id == dictation_id
+
+        try:
+            while True:
+                if self._cancel.is_set() or not _mine():
+                    return
+                time.sleep(0.35)
+                if self._cancel.is_set() or not _mine():
+                    return
+                audio = self.recorder.snapshot()
+                while True:
+                    if self._cancel.is_set() or not _mine():
+                        return
+                    # Nezahlcovat GPU frontu: když se předchozí práce ještě nestihla
+                    # zpracovat, nech zbytek na `_process` (dopřepíše ho vcelku).
+                    if getattr(self.transcriber, "busy", False):
+                        break
+                    b = next_segment_boundary(audio, committed)
+                    if b is None:
+                        break
+                    seg = audio[committed:b]
+                    if seg.size < int(0.3 * 16000):  # < 0,3 s → nech to na `_process`
+                        return
+                    try:
+                        txt = self.transcriber.transcribe(seg, language=self.language)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"(streaming segment selhal: {exc}) → zbytek dopřepíše pipeline")
+                        return  # committed zůstává → `_process` přepíše vše od něj
+                    if not txt:
+                        return  # prázdný přepis → radši ať zbytek vezme `_process`
+                    # Zápis až po ÚSPĚCHU, ATOMICKY (text + pozice pod jedním zámkem)
+                    # a jen když pořád patří tomuhle diktátu. Kdyby se zapsal jen
+                    # text, `_process` by ten úsek přepsal znovu → zdvojený text;
+                    # kdyby jen pozice, audio by se ztratilo.
+                    with self._lock:
+                        if self.state != RECORDING or self._dictation_id != dictation_id:
+                            return
+                        self._stream_segments.append(txt)
+                        committed = b
+                        self._stream_committed = committed
+        except Exception as exc:  # noqa: BLE001 — streaming nesmí shodit diktát
+            print(f"(streaming loop error: {exc})")
 
     def _arm_watchdog(self) -> None:
         self._cancel_watchdog()
@@ -307,6 +405,11 @@ class Controller:
             if starter is not None:
                 starter.join(timeout=5.0)
             audio = self.recorder.stop()  # [B9] těžké volání až tady, na workeru
+            # Počkat, až streamovací vlákno dokončí poslední segment — tím doběhne
+            # ještě před dalším diktátem a nezapíše do jeho (resetnutého) seznamu.
+            stream_th = getattr(self, "_stream_thread", None)
+            if stream_th is not None:
+                stream_th.join(timeout=3.0)
             audio_secs = len(audio) / 16000.0
             speech_secs = voiced_seconds(audio)  # bez ticha/pauz → tempo řeči
             print(f"🎙️ audio {audio_secs:.1f} s ({len(audio)} vz.) · řeč {speech_secs:.1f} s")
@@ -331,6 +434,9 @@ class Controller:
                     ctx["win_target"] = context.is_windows_target(a_bundle, a_name)
                     ctx["field_text"], ctx["caret"] = context.focused_field()
                     ctx["at_line_start"] = context.caret_at_line_start()
+                    # Otisk cílového pole — před vložením ověříme, že jsme pořád
+                    # v něm (jinak text jen do schránky, viz níž).
+                    ctx["field_sig"] = context.focused_field_signature()
                     if config.field_context():
                         b_profile, b_domain = context.browser_context(a_bundle)
                         ctx["domain"] = b_domain
@@ -345,21 +451,41 @@ class Controller:
             secs = len(audio) / 16000.0
             if not self.transcriber.is_loaded:
                 print("💤→🔄 model byl uvolněný z paměti, znovu se načítá…")
-            print(f"⏳ přepisuji {secs:.1f} s audia…")
             t0 = time.perf_counter()
-            # Slovník do Whisperu (hotwords) jen když si o to uživatel řekne —
-            # výchozí VYPNUTO, protože bias vkládá termíny, které nezazněly
-            # (viz config.whisper_hotwords). Zkomoleniny opraví bezpečně Claude.
-            # Cancellable: Escape během přepisu ho okamžitě opustí.
-            raw = self._run_cancellable(lambda: self.transcriber.transcribe(
-                audio,
-                language=self.language,
-                hotwords=self.glossary if config.whisper_hotwords() else None,
-            ))
-            if raw is _CANCELLED:
-                raw = ""  # ať se sentinel nedostane do stats.record (TypeError)
-                outcome = "cancelled"
-                return
+            # Streaming: segmenty (řez v tichu) se přepsaly už během mluvení —
+            # po puštění dopřepíšeme jen poslední úsek a zřetězíme. Když streaming
+            # nic nesegmentoval (krátký diktát bez pauz) → committed=0 → přepíše se
+            # celé audio (dávka, jako dřív). Slovník (hotwords) jde jen do dávky.
+            if stream_th is not None:  # streaming byl aktivní (joinuto po stop())
+                # Číst pod zámkem — smyčka zapisuje text a pozici atomicky, takže
+                # jen tak dostaneme dvojici, která k sobě patří.
+                with self._lock:
+                    committed = int(self._stream_committed)
+                    segments = list(self._stream_segments)
+                tail = audio[committed:] if 0 <= committed < audio.size else audio[:0]
+                print(f"⏳ přepisuji zbytek {tail.size / 16000.0:.1f} s "
+                      f"(streaming: {len(segments)} segm. za mluvení)…")
+                tail_text = self._run_cancellable(
+                    lambda: self.transcriber.transcribe(tail, language=self.language)
+                )
+                if tail_text is _CANCELLED:
+                    raw = ""
+                    outcome = "cancelled"
+                    return
+                parts = segments + ([tail_text] if tail_text else [])
+                raw = " ".join(p for p in parts if p).strip()
+            else:
+                print(f"⏳ přepisuji {secs:.1f} s audia…")
+                # Cancellable: Escape během přepisu ho okamžitě opustí.
+                raw = self._run_cancellable(lambda: self.transcriber.transcribe(
+                    audio,
+                    language=self.language,
+                    hotwords=self.glossary if config.whisper_hotwords() else None,
+                ))
+                if raw is _CANCELLED:
+                    raw = ""  # ať se sentinel nedostane do stats.record (TypeError)
+                    outcome = "cancelled"
+                    return
             dt = time.perf_counter() - t0
             if not raw:
                 print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")
@@ -457,7 +583,20 @@ class Controller:
             if bundle and now_bundle and now_bundle != bundle:
                 copy_to_clipboard(text)
                 print(f"📋 fokus je jinde ({now_bundle}) → text ve schránce, nevkládám.")
-                notify("Text je ve schránce", "Přepnul jsi jinam — vlož ho ⌘V, kam chceš.")
+                # Lístek u ikony („Připraveno k vložení") to řekne líp než
+                # systémová notifikace — visí, dokud text nevložíš nebo neklikneš.
+                self.awaiting_paste = True
+                outcome = "clipboard"
+                return
+
+            # Zůstal jsi ve stejné APLIKACI, ale odešel z POLE (klik jinam, zavřené
+            # okno)? Taky nevkládat — jinak text spadne do cizího pole ve stejné
+            # appce. `same_field` vrací None, když otisk nejde získat (web/Electron)
+            # — tam se chováme jako dřív a vložíme (jinak by to hlásilo pořád).
+            if context.same_field(ctx.get("field_sig"), context.focused_field_signature()) is False:
+                copy_to_clipboard(text)
+                print("📋 jsi v jiném poli → text ve schránce, nevkládám.")
+                self.awaiting_paste = True
                 outcome = "clipboard"
                 return
 
@@ -565,6 +704,7 @@ def main() -> None:
         on_tap_failed=_on_tap_failed,
         cancel_keycode=cancel_keycode,
         on_cancel_key=controller.request_cancel,
+        on_paste_key=controller.clear_awaiting_paste,
     )
     controller.hotkey_listener = listener  # settings okno k němu potřebuje přístup
     listener.start()

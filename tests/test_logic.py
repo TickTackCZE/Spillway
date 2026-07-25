@@ -252,6 +252,288 @@ def test_hotwords_str_joins_terms_and_handles_empty():
     assert _hotwords_str(["  ", ""]) is None  # samé prázdné → žádný bias
 
 
+def test_same_field_detects_leaving_the_field():
+    # Když uživatel během zpracování odejde z pole (klik jinam ve stejné appce),
+    # text se NESMÍ vložit do cizího pole — pozná se to podle otisku pole.
+    from spillway.context import same_field
+
+    field = ("AXTextField", 100, 200, 300, 30)
+
+    assert same_field(field, field) is True
+    assert same_field(field, ("AXTextField", 104, 203, 300, 48)) is True  # drobný posun/roztažení
+    assert same_field(field, ("AXTextField", 100, 500, 300, 30)) is False  # jiné pole níž
+    assert same_field(field, ("AXTextField", 700, 200, 300, 30)) is False  # jiné pole vedle
+    assert same_field(field, ("AXTextArea", 100, 200, 300, 30)) is False   # jiný typ prvku
+    # Dvě PRÁZDNÁ pole se rozliší pozicí (obsah by je rozlišit nedokázal).
+    assert same_field(("AXTextField", 0, 0, 200, 20), ("AXTextField", 0, 60, 200, 20)) is False
+    # Nezjistitelný otisk (web/Electron) → nerozhodnuto, volající vloží jako dřív.
+    assert same_field(None, field) is None
+    assert same_field(field, None) is None
+
+
+def test_unload_never_blocks_main_thread_when_gpu_busy():
+    # Regrese k zamrznutí appky: unload_if_idle volá UI timer na HLAVNÍM vlákně.
+    # Když GPU vlákno zrovna dělá dlouhý přepis, nesmí se na něj čekat — jinak
+    # ztuhne celé UI a appka jde jen vypnout natvrdo.
+    import threading
+    import time
+
+    from spillway.transcribe import Transcriber
+
+    t = Transcriber.__new__(Transcriber)  # bez načítání modelu
+    t.backend = "mlx"
+    t._lock = threading.Lock()
+    t._model = True
+    t._last_used = time.monotonic() - 999
+
+    submitted, released = [], threading.Event()
+
+    class _BusyWorker:
+        def submit(self, fn, timeout=None):        # tudy by to zatuhlo
+            released.wait()
+            return fn()
+
+        def submit_async(self, fn):                # správná cesta — nečeká
+            submitted.append(fn)
+
+        def pending(self):
+            return 1
+
+    t._mlx = _BusyWorker()
+
+    t0 = time.monotonic()
+    assert t.unload_if_idle(0.001) is True
+    elapsed = time.monotonic() - t0
+    released.set()
+
+    assert elapsed < 0.5, f"unload blokoval hlavní vlákno ({elapsed:.1f}s)"
+    assert len(submitted) == 1        # uvolnění se zařadilo asynchronně
+    assert t._model is None           # a model je označený jako uvolněný
+    assert t.busy is True             # rozpoznáme vytížené GPU (streaming se přiškrtí)
+
+
+def test_mlx_worker_submit_timeout_does_not_hang():
+    # Pojistka: zaseklá GPU práce nesmí držet volajícího navěky.
+    import threading
+
+    from spillway.transcribe import _MlxWorker
+
+    w = _MlxWorker()
+    block = threading.Event()
+    try:
+        with pytest.raises(TimeoutError):
+            w.submit(lambda: block.wait(30), timeout=0.2)
+    finally:
+        block.set()
+
+
+def test_prompt_has_self_repair_rule_and_resolves_conflict():
+    # Oprava přeřeknutí („ve 4 nebo teda v 5" → „v 5") stojí a padá s promptem:
+    # musí mít spouštěč (opravné vsuvky), protipříklad (holé „nebo" = volba, nechat
+    # obě) a hlavně VYŘEŠENÝ konflikt s pravidlem „nic nevynechávej" — jinak si
+    # instrukce odporují a model nechá obě čísla.
+    from spillway.llm import _SYSTEM_TEMPLATE
+
+    p = _SYSTEM_TEMPLATE
+    assert "PŘEŘEKNUTÍ" in p
+    for marker in ("teda", "vlastně", "pardon", "chci říct"):
+        assert marker in p, f"chybí opravná vsuvka: {marker}"
+    assert "nech OBĚ" in p                       # protipříklad: skutečná volba
+    assert "Když si nejsi jistý" in p            # konzervativní default
+    # Konflikt vyřešen přímo u pravidla „nic nevynechávej" v sekci ZACHOVEJ
+    # (rindex — první výskyt je v nadpisu PŘEŘEKNUTÍ, ta sekce je v promptu dřív).
+    i = p.rindex("nic nevynechávej")
+    assert "výjimka" in p[i:i + 120] and "PŘEŘEKNUTÍ" in p[i:i + 120]
+    assert p.index("PŘEŘEKNUTÍ") < p.index("ZACHOVEJ (přísně)")
+
+
+def test_next_segment_boundary_cuts_in_silence():
+    # Streaming: řez segmentu musí padnout DO ticha (ne uprostřed řeči) a až po
+    # dostatečné řeči — jinak by se slova sekala a segmenty nešly čistě zřetězit.
+    import numpy as np
+
+    from spillway.transcribe import next_segment_boundary
+
+    sr = 16000
+    rng = np.random.default_rng(0)
+
+    def speech(sec):
+        return (0.05 * rng.standard_normal(int(sr * sec))).astype("float32")
+
+    def sil(sec):
+        return np.zeros(int(sr * sec), dtype="float32")
+
+    audio = np.concatenate([speech(3), sil(0.6), speech(3), sil(0.6), speech(2)])
+
+    b1 = next_segment_boundary(audio, 0)
+    assert b1 is not None and 3.0 * sr < b1 < 3.6 * sr  # v první mezeře ticha
+
+    b2 = next_segment_boundary(audio, b1)
+    assert b2 is not None and 6.0 * sr < b2 < 7.0 * sr  # v druhé mezeře
+
+    # Málo řeči bez ticha / krátký souvislý diktát → žádný řez (spadne na dávku).
+    assert next_segment_boundary(speech(1.0), 0) is None
+    assert next_segment_boundary(speech(5.0), 0) is None  # 5 s souvislé řeči, bez pauzy
+
+
+def test_next_segment_boundary_edge_cases():
+    import numpy as np
+
+    from spillway.transcribe import next_segment_boundary
+
+    assert next_segment_boundary(np.zeros(0, dtype="float32"), 0) is None
+    audio = np.zeros(16000, dtype="float32")
+    assert next_segment_boundary(audio, 16000) is None  # start == velikost
+    assert next_segment_boundary(audio, 20000) is None  # start za koncem
+    assert next_segment_boundary(audio, -1) is None      # záporný start
+    assert next_segment_boundary(audio, 0) is None        # samé ticho → žádná řeč
+
+
+def test_streaming_segments_partition_and_cut_in_silence():
+    # Řezy z next_segment_boundary musí: (a) padnout do ticha, (b) rozdělit audio
+    # beze ztráty (segmenty + poslední úsek pokryjí celé audio).
+    import numpy as np
+
+    from spillway.transcribe import next_segment_boundary
+
+    sr = 16000
+    rng = np.random.default_rng(2)
+    sp = lambda s: (0.05 * rng.standard_normal(int(sr * s))).astype("float32")  # noqa: E731
+    si = lambda s: np.zeros(int(sr * s), dtype="float32")  # noqa: E731
+    audio = np.concatenate([sp(2.5), si(0.6), sp(2.5), si(0.6), sp(2.5)])
+
+    cuts, start = [], 0
+    while True:
+        b = next_segment_boundary(audio, start)
+        if b is None:
+            break
+        cuts.append(b)
+        start = b
+
+    assert len(cuts) == 2                                   # dvě pauzy → dva řezy
+    for b in cuts:
+        assert abs(float(audio[b])) < 1e-6                 # řez leží v tichu (nula)
+    covered = sum(b - a for a, b in zip([0] + cuts, cuts + [audio.size]))
+    assert covered == audio.size                            # bez ztráty
+
+
+def test_recorder_snapshot_returns_accumulated_without_stopping():
+    import numpy as np
+
+    from spillway.audio import Recorder
+
+    r = Recorder()
+    assert r.snapshot().size == 0                           # nic nenahráno
+    r._frames = [np.ones(100, dtype="float32"), np.ones(50, dtype="float32")]
+    snap = r.snapshot()
+    assert snap.shape == (150,) and snap.dtype == np.float32
+    assert r._stream is None                                # snapshot NEzastavil stream
+    assert r.snapshot().size == 150                         # opakovaně = totéž (nemaže)
+
+
+def test_stream_loop_collects_segments_with_stubs():
+    # Ověří samotnou streamovací smyčku: se stub recorderem (audio se 2 pauzami)
+    # a stub transcriberem má nasbírat 2 segmenty a posunout committed.
+    import threading
+    import time
+
+    import numpy as np
+
+    from spillway import app as A
+
+    c = A.Controller.__new__(A.Controller)  # bez těžkého __init__
+    c._lock = threading.Lock()
+    c._cancel = threading.Event()
+    c.state = A.RECORDING
+    c.language = "cs"
+    c._stream_committed = 0
+    c._stream_segments = []
+    c._dictation_id = 1
+
+    sr = 16000
+    rng = np.random.default_rng(3)
+    sp = lambda s: (0.05 * rng.standard_normal(int(sr * s))).astype("float32")  # noqa: E731
+    si = lambda s: np.zeros(int(sr * s), dtype="float32")  # noqa: E731
+    full = np.concatenate([sp(3), si(0.6), sp(3), si(0.6), sp(2)])
+
+    class _Rec:
+        def snapshot(self):
+            return full
+
+    n = []
+
+    class _Tx:
+        def transcribe(self, seg, language=None):
+            n.append(1)
+            return f"S{len(n)}"
+
+    c.recorder, c.transcriber = _Rec(), _Tx()
+
+    th = threading.Thread(target=c._stream_loop, args=(1,), daemon=True)
+    th.start()
+    time.sleep(1.0)
+    c.state = A.IDLE          # zastav smyčku
+    th.join(timeout=3.0)
+
+    assert c._stream_segments == ["S1", "S2"]
+    assert c._stream_committed > 0
+    # Segmenty a pozice si musí odpovídat: committed nesmí utéct před text
+    # (jinak by se audio ztratilo) ani zaostat (jinak by se text zdvojil).
+    assert len(c._stream_segments) == 2
+
+
+def test_stale_stream_loop_does_not_write_into_next_dictation():
+    # Regrese k zaseknutí po opakovaném stisku klávesy: smyčka, která nedoběhla
+    # včas, se nesmí „přilepit" na DALŠÍ diktát a psát do jeho segmentů.
+    import threading
+    import time
+
+    import numpy as np
+
+    from spillway import app as A
+
+    c = A.Controller.__new__(A.Controller)
+    c._lock = threading.Lock()
+    c._cancel = threading.Event()
+    c.state = A.RECORDING
+    c.language = "cs"
+    c._stream_committed = 0
+    c._stream_segments = []
+    c._dictation_id = 7          # běžící diktát
+
+    sr = 16000
+    rng = np.random.default_rng(5)
+    audio = np.concatenate([
+        (0.05 * rng.standard_normal(3 * sr)).astype("float32"),
+        np.zeros(int(0.6 * sr), dtype="float32"),
+        (0.05 * rng.standard_normal(3 * sr)).astype("float32"),
+    ])
+
+    class _Rec:
+        def snapshot(self):
+            return audio
+
+    class _Tx:
+        def transcribe(self, seg, language=None):
+            time.sleep(0.2)      # pomalý přepis — mezitím začne nový diktát
+            return "STARÝ"
+
+    c.recorder, c.transcriber = _Rec(), _Tx()
+
+    th = threading.Thread(target=c._stream_loop, args=(7,), daemon=True)
+    th.start()
+    time.sleep(0.45)
+    with c._lock:                # nový diktát převzal štafetu
+        c._dictation_id = 8
+        c._stream_segments = []
+        c._stream_committed = 0
+    th.join(timeout=3.0)
+
+    assert not th.is_alive()          # stará smyčka skončila
+    assert c._stream_segments == []   # a nic nezapsala do nového diktátu
+    assert c._stream_committed == 0
+
+
 def test_silence_gate_for_mlx():
     # mlx nemá VAD → energetická brána musí ticho/šum poznat, ať nehalucinuje,
     # a přitom nepustit dolů skutečnou (i tichou) řeč.
@@ -576,7 +858,7 @@ def test_tray_prefers_cancelling_over_state():
     shown = []
 
     class _HUD:
-        def show(self, s):
+        def show(self, s, at_icon=False):
             shown.append(s)
 
         def hide(self):
@@ -593,6 +875,139 @@ def test_tray_prefers_cancelling_over_state():
     tray.controller.request_cancel()
     tray._tick(None)
     assert shown == ["cancel"], "rušení má přednost před „Zpracovávám“"
+
+
+def test_tray_shows_ready_note_when_text_waits_in_clipboard():
+    # Když text skončí ve schránce (odešel jsi z pole), má u ikony viset lístek
+    # „Připraveno k vložení" — ale běžící diktát má vždycky přednost.
+    from spillway.app import IDLE, PROCESSING, RECORDING
+    from spillway.tray import SpillwayTray
+
+    shown = []
+
+    class _HUD:
+        def show(self, s, at_icon=False):
+            shown.append(s)
+
+        def hide(self):
+            shown.append("hide")
+
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray.hud = _HUD()
+    tray.controller = _controller_stub(IDLE)
+
+    tray.controller.awaiting_paste = False
+    tray._tick(None)
+    assert shown == ["hide"], "nic nečeká → nic se nezobrazuje"
+
+    shown.clear()
+    tray.controller.awaiting_paste = True
+    tray._tick(None)
+    assert shown == ["ready"], "text čeká ve schránce → lístek u ikony"
+
+    # Nový diktát má přednost — lístek nesmí přebít „Nahrávám".
+    for state, expected in ((RECORDING, "rec"), (PROCESSING, "proc")):
+        shown.clear()
+        tray.controller.state = state
+        tray._tick(None)
+        assert shown == [expected]
+
+
+def test_hud_jumps_to_icon_when_user_leaves_target_app():
+    # Odejde-li uživatel z aplikace, kam diktoval, nemá okénko zůstat viset
+    # u kurzoru v cizí appce — přeskočí k ikoně v liště a ukazuje reálný stav.
+    from spillway import context
+    from spillway.app import PROCESSING
+    from spillway.tray import SpillwayTray
+
+    calls = []
+
+    class _HUD:
+        def show(self, s, at_icon=False):
+            calls.append((s, at_icon))
+
+        def hide(self):
+            calls.append(("hide", False))
+
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray.hud = _HUD()
+    tray.controller = _controller_stub(PROCESSING)
+    tray.controller.target_bundle = "com.apple.mail"
+
+    orig = context.frontmost_app
+    try:
+        context.frontmost_app = lambda: ("Mail", "com.apple.mail")
+        tray._tick(None)
+        assert calls == [("proc", False)], "pořád v cílové appce → okénko u kurzoru"
+
+        calls.clear()
+        context.frontmost_app = lambda: ("Safari", "com.apple.Safari")
+        tray._tick(None)
+        assert calls == [("proc", True)], "odešel jinam → okénko k ikoně v liště"
+
+        # Bez známého cíle (nezjistilo se) se chováme jako dřív.
+        calls.clear()
+        tray.controller.target_bundle = None
+        tray._tick(None)
+        assert calls == [("proc", False)]
+    finally:
+        context.frontmost_app = orig
+
+
+def test_new_dictation_clears_pending_paste_note():
+    # Lístek se nesmí táhnout do dalšího diktátu.
+    import threading
+
+    from spillway import app as A
+
+    c = A.Controller.__new__(A.Controller)
+    c._lock = threading.Lock()
+    c._cancel = threading.Event()
+    c.state = A.IDLE
+    c.awaiting_paste = True
+    c._dictation_id = 0
+    c._cancel_min_until = 0.0
+    c.recorder = type("R", (), {"start": lambda self: None})()
+    c.transcriber = type("T", (), {"is_loaded": True})()
+    c._start_thread = None
+    c._arm_watchdog = lambda: None
+
+    import spillway.config as cfg
+
+    orig = cfg.streaming
+    cfg.streaming = lambda: False
+    try:
+        c.on_press()
+    finally:
+        cfg.streaming = orig
+
+    assert c.awaiting_paste is False
+    assert c.state == A.RECORDING
+
+    # A ⌘V (i klik na lístek) ho taky schová.
+    c.awaiting_paste = True
+    c.clear_awaiting_paste()
+    assert c.awaiting_paste is False
+
+
+def test_own_paste_events_are_marked_so_they_are_not_mistaken_for_user():
+    # Spillway svoje ⌘V posílá sám; bez značky by si myslel, že text vložil
+    # uživatel, a předčasně schoval lístek „Připraveno k vložení".
+    from Quartz import CGEventGetIntegerValueField, kCGEventSourceUserData
+
+    from spillway import paste
+
+    seen = []
+    orig_post = paste.CGEventPost
+    paste.CGEventPost = lambda tap, ev: seen.append(
+        CGEventGetIntegerValueField(ev, kCGEventSourceUserData)
+    )
+    try:
+        paste._paste_keystroke()
+    finally:
+        paste.CGEventPost = orig_post
+
+    assert seen and all(v == paste.SPILLWAY_EVENT_MARK for v in seen)
 
 
 def test_leading_space_not_added_on_new_line():

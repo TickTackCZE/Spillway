@@ -170,6 +170,78 @@ def app_profile(bundle_id: str | None, app_name: str | None = None) -> str:
     return "generic"
 
 
+def focused_field_signature() -> tuple | None:
+    """„Otisk" právě zaměřeného pole — k ověření, že vkládáme TAM, kam se diktovalo.
+
+    Vrací (role, x, y, šířka, výška) zaměřeného prvku, nebo None, když to nejde
+    zjistit (web/Electron, chybí oprávnění). Různá pole mají různou pozici/velikost,
+    takže se rozliší i dvě prázdná pole (obsah k tomu schválně nepoužíváme — ten se
+    legitimně mění tím, jak uživatel píše).
+
+    Použití je záměrně konzervativní: když otisk nesedí NEBO ho nejde získat,
+    volající text raději nechá ve schránce, než aby ho vložil do cizího pole.
+    """
+    try:
+        from ApplicationServices import (
+            AXUIElementCopyAttributeValue,
+            AXUIElementCreateSystemWide,
+            AXUIElementSetMessagingTimeout,
+            AXValueGetValue,
+            kAXFocusedUIElementAttribute,
+            kAXPositionAttribute,
+            kAXRoleAttribute,
+            kAXSizeAttribute,
+            kAXValueCGPointType,
+            kAXValueCGSizeType,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 1.0)
+        err, focused = AXUIElementCopyAttributeValue(
+            system, kAXFocusedUIElementAttribute, None
+        )
+        if err or focused is None:
+            return None
+        AXUIElementSetMessagingTimeout(focused, 1.0)
+
+        role = None
+        err, role_val = AXUIElementCopyAttributeValue(focused, kAXRoleAttribute, None)
+        if not err and isinstance(role_val, str):
+            role = role_val
+
+        err1, pos_val = AXUIElementCopyAttributeValue(focused, kAXPositionAttribute, None)
+        err2, size_val = AXUIElementCopyAttributeValue(focused, kAXSizeAttribute, None)
+        if err1 or err2 or pos_val is None or size_val is None:
+            return None
+        okp, pt = AXValueGetValue(pos_val, kAXValueCGPointType, None)
+        oks, sz = AXValueGetValue(size_val, kAXValueCGSizeType, None)
+        if not (okp and oks):
+            return None
+        # Zaokrouhlení na celé body — drobné subpixelové rozdíly nejsou změna pole.
+        return (role, round(float(pt.x)), round(float(pt.y)),
+                round(float(sz.width)), round(float(sz.height)))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def same_field(before: tuple | None, now: tuple | None, tol: int = 8) -> bool | None:
+    """Je zaměřené pole pořád to samé jako při diktování?
+
+    True = ano, False = jiné pole, None = nelze rozhodnout (otisk chybí — typicky
+    web/Electron). `tol` je tolerance v bodech na drobné posuny (scroll o pár pixelů,
+    rozrůstající se textarea), ať se nehlásí změna, když se jen posunul layout.
+    """
+    if before is None or now is None:
+        return None
+    if before[0] != now[0]:      # jiná role prvku (textové pole vs. tlačítko…)
+        return False
+    # Pozice rozliší i dvě prázdná pole; velikost schválně neporovnáváme přísně,
+    # protože textarea se při psaní legitimně roztahuje.
+    return abs(before[1] - now[1]) <= tol and abs(before[2] - now[2]) <= tol
+
+
 def focused_field() -> tuple[str | None, int | None]:
     """(existující text zaměřeného pole, pozice kurzoru) přes Accessibility.
 

@@ -155,7 +155,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     </div>
   </div>
 
-  <div class="foot">Spillway · v0.1</div>
+  <div class="foot">Spillway · v1.1</div>
 
 <script>
   function send(m){ try{ window.webkit.messageHandlers.spillway.postMessage(m); }catch(e){} }
