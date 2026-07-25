@@ -64,6 +64,7 @@ Kroky jdou sekvenčně (Claude potřebuje hotový přepis). Přepis je díky mlx
 
 ## 4. Kvalita a chování
 
+- **⭐ Oprava „přeřeknutí" (speech self-repair) — jako Wispr Flow.** „Sejdeme se ve 4 nebo teda v 5" → „Sejdeme se v 5". Struktura opravy: *reparandum* (ve 4) + *editační značka* (nebo teda) + *reparans* (v 5); čisté = zahodit reparandum + značku, nechat reparans. **Řeší to prompt pro Claude** (Spillway už LLM v pipeline má) — NE nová komponenta. Háček: dnešní prompt přísně říká „zachovej všechna čísla/fakta", takže by nechal obě čísla → potřeba **cílená výjimka spouštěná editační značkou** (teda / vlastně / ne, počkej / pardon / chci říct / spíš / radši). Bez značky „ve 4 nebo v 5" = skutečné „nebo" → nechat obě (konzervativně). Riziko = přeřešení pravého „nebo" na opravu → hlídat prahem/značkou a testovat. Je to **implicitní varianta hlasových příkazů** (viz §7): „teda v 5" = implicitní „nahraď za 5"; „smazat větu" = explicitní. Self-repair dělat první (jen prompt, nízké riziko), explicitní příkazy až potom (nutná disambiguace obsah/příkaz).
 - **Adaptivní unload** — místo fixní 1 min držet model, dokud „aktivně diktuješ" (hodně diktátů v poslední době → delší práh), a uvolnit až po delší pauze. Míň churnu při souvislé práci.
 - **Auto-detekce jazyka per diktát** s prahem jistoty — default primární jazyk, přepnout jen když je detekovaný jazyk jiný A jistota vysoká (plná auto-detekce by česko-anglický mix zhoršila).
 - **Undo posledního vložení** — „oops" klávesa, která smaže právě vložený text.
