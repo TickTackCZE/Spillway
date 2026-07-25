@@ -123,6 +123,11 @@ class Controller:
         self._stream_thread: threading.Thread | None = None
         self._stream_committed = 0            # kolik vzorků už je v segmentech
         self._stream_segments: list[str] = []  # přepsané segmenty (v pořadí)
+        # Pořadové číslo diktátu. Streamovací smyčka si ho na startu zapamatuje a
+        # při každé změně skončí — jinak by smyčka, která nestihla doběhnout do
+        # `join` timeoutu, psala segmenty do NÁSLEDUJÍCÍHO diktátu (a zahlcovala
+        # GPU frontu). To byl jeden z důvodů zaseknutí po opakovaném stisku klávesy.
+        self._dictation_id = 0
 
         # [F2/F3] AI úprava přes Claude — konfigurovatelná za běhu z menu.
         self.raw_mode = raw_mode
@@ -209,6 +214,8 @@ class Controller:
                 print(f"⏳ zaneprázdněno ({self.state}) — počkej na dokončení.")
                 return
             self.state = RECORDING
+            self._dictation_id += 1
+            dictation_id = self._dictation_id
         self._cancel.clear()  # nový diktát → zahodit staré zrušení
         self._cancel_min_until = 0.0  # ať „Ruším" nepřebíjí nové „Nahrávám"
         print("🔴 nahrávám… (drž F5)")
@@ -230,7 +237,9 @@ class Controller:
         self._stream_committed = 0
         self._stream_segments = []
         if config.streaming():
-            self._stream_thread = threading.Thread(target=self._stream_loop, daemon=True)
+            self._stream_thread = threading.Thread(
+                target=self._stream_loop, args=(dictation_id,), daemon=True
+            )
             self._stream_thread.start()
         else:
             self._stream_thread = None
@@ -251,38 +260,60 @@ class Controller:
                 self.state = IDLE
             self._cancel_watchdog()
 
-    def _stream_loop(self) -> None:
+    def _stream_loop(self, dictation_id: int) -> None:
         """Během nahrávání segmentuje řeč v tichu a přepisuje segmenty průběžně.
         Výsledky ukládá do `self._stream_segments` / `self._stream_committed`,
         které `_process` po puštění klávesy převezme. Chyba tu nikdy nesmí shodit
-        diktát — v nejhorším zůstane committed, kde je, a `_process` dopřepíše zbytek."""
+        diktát — v nejhorším zůstane committed, kde je, a `_process` dopřepíše zbytek.
+
+        `dictation_id` váže smyčku na KONKRÉTNÍ diktát: jakmile začne další (nebo
+        se stav změní), smyčka okamžitě skončí a už nic nezapíše. Bez toho by
+        smyčka, která nestihla doběhnout do `join` timeoutu, kontaminovala další
+        diktát a hromadila práci v GPU frontě (→ zaseknutí appky)."""
         committed = 0
+
+        def _mine() -> bool:
+            with self._lock:
+                return self.state == RECORDING and self._dictation_id == dictation_id
+
         try:
             while True:
-                if self._cancel.is_set():
+                if self._cancel.is_set() or not _mine():
                     return
-                with self._lock:
-                    if self.state != RECORDING:
-                        return
                 time.sleep(0.35)
+                if self._cancel.is_set() or not _mine():
+                    return
                 audio = self.recorder.snapshot()
                 while True:
-                    if self._cancel.is_set():
+                    if self._cancel.is_set() or not _mine():
                         return
+                    # Nezahlcovat GPU frontu: když se předchozí práce ještě nestihla
+                    # zpracovat, nech zbytek na `_process` (dopřepíše ho vcelku).
+                    if getattr(self.transcriber, "busy", False):
+                        break
                     b = next_segment_boundary(audio, committed)
                     if b is None:
                         break
                     seg = audio[committed:b]
-                    committed = b
-                    self._stream_committed = committed
-                    if seg.size >= int(0.3 * 16000):  # < 0,3 s segment nemá cenu
-                        try:
-                            txt = self.transcriber.transcribe(seg, language=self.language)
-                        except Exception as exc:  # noqa: BLE001
-                            print(f"(streaming segment selhal: {exc})")
-                            txt = ""
-                        if txt:
-                            self._stream_segments.append(txt)
+                    if seg.size < int(0.3 * 16000):  # < 0,3 s → nech to na `_process`
+                        return
+                    try:
+                        txt = self.transcriber.transcribe(seg, language=self.language)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"(streaming segment selhal: {exc}) → zbytek dopřepíše pipeline")
+                        return  # committed zůstává → `_process` přepíše vše od něj
+                    if not txt:
+                        return  # prázdný přepis → radši ať zbytek vezme `_process`
+                    # Zápis až po ÚSPĚCHU, ATOMICKY (text + pozice pod jedním zámkem)
+                    # a jen když pořád patří tomuhle diktátu. Kdyby se zapsal jen
+                    # text, `_process` by ten úsek přepsal znovu → zdvojený text;
+                    # kdyby jen pozice, audio by se ztratilo.
+                    with self._lock:
+                        if self.state != RECORDING or self._dictation_id != dictation_id:
+                            return
+                        self._stream_segments.append(txt)
+                        committed = b
+                        self._stream_committed = committed
         except Exception as exc:  # noqa: BLE001 — streaming nesmí shodit diktát
             print(f"(streaming loop error: {exc})")
 
@@ -385,6 +416,9 @@ class Controller:
                     ctx["win_target"] = context.is_windows_target(a_bundle, a_name)
                     ctx["field_text"], ctx["caret"] = context.focused_field()
                     ctx["at_line_start"] = context.caret_at_line_start()
+                    # Otisk cílového pole — před vložením ověříme, že jsme pořád
+                    # v něm (jinak text jen do schránky, viz níž).
+                    ctx["field_sig"] = context.focused_field_signature()
                     if config.field_context():
                         b_profile, b_domain = context.browser_context(a_bundle)
                         ctx["domain"] = b_domain
@@ -405,8 +439,11 @@ class Controller:
             # nic nesegmentoval (krátký diktát bez pauz) → committed=0 → přepíše se
             # celé audio (dávka, jako dřív). Slovník (hotwords) jde jen do dávky.
             if stream_th is not None:  # streaming byl aktivní (joinuto po stop())
-                committed = int(getattr(self, "_stream_committed", 0))
-                segments = list(getattr(self, "_stream_segments", []))
+                # Číst pod zámkem — smyčka zapisuje text a pozici atomicky, takže
+                # jen tak dostaneme dvojici, která k sobě patří.
+                with self._lock:
+                    committed = int(self._stream_committed)
+                    segments = list(self._stream_segments)
                 tail = audio[committed:] if 0 <= committed < audio.size else audio[:0]
                 print(f"⏳ přepisuji zbytek {tail.size / 16000.0:.1f} s "
                       f"(streaming: {len(segments)} segm. za mluvení)…")
@@ -529,6 +566,17 @@ class Controller:
                 copy_to_clipboard(text)
                 print(f"📋 fokus je jinde ({now_bundle}) → text ve schránce, nevkládám.")
                 notify("Text je ve schránce", "Přepnul jsi jinam — vlož ho ⌘V, kam chceš.")
+                outcome = "clipboard"
+                return
+
+            # Zůstal jsi ve stejné APLIKACI, ale odešel z POLE (klik jinam, zavřené
+            # okno)? Taky nevkládat — jinak text spadne do cizího pole ve stejné
+            # appce. `same_field` vrací None, když otisk nejde získat (web/Electron)
+            # — tam se chováme jako dřív a vložíme (jinak by to hlásilo pořád).
+            if context.same_field(ctx.get("field_sig"), context.focused_field_signature()) is False:
+                copy_to_clipboard(text)
+                print("📋 jsi v jiném poli → text ve schránce, nevkládám.")
+                notify("Text je ve schránce", "Odešel jsi z pole — vlož ho ⌘V, kam chceš.")
                 outcome = "clipboard"
                 return
 

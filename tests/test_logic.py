@@ -252,6 +252,81 @@ def test_hotwords_str_joins_terms_and_handles_empty():
     assert _hotwords_str(["  ", ""]) is None  # samé prázdné → žádný bias
 
 
+def test_same_field_detects_leaving_the_field():
+    # Když uživatel během zpracování odejde z pole (klik jinam ve stejné appce),
+    # text se NESMÍ vložit do cizího pole — pozná se to podle otisku pole.
+    from spillway.context import same_field
+
+    field = ("AXTextField", 100, 200, 300, 30)
+
+    assert same_field(field, field) is True
+    assert same_field(field, ("AXTextField", 104, 203, 300, 48)) is True  # drobný posun/roztažení
+    assert same_field(field, ("AXTextField", 100, 500, 300, 30)) is False  # jiné pole níž
+    assert same_field(field, ("AXTextField", 700, 200, 300, 30)) is False  # jiné pole vedle
+    assert same_field(field, ("AXTextArea", 100, 200, 300, 30)) is False   # jiný typ prvku
+    # Dvě PRÁZDNÁ pole se rozliší pozicí (obsah by je rozlišit nedokázal).
+    assert same_field(("AXTextField", 0, 0, 200, 20), ("AXTextField", 0, 60, 200, 20)) is False
+    # Nezjistitelný otisk (web/Electron) → nerozhodnuto, volající vloží jako dřív.
+    assert same_field(None, field) is None
+    assert same_field(field, None) is None
+
+
+def test_unload_never_blocks_main_thread_when_gpu_busy():
+    # Regrese k zamrznutí appky: unload_if_idle volá UI timer na HLAVNÍM vlákně.
+    # Když GPU vlákno zrovna dělá dlouhý přepis, nesmí se na něj čekat — jinak
+    # ztuhne celé UI a appka jde jen vypnout natvrdo.
+    import threading
+    import time
+
+    from spillway.transcribe import Transcriber
+
+    t = Transcriber.__new__(Transcriber)  # bez načítání modelu
+    t.backend = "mlx"
+    t._lock = threading.Lock()
+    t._model = True
+    t._last_used = time.monotonic() - 999
+
+    submitted, released = [], threading.Event()
+
+    class _BusyWorker:
+        def submit(self, fn, timeout=None):        # tudy by to zatuhlo
+            released.wait()
+            return fn()
+
+        def submit_async(self, fn):                # správná cesta — nečeká
+            submitted.append(fn)
+
+        def pending(self):
+            return 1
+
+    t._mlx = _BusyWorker()
+
+    t0 = time.monotonic()
+    assert t.unload_if_idle(0.001) is True
+    elapsed = time.monotonic() - t0
+    released.set()
+
+    assert elapsed < 0.5, f"unload blokoval hlavní vlákno ({elapsed:.1f}s)"
+    assert len(submitted) == 1        # uvolnění se zařadilo asynchronně
+    assert t._model is None           # a model je označený jako uvolněný
+    assert t.busy is True             # rozpoznáme vytížené GPU (streaming se přiškrtí)
+
+
+def test_mlx_worker_submit_timeout_does_not_hang():
+    # Pojistka: zaseklá GPU práce nesmí držet volajícího navěky.
+    import threading
+
+    from spillway.transcribe import _MlxWorker
+
+    w = _MlxWorker()
+    block = threading.Event()
+    try:
+        with pytest.raises(TimeoutError):
+            w.submit(lambda: block.wait(30), timeout=0.2)
+    finally:
+        block.set()
+
+
 def test_prompt_has_self_repair_rule_and_resolves_conflict():
     # Oprava přeřeknutí („ve 4 nebo teda v 5" → „v 5") stojí a padá s promptem:
     # musí mít spouštěč (opravné vsuvky), protipříklad (holé „nebo" = volba, nechat
@@ -373,6 +448,7 @@ def test_stream_loop_collects_segments_with_stubs():
     c.language = "cs"
     c._stream_committed = 0
     c._stream_segments = []
+    c._dictation_id = 1
 
     sr = 16000
     rng = np.random.default_rng(3)
@@ -393,7 +469,7 @@ def test_stream_loop_collects_segments_with_stubs():
 
     c.recorder, c.transcriber = _Rec(), _Tx()
 
-    th = threading.Thread(target=c._stream_loop, daemon=True)
+    th = threading.Thread(target=c._stream_loop, args=(1,), daemon=True)
     th.start()
     time.sleep(1.0)
     c.state = A.IDLE          # zastav smyčku
@@ -401,6 +477,61 @@ def test_stream_loop_collects_segments_with_stubs():
 
     assert c._stream_segments == ["S1", "S2"]
     assert c._stream_committed > 0
+    # Segmenty a pozice si musí odpovídat: committed nesmí utéct před text
+    # (jinak by se audio ztratilo) ani zaostat (jinak by se text zdvojil).
+    assert len(c._stream_segments) == 2
+
+
+def test_stale_stream_loop_does_not_write_into_next_dictation():
+    # Regrese k zaseknutí po opakovaném stisku klávesy: smyčka, která nedoběhla
+    # včas, se nesmí „přilepit" na DALŠÍ diktát a psát do jeho segmentů.
+    import threading
+    import time
+
+    import numpy as np
+
+    from spillway import app as A
+
+    c = A.Controller.__new__(A.Controller)
+    c._lock = threading.Lock()
+    c._cancel = threading.Event()
+    c.state = A.RECORDING
+    c.language = "cs"
+    c._stream_committed = 0
+    c._stream_segments = []
+    c._dictation_id = 7          # běžící diktát
+
+    sr = 16000
+    rng = np.random.default_rng(5)
+    audio = np.concatenate([
+        (0.05 * rng.standard_normal(3 * sr)).astype("float32"),
+        np.zeros(int(0.6 * sr), dtype="float32"),
+        (0.05 * rng.standard_normal(3 * sr)).astype("float32"),
+    ])
+
+    class _Rec:
+        def snapshot(self):
+            return audio
+
+    class _Tx:
+        def transcribe(self, seg, language=None):
+            time.sleep(0.2)      # pomalý přepis — mezitím začne nový diktát
+            return "STARÝ"
+
+    c.recorder, c.transcriber = _Rec(), _Tx()
+
+    th = threading.Thread(target=c._stream_loop, args=(7,), daemon=True)
+    th.start()
+    time.sleep(0.45)
+    with c._lock:                # nový diktát převzal štafetu
+        c._dictation_id = 8
+        c._stream_segments = []
+        c._stream_committed = 0
+    th.join(timeout=3.0)
+
+    assert not th.is_alive()          # stará smyčka skončila
+    assert c._stream_segments == []   # a nic nezapsala do nového diktátu
+    assert c._stream_committed == 0
 
 
 def test_silence_gate_for_mlx():
