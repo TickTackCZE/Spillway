@@ -252,6 +252,26 @@ def test_hotwords_str_joins_terms_and_handles_empty():
     assert _hotwords_str(["  ", ""]) is None  # samé prázdné → žádný bias
 
 
+def test_prompt_has_self_repair_rule_and_resolves_conflict():
+    # Oprava přeřeknutí („ve 4 nebo teda v 5" → „v 5") stojí a padá s promptem:
+    # musí mít spouštěč (opravné vsuvky), protipříklad (holé „nebo" = volba, nechat
+    # obě) a hlavně VYŘEŠENÝ konflikt s pravidlem „nic nevynechávej" — jinak si
+    # instrukce odporují a model nechá obě čísla.
+    from spillway.llm import _SYSTEM_TEMPLATE
+
+    p = _SYSTEM_TEMPLATE
+    assert "PŘEŘEKNUTÍ" in p
+    for marker in ("teda", "vlastně", "pardon", "chci říct"):
+        assert marker in p, f"chybí opravná vsuvka: {marker}"
+    assert "nech OBĚ" in p                       # protipříklad: skutečná volba
+    assert "Když si nejsi jistý" in p            # konzervativní default
+    # Konflikt vyřešen přímo u pravidla „nic nevynechávej" v sekci ZACHOVEJ
+    # (rindex — první výskyt je v nadpisu PŘEŘEKNUTÍ, ta sekce je v promptu dřív).
+    i = p.rindex("nic nevynechávej")
+    assert "výjimka" in p[i:i + 120] and "PŘEŘEKNUTÍ" in p[i:i + 120]
+    assert p.index("PŘEŘEKNUTÍ") < p.index("ZACHOVEJ (přísně)")
+
+
 def test_next_segment_boundary_cuts_in_silence():
     # Streaming: řez segmentu musí padnout DO ticha (ne uprostřed řeči) a až po
     # dostatečné řeči — jinak by se slova sekala a segmenty nešly čistě zřetězit.
