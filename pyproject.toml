@@ -1,6 +1,6 @@
 [project]
 name = "spillway"
-version = "0.0.1"
+version = "1.1.0"
 description = "Lokální diktovací nástroj pro macOS: Whisper (lokální přepis) + Claude (úprava) + univerzální vložení do libovolné aplikace."
 readme = "README.md"
 requires-python = ">=3.12"

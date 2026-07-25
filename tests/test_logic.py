@@ -858,7 +858,7 @@ def test_tray_prefers_cancelling_over_state():
     shown = []
 
     class _HUD:
-        def show(self, s):
+        def show(self, s, at_icon=False):
             shown.append(s)
 
         def hide(self):
@@ -875,6 +875,139 @@ def test_tray_prefers_cancelling_over_state():
     tray.controller.request_cancel()
     tray._tick(None)
     assert shown == ["cancel"], "rušení má přednost před „Zpracovávám“"
+
+
+def test_tray_shows_ready_note_when_text_waits_in_clipboard():
+    # Když text skončí ve schránce (odešel jsi z pole), má u ikony viset lístek
+    # „Připraveno k vložení" — ale běžící diktát má vždycky přednost.
+    from spillway.app import IDLE, PROCESSING, RECORDING
+    from spillway.tray import SpillwayTray
+
+    shown = []
+
+    class _HUD:
+        def show(self, s, at_icon=False):
+            shown.append(s)
+
+        def hide(self):
+            shown.append("hide")
+
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray.hud = _HUD()
+    tray.controller = _controller_stub(IDLE)
+
+    tray.controller.awaiting_paste = False
+    tray._tick(None)
+    assert shown == ["hide"], "nic nečeká → nic se nezobrazuje"
+
+    shown.clear()
+    tray.controller.awaiting_paste = True
+    tray._tick(None)
+    assert shown == ["ready"], "text čeká ve schránce → lístek u ikony"
+
+    # Nový diktát má přednost — lístek nesmí přebít „Nahrávám".
+    for state, expected in ((RECORDING, "rec"), (PROCESSING, "proc")):
+        shown.clear()
+        tray.controller.state = state
+        tray._tick(None)
+        assert shown == [expected]
+
+
+def test_hud_jumps_to_icon_when_user_leaves_target_app():
+    # Odejde-li uživatel z aplikace, kam diktoval, nemá okénko zůstat viset
+    # u kurzoru v cizí appce — přeskočí k ikoně v liště a ukazuje reálný stav.
+    from spillway import context
+    from spillway.app import PROCESSING
+    from spillway.tray import SpillwayTray
+
+    calls = []
+
+    class _HUD:
+        def show(self, s, at_icon=False):
+            calls.append((s, at_icon))
+
+        def hide(self):
+            calls.append(("hide", False))
+
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray.hud = _HUD()
+    tray.controller = _controller_stub(PROCESSING)
+    tray.controller.target_bundle = "com.apple.mail"
+
+    orig = context.frontmost_app
+    try:
+        context.frontmost_app = lambda: ("Mail", "com.apple.mail")
+        tray._tick(None)
+        assert calls == [("proc", False)], "pořád v cílové appce → okénko u kurzoru"
+
+        calls.clear()
+        context.frontmost_app = lambda: ("Safari", "com.apple.Safari")
+        tray._tick(None)
+        assert calls == [("proc", True)], "odešel jinam → okénko k ikoně v liště"
+
+        # Bez známého cíle (nezjistilo se) se chováme jako dřív.
+        calls.clear()
+        tray.controller.target_bundle = None
+        tray._tick(None)
+        assert calls == [("proc", False)]
+    finally:
+        context.frontmost_app = orig
+
+
+def test_new_dictation_clears_pending_paste_note():
+    # Lístek se nesmí táhnout do dalšího diktátu.
+    import threading
+
+    from spillway import app as A
+
+    c = A.Controller.__new__(A.Controller)
+    c._lock = threading.Lock()
+    c._cancel = threading.Event()
+    c.state = A.IDLE
+    c.awaiting_paste = True
+    c._dictation_id = 0
+    c._cancel_min_until = 0.0
+    c.recorder = type("R", (), {"start": lambda self: None})()
+    c.transcriber = type("T", (), {"is_loaded": True})()
+    c._start_thread = None
+    c._arm_watchdog = lambda: None
+
+    import spillway.config as cfg
+
+    orig = cfg.streaming
+    cfg.streaming = lambda: False
+    try:
+        c.on_press()
+    finally:
+        cfg.streaming = orig
+
+    assert c.awaiting_paste is False
+    assert c.state == A.RECORDING
+
+    # A ⌘V (i klik na lístek) ho taky schová.
+    c.awaiting_paste = True
+    c.clear_awaiting_paste()
+    assert c.awaiting_paste is False
+
+
+def test_own_paste_events_are_marked_so_they_are_not_mistaken_for_user():
+    # Spillway svoje ⌘V posílá sám; bez značky by si myslel, že text vložil
+    # uživatel, a předčasně schoval lístek „Připraveno k vložení".
+    from Quartz import CGEventGetIntegerValueField, kCGEventSourceUserData
+
+    from spillway import paste
+
+    seen = []
+    orig_post = paste.CGEventPost
+    paste.CGEventPost = lambda tap, ev: seen.append(
+        CGEventGetIntegerValueField(ev, kCGEventSourceUserData)
+    )
+    try:
+        paste._paste_keystroke()
+    finally:
+        paste.CGEventPost = orig_post
+
+    assert seen and all(v == paste.SPILLWAY_EVENT_MARK for v in seen)
 
 
 def test_leading_space_not_added_on_new_line():

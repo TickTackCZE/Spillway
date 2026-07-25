@@ -35,13 +35,17 @@ from Quartz import (
     kCGEventKeyUp,
     kCGEventTapDisabledByTimeout,
     kCGEventTapDisabledByUserInput,
+    kCGEventSourceUserData,
     kCGEventTapOptionDefault,
     kCGHeadInsertEventTap,
     kCGKeyboardEventKeycode,
     kCGSessionEventTap,
 )
 
+from .paste import SPILLWAY_EVENT_MARK
+
 F5_DICTATION_KEYCODE = 176
+_V_KEYCODE = 9  # ANSI „V" — pro rozpoznání ⌘V/Ctrl+V (vložení uživatelem)
 _CAPTURE_TIMEOUT_S = 6.0
 _MODIFIER_MASK = (
     kCGEventFlagMaskCommand
@@ -62,11 +66,15 @@ class HotkeyListener:
         on_tap_failed: Callable[[str], None] | None = None,
         cancel_keycode: int | None = None,
         on_cancel_key: Callable[[], bool] | None = None,
+        on_paste_key: Callable[[], None] | None = None,
     ):
         self.keycode = keycode
         self.on_press = on_press
         self.on_release = on_release
         self.suppress = suppress
+        # Uživatel si někam vložil text (⌘V / Ctrl+V) — jen oznámení, klávesa jde
+        # VŽDY dál (spolknout ⌘V by rozbilo vkládání v celém systému).
+        self.on_paste_key = on_paste_key
         # Zrušení běžícího zpracování (výchozí Escape). `on_cancel_key` vrátí True,
         # když se opravdu něco zrušilo → jen tehdy klávesu spolkneme. Mimo zpracování
         # musí Escape fungovat úplně normálně (zavírá dialogy, vim, …).
@@ -169,6 +177,23 @@ class HotkeyListener:
                         return None  # zrušeno → klávesu nepouštět dál
                 except Exception:  # noqa: BLE001 — callback nesmí shodit tap
                     pass
+            return event
+
+        # Vložil si uživatel text sám (⌘V / Ctrl+V)? Jen to ohlásíme (schová se
+        # lístek „Připraveno k vložení"). Klávesu NIKDY nespolkneme — jinak by
+        # přestalo fungovat vkládání v celém systému. Vlastní syntetické ⌘V
+        # (z `paste.py`) poznáme podle značky a ignorujeme ho.
+        if (
+            self.on_paste_key is not None
+            and type_ == kCGEventKeyDown
+            and keycode == _V_KEYCODE
+            and CGEventGetFlags(event) & (kCGEventFlagMaskCommand | kCGEventFlagMaskControl)
+            and CGEventGetIntegerValueField(event, kCGEventSourceUserData) != SPILLWAY_EVENT_MARK
+        ):
+            try:
+                self.on_paste_key()
+            except Exception:  # noqa: BLE001 — callback nesmí shodit tap
+                pass
             return event
 
         if keycode != self.keycode:

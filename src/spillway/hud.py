@@ -15,14 +15,16 @@ from __future__ import annotations
 
 import os
 
+import objc
 from AppKit import (
     NSBackingStoreBuffered,
     NSColor,
-    NSEvent,
     NSMakePoint,
     NSMakeRect,
     NSPanel,
+    NSPointInRect,
     NSScreen,
+    NSView,
 )
 from WebKit import WKWebView, WKWebViewConfiguration
 
@@ -43,12 +45,28 @@ _LOGO = design.logo_svg(color="#C7CCF7", width=17, height=17, drops=False)
 _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { background:transparent; }
-  body { font-family:-apple-system,'Raleway',sans-serif; padding:8px; }
+  body { font-family:-apple-system,'Raleway',sans-serif; padding:8px;
+         display:flex; justify-content:center; }
   .card {
     display:none; align-items:center; gap:10px;
     background:rgba(38,38,40,0.96); border:0.5px solid rgba(255,255,255,0.15);
     border-radius:12px; padding:9px 15px 9px 12px;
     box-shadow:0 8px 22px rgba(0,0,0,0.4); width:fit-content;
+  }
+  /* Ukotvení pod ikonu v liště: špička míří nahoru na ikonu (jako u menu). */
+  .card.anchored { margin-top:6px; }
+  #arrow {
+    display:none; position:absolute; top:5px; width:12px; height:12px;
+    background:rgba(38,38,40,0.96);
+    border-left:0.5px solid rgba(255,255,255,0.15);
+    border-top:0.5px solid rgba(255,255,255,0.15);
+    transform:translateX(-50%) rotate(45deg);
+  }
+  .dot.ready { background:#4ADE80; }
+  .kbd {
+    font-size:11px; font-weight:600; color:#F5F5F7; padding:2px 6px; border-radius:5px;
+    background:rgba(255,255,255,0.14); border:0.5px solid rgba(255,255,255,0.18);
+    white-space:nowrap;
   }
   .logo { display:flex; align-items:center; width:17px; height:19px; flex-shrink:0; }
   .logo svg { display:block; }
@@ -61,25 +79,64 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
   .label { color:#F5F5F7; font-size:13px; font-weight:500; letter-spacing:0.2px; white-space:nowrap; line-height:1; }
 </style></head><body>
+  <div id="arrow"></div>
   <div id="card" class="card">
     <span class="logo">__LOGO__</span>
     <span id="dot" class="dot"></span>
     <span id="label" class="label"></span>
+    <span id="kbd" class="kbd" style="display:none">⌘V</span>
   </div>
   <script>
     function setState(s){
-      var c=document.getElementById('card'),d=document.getElementById('dot'),l=document.getElementById('label');
+      var c=document.getElementById('card'),d=document.getElementById('dot'),
+          l=document.getElementById('label'),k=document.getElementById('kbd');
+      k.style.display='none';
       if(s==='rec'){c.style.display='inline-flex';d.className='dot rec';l.textContent='Nahrávám';}
       else if(s==='proc'){c.style.display='inline-flex';d.className='dot proc';l.textContent='Zpracovávám';}
       else if(s==='cancel'){c.style.display='inline-flex';d.className='dot cancel';l.textContent='Ruším';}
+      else if(s==='ready'){c.style.display='inline-flex';d.className='dot ready';
+        l.textContent='Připraveno k vložení';k.style.display='inline-block';}
       else {c.style.display='none';}
+    }
+    // `off` = vzdálenost středu ikony od levého okraje okénka (v px), nebo null
+    // pro režim „u kurzoru" (bez šipky). Šipku držíme uvnitř karty.
+    function setAnchor(off){
+      var c=document.getElementById('card'), a=document.getElementById('arrow');
+      if(off===null||off===undefined){ c.classList.remove('anchored'); a.style.display='none'; return; }
+      c.classList.add('anchored'); a.style.display='block';
+      var r=c.getBoundingClientRect();
+      a.style.left=Math.max(r.left+14, Math.min(off, r.right-14))+'px';
     }
   </script>
 </body></html>""".replace("__LOGO__", _LOGO)
 
 
+class _ClickCatcher(NSView):
+    """Neviditelná vrstva nad WKWebView, která spolehlivě chytne kliknutí.
+
+    Na klik uvnitř nekey okna se u WKWebView spolehnout nedá, tak si ho bereme
+    nativně: `hitTest_` vrátí vždy sebe, takže web-view myš nikdy nedostane.
+    """
+
+    @objc.python_method
+    def set_callback(self, cb) -> None:
+        self._cb = cb
+
+    def hitTest_(self, point):  # noqa: N802
+        # `point` je v souřadnicích nadřazeného view.
+        return self if NSPointInRect(point, self.frame()) else None
+
+    def mouseDown_(self, event):  # noqa: N802, ARG002
+        cb = getattr(self, "_cb", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:  # noqa: BLE001 — klik nesmí nic shodit
+                pass
+
+
 class StatusHUD:
-    W, H = 210, 48
+    W, H = 240, 56
 
     def __init__(self) -> None:
         rect = NSMakeRect(0, 0, self.W, self.H)
@@ -105,10 +162,28 @@ class StatusHUD:
         except Exception:  # noqa: BLE001
             pass
         self.web.loadHTMLString_baseURL_(_HTML, None)
-        self.panel.setContentView_(self.web)
+
+        # Kontejner: web-view (vzhled) + neviditelná klikací vrstva nad ním.
+        container = NSView.alloc().initWithFrame_(rect)
+        container.addSubview_(self.web)
+        self._click = _ClickCatcher.alloc().initWithFrame_(rect)
+        self._click.set_callback(self._on_click)
+        container.addSubview_(self._click)
+        self.panel.setContentView_(container)
 
         self._state = None
         self._visible = False
+        self._anchor_offset = None   # px od levého okraje okna (šipka), None = u kurzoru
+        self.status_button = None    # tlačítko ikony v liště (doplní tray)
+        self.on_dismiss = None       # zavolá se, když uživatel klikne na lístek
+
+    @objc.python_method
+    def _on_click(self) -> None:
+        # Klik má smysl jen u lístku „Připraveno k vložení" — jinak je vrstva
+        # vypnutá (panel ignoruje myš), takže se sem stejně nedostaneme.
+        cb = self.on_dismiss
+        if cb is not None:
+            cb()
 
     def _set_state(self, state: str) -> None:
         if state != self._state:
@@ -141,14 +216,71 @@ class StatusHUD:
                 print(f"[hud] caret AX=({cx:.0f},{cy:.0f},{cw:.0f},{ch:.0f}) → panel=({x:.0f},{y:.0f})")
             self.panel.setFrameOrigin_(NSMakePoint(x, y))
         else:
-            loc = NSEvent.mouseLocation()
-            if _DEBUG:
-                print(f"[hud] bez kurzoru (fallback myš) → ({loc.x:.0f},{loc.y:.0f})")
-            self.panel.setFrameOrigin_(NSMakePoint(loc.x - self.W / 2, loc.y + 24))
+            # Kurzor neznáme (odešel jsi z pole, web/Electron) — místo lítání za
+            # myší se okénko ukotví pod ikonu v liště a špičkou míří na ni.
+            self._anchor_to_status_item()
+            return
+        self._set_anchor(None)  # u kurzoru → bez šipky
 
-    def show(self, state: str) -> None:
+    def _anchor_to_status_item(self) -> None:
+        """Posadí okénko pod ikonu Spillway v liště (šipka míří na ikonu).
+        Když polohu ikony nejde zjistit (schovaná v Bartenderu, výřez), spadne
+        to na pravý horní roh obrazovky."""
+        icon_center_x = None
+        top_y = None
+        button = self.status_button
+        try:
+            if button is not None:
+                win = button.window()
+                if win is not None:
+                    f = win.frame()
+                    icon_center_x = float(f.origin.x) + float(f.size.width) / 2.0
+                    top_y = float(f.origin.y)  # spodní hrana lišty
+        except Exception:  # noqa: BLE001
+            icon_center_x = top_y = None
+
+        screen = NSScreen.mainScreen() or (NSScreen.screens()[0] if NSScreen.screens() else None)
+        if screen is None:
+            return
+        vf = screen.frame()
+        if icon_center_x is None or top_y is None:
+            icon_center_x = float(vf.origin.x) + float(vf.size.width) - 40.0
+            top_y = float(vf.origin.y) + float(vf.size.height) - 24.0
+            if _DEBUG:
+                print("[hud] ikona v liště neznámá → pravý horní roh")
+
+        x = icon_center_x - self.W / 2.0
+        x = max(float(vf.origin.x) + 4.0,
+                min(x, float(vf.origin.x) + float(vf.size.width) - self.W - 4.0))
+        y = top_y - self.H
+        if _DEBUG:
+            print(f"[hud] ukotveno k ikoně: icon_x={icon_center_x:.0f} → panel=({x:.0f},{y:.0f})")
+        self.panel.setFrameOrigin_(NSMakePoint(x, y))
+        self._set_anchor(icon_center_x - x)  # kam v okénku patří špička
+
+    def _set_anchor(self, offset) -> None:
+        if offset == self._anchor_offset:
+            return
+        self._anchor_offset = offset
+        js = "setAnchor(%s)" % ("null" if offset is None else f"{float(offset):.1f}")
+        try:
+            self.web.evaluateJavaScript_completionHandler_(js, None)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def show(self, state: str, at_icon: bool = False) -> None:
+        """`at_icon=True` posadí okénko k ikoně v liště i během nahrávání/zpracování
+        — používá se, když uživatel odejde z cílové aplikace (jinak by okénko
+        zůstalo viset u kurzoru v cizí appce, kam se nic vkládat nebude)."""
         self._set_state(state)
-        self._reposition()
+        if state == "ready" or at_icon:
+            # Lístek „Připraveno k vložení" visí u ikony a dá se na něj kliknout.
+            # Panel je neaktivační, takže klik NEPŘEPNE aplikaci a tvoje pole
+            # nepřijde o kurzor (jinak by následné ⌘V vložilo text jinam).
+            self._anchor_to_status_item()
+        else:
+            self._reposition()
+        self.panel.setIgnoresMouseEvents_(state != "ready")  # jinde ať myš propadává
         if not self._visible:
             self.panel.orderFrontRegardless()
             self._visible = True
@@ -156,5 +288,6 @@ class StatusHUD:
     def hide(self) -> None:
         self._set_state("hide")
         if self._visible:
+            self.panel.setIgnoresMouseEvents_(True)
             self.panel.orderOut_(None)
             self._visible = False

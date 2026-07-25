@@ -18,9 +18,16 @@ from Quartz import (
     CGEventKeyboardSetUnicodeString,
     CGEventPost,
     CGEventSetFlags,
+    CGEventSetIntegerValueField,
     kCGEventFlagMaskCommand,
+    kCGEventSourceUserData,
     kCGHIDEventTap,
 )
+
+# Podpis vlastních syntetických kláves. Náš event tap odchytává i to, co Spillway
+# sám pošle — bez téhle značky by si vlastní ⌘V spletl s tím, že uživatel vložil
+# text ručně (a předčasně schoval lístek „Připraveno k vložení").
+SPILLWAY_EVENT_MARK = 0x59A11
 
 NSPASTEBOARD_TRANSIENT = "org.nspasteboard.TransientType"
 NSPASTEBOARD_CONCEALED = "org.nspasteboard.ConcealedType"
@@ -49,6 +56,7 @@ def _paste_keystroke() -> None:
     for pressed in (True, False):
         ev = CGEventCreateKeyboardEvent(None, V_KEYCODE, pressed)
         CGEventSetFlags(ev, kCGEventFlagMaskCommand)
+        CGEventSetIntegerValueField(ev, kCGEventSourceUserData, SPILLWAY_EVENT_MARK)
         CGEventPost(kCGHIDEventTap, ev)
 
 

@@ -116,6 +116,12 @@ class Controller:
         self._pasting = False
         # Kdy (monotonic) začalo PROCESSING — pro watchdog zaseklého zpracování.
         self._processing_since = 0.0
+        # Text skončil ve schránce (odešel jsi z pole / přepnul appku) a čeká, až
+        # si ho vložíš. Drží lístek „Připraveno k vložení" u ikony v liště.
+        self.awaiting_paste = False
+        # Aplikace, do které se diktuje (bundle ID). Podle ní HUD pozná, že jsi
+        # odešel jinam, a přeskočí od kurzoru nahoru k ikoně v liště.
+        self.target_bundle: str | None = None
         # [F2] Vlákno, které otevírá mikrofon; `_process` na něj počká.
         self._start_thread: threading.Thread | None = None
         # Streaming přepis: vlákno segmentuje řeč v tichu a přepisuje segmenty už
@@ -189,6 +195,11 @@ class Controller:
             threading.Thread(target=self._process, daemon=True).start()
         return True
 
+    def clear_awaiting_paste(self) -> None:
+        """Lístek „Připraveno k vložení" pryč — uživatel text vložil (⌘V), klikl
+        na lístek, nebo začal nový diktát."""
+        self.awaiting_paste = False
+
     def is_cancelling(self) -> bool:
         """True, dokud má HUD ukazovat „Ruším".
 
@@ -218,6 +229,7 @@ class Controller:
             dictation_id = self._dictation_id
         self._cancel.clear()  # nový diktát → zahodit staré zrušení
         self._cancel_min_until = 0.0  # ať „Ruším" nepřebíjí nové „Nahrávám"
+        self.awaiting_paste = False   # starý lístek pryč, jede nový diktát
         print("🔴 nahrávám… (drž F5)")
         # [F2] `recorder.start()` otevírá vstupní zařízení — u Bluetooth mikrofonu
         # (přepnutí do HFP) i stovky ms až sekundu. Na vlákně tapu by to hrozilo
@@ -252,6 +264,12 @@ class Controller:
         stihne pustit klávesu dřív, než se stream otevře, `stop()` v `_process`
         stejně proběhne až po nás — pořadí drží zámek uvnitř Recorderu."""
         try:
+            # Zapamatovat cílovou aplikaci — HUD podle ní pozná odchod jinam.
+            # (Tady, ne v `on_press`: to běží na vlákně tapu a musí být triviální.)
+            try:
+                self.target_bundle = context.frontmost_app()[1]
+            except Exception:  # noqa: BLE001
+                self.target_bundle = None
             self.recorder.start()
         except Exception as exc:  # noqa: BLE001 — [O6] viditelná chyba, ne tichý pád
             print(f"❌ mikrofon se nepodařilo spustit: {exc}")
@@ -565,7 +583,9 @@ class Controller:
             if bundle and now_bundle and now_bundle != bundle:
                 copy_to_clipboard(text)
                 print(f"📋 fokus je jinde ({now_bundle}) → text ve schránce, nevkládám.")
-                notify("Text je ve schránce", "Přepnul jsi jinam — vlož ho ⌘V, kam chceš.")
+                # Lístek u ikony („Připraveno k vložení") to řekne líp než
+                # systémová notifikace — visí, dokud text nevložíš nebo neklikneš.
+                self.awaiting_paste = True
                 outcome = "clipboard"
                 return
 
@@ -576,7 +596,7 @@ class Controller:
             if context.same_field(ctx.get("field_sig"), context.focused_field_signature()) is False:
                 copy_to_clipboard(text)
                 print("📋 jsi v jiném poli → text ve schránce, nevkládám.")
-                notify("Text je ve schránce", "Odešel jsi z pole — vlož ho ⌘V, kam chceš.")
+                self.awaiting_paste = True
                 outcome = "clipboard"
                 return
 
@@ -684,6 +704,7 @@ def main() -> None:
         on_tap_failed=_on_tap_failed,
         cancel_keycode=cancel_keycode,
         on_cancel_key=controller.request_cancel,
+        on_paste_key=controller.clear_awaiting_paste,
     )
     controller.hotkey_listener = listener  # settings okno k němu potřebuje přístup
     listener.start()
