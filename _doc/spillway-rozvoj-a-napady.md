@@ -82,33 +82,6 @@ Levná varianta = jen krok 4 (vloží se, když se vrátíš do pole).
 
 ## 2. Rychlost a chování modelu
 
-### 2.1 Adaptivní uvolňování modelu z paměti
-
-**Jak to je dnes:** model (~1,6 GB) se drží v paměti a po **1 minutě** nečinnosti se uvolní.
-Při dalším diktátu se znovu načte (~1,6 s) — načítání se schová do doby, kdy mluvíš, takže
-o něm většinou nevíš.
-
-**Kde je problém:** když pracuješ a diktuješ třeba každých 90 sekund, model se pořád dokola
-**uvolňuje a načítá**. To je zbytečná práce pro GPU → **topí to a žere baterku**, a u krátkých
-diktátů se načítání nestihne schovat, takže chvíli čekáš.
-
-**Jak by to fungovalo:** práh by se řídil tím, jak aktivně diktuješ.
-- Diktoval jsi v poslední době často → jsi „v zápřahu" → drž model dýl (třeba 5 minut).
-- Nic dlouho → uvolni rychle (1 minuta jako dnes).
-
-Prakticky: počítat diktáty za posledních pár minut a podle toho posouvat práh.
-
-**Co to přinese**
-| | Dnes (pevná 1 min) | Adaptivně |
-|---|---|---|
-| Souvislá práce (diktát každou minutu) | pořád uvolnit/načíst | model zůstane, klid |
-| Občasný diktát | uvolní se | uvolní se stejně |
-| Obsazená paměť | méně | ~1,6 GB držená déle |
-
-**Cena:** drží se víc paměti během aktivní práce. Na 16 GB stroji zanedbatelné.
-**Náročnost:** malá (pár řádků v jednom souboru). **Riziko:** nízké.
-**Verdikt:** rozumné vylepšení, hlavně kvůli teplu a plynulosti.
-
 ### 2.2 Automatické rozpoznání jazyka pro každý diktát
 
 **Jak to je dnes:** jazyk je natvrdo nastavený (čeština). Když nadiktuješ něco anglicky,
@@ -310,6 +283,7 @@ aby se termíny psaly všude stejně.
 | Nápad | Stav | Proč |
 |---|---|---|
 | **Prompt caching** | ⛔ odmítnuto 29. 7. | **Změřeno na reálném provozu:** stabilní část 1 560 tok., trefa 49 % (5 min) / 76 % (1 h) → úspora jen **$0,32–0,45/měsíc** (z $1,95). Nestojí to za změnu tvaru API volání. |
+| **Adaptivní uvolňování modelu z paměti** | ⛔ odmítnuto 30. 7. | **Změřeno:** rozestupy mezi diktáty jsou dvouvrcholové — 32 % do 1 min, 35 % nad 10 min, střed (1–10 min) jen ~34 %. Pevný práh tedy sebere skoro celý přínos a adaptivní logika by přidala nejvýš ~10 p. b. za cenu stavové logiky a stropu proti zaseknutí. Navíc padl původní argument „topí to" — teplo způsobovala opravená chyba dvojího načítání; 7 načtení denně = ~11 s GPU práce, bez měřitelného vlivu na baterku. Rozhodnutí: práh zůstává na **1 minutě**. |
 | **Fronta diktátů** (stisk klávesy během zpracování) | ⛔ odmítnuto | Je správné počkat, než předchozí doběhne. Fronta by jen zvýšila riziko, že text spadne do špatného pole. |
 | **Automatický výběr modelu** (Haiku na krátké, Sonnet na dlouhé) | ⛔ odmítnuto | Ztratila by se kontrola nad tím, co text upravuje. Sonnet je dost rychlý. |
 | **Průběžné zobrazování odpovědi Claude** | ⛔ odmítnuto | K ničemu — text se stejně vkládá až celý. |
