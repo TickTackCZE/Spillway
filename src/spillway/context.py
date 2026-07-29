@@ -316,6 +316,45 @@ def needs_leading_space(field_text: str | None, caret: int | None) -> bool:
     return not before[-1].isspace()
 
 
+# Konce vět, po kterých má nový záznam začít na vlastním řádku.
+_SENTENCE_END = (".", "!", "?", ":", "…")
+
+
+def leading_separator(
+    field_text: str | None,
+    caret: int | None,
+    *,
+    role: str | None = None,
+    allow_newline: bool = True,
+) -> str:
+    """Co vložit PŘED diktovaný text: "" | " " | "\\n".
+
+    Navazuje na `needs_leading_space` — dokud ta říká, že mezera netřeba (začátek
+    řádku, prázdné pole), nevkládá se nic. Když navazujeme za textem, rozhodne se
+    mezi mezerou a novým řádkem:
+
+    - **nový řádek** jen když je pole víceřádkové A předchozí text končí větou.
+      To je případ „ukládám pod sebe další záznam" — jinak by dva záznamy splynuly
+      do jednoho dlouhého řádku oddělené mezerou.
+    - **mezera** ve všech ostatních případech (pokračuji uprostřed věty, po čárce,
+      nebo pole jednořádkové).
+
+    `role` je AX role prvku (`AXTextArea` = víceřádkové). Když ji nemáme (web,
+    Electron), poznáme víceřádkové pole podle toho, že už odřádkování obsahuje.
+    `allow_newline=False` novou řádku zakáže úplně — nutné u vzdálené Windows
+    plochy, kde se text „ťuká" znak po znaku a `\\n` by zafungoval jako Enter
+    (tj. odeslal by rozepsanou zprávu).
+    """
+    if not needs_leading_space(field_text, caret):
+        return ""
+    if not allow_newline:
+        return " "
+    multiline = role == "AXTextArea" or "\n" in (field_text or "")
+    if multiline and field_text[:caret].rstrip().endswith(_SENTENCE_END):
+        return "\n"
+    return " "
+
+
 def caret_at_line_start() -> bool | None:
     """Stojí kurzor na začátku řádku? True/False, None = nezjistitelné.
 

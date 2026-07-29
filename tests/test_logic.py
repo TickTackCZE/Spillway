@@ -182,16 +182,78 @@ def test_glossary_is_framed_as_spelling_only():
     assert "Slovník neurčuje téma" in system
 
 
-def test_ai_profile_demands_compression_and_bullets():
-    # Profil „ai" musí explicitně chtít KRATŠÍ výstup a odrážky — data ukázala,
-    # že model jinak úsečné mluvené poznámky naopak ROZEPISUJE (+9 %).
+def test_ai_profile_compresses_only_by_deleting():
+    # Profil „ai" má zhušťovat a dělat odrážky, ALE jen vypouštěním. Data ukázala,
+    # že dřívější tlak na „výrazně KRATŠÍ" sváděl model k vyrábění hladkých, ale
+    # SMYŠLENÝCH tvrzení (např. „Audi A6, rok 2016" z „auta jmy 26").
     c = _cleaner_with_fake()
     c.clean("nějaké zadání", profile="ai")
     system = c.client.messages.last["system"]
-    assert "KRATŠÍ" in system
+    assert "VYPOUŠTĚNÍM" in system, "zhuštění smí jen vypouštět, ne přeformulovávat"
     assert "ODRÁŽKY" in system or "odrážky" in system
-    # Obsah zůstává nedotknutelný i v agresivním režimu.
-    assert "nepřidávej" in system
+    # Délka nesmí být záminkou k vymýšlení — věrnost musí být výslovně první.
+    assert "DRUHÉ kritérium" in system and "nic nepřibylo" in system
+    # A profil nesmí přebíjet věrnost.
+    assert "VĚROHODNOST" in system and "nadřazená" in system
+
+
+def test_prompt_deletes_garbled_words_instead_of_guessing():
+    # Jádro opravy: ze zkomoleného přepisu model vyráběl existující jména
+    # („kivel"→„Kia", „Duhlojce"→„Jičín"). Nově se nesrozumitelný úsek MAŽE.
+    c = _cleaner_with_fake()
+    c.clean("nějaký text", profile="ai")
+    system = c.client.messages.last["system"]
+
+    assert "VYPUSŤ" in system, "zkomolený úsek se má vypustit"
+    # Konzervativně — mazat jen zjevný nesmysl, při pochybnosti nechat.
+    assert "MAŽ JEN ZJEVNÝ NESMYSL" in system
+    assert "NECH HO" in system
+    # Reálné příklady z historie, na kterých to selhalo.
+    for zdroj in ("kivel", "Kia", "jmy 26", "Audi", "Perucká"):
+        assert zdroj in system, f"chybí reálný příklad: {zdroj}"
+    # Věrnost musí být deklarovaně nejvyšší a stát PŘED cílem.
+    assert system.index("VĚROHODNOST") < system.index("CÍL")
+
+
+def test_prompt_protects_content_from_being_dropped():
+    # Protiváha k mazání: prompt má TŘI licence k vypuštění (nesrozumitelný úsek,
+    # přeřeknutí, vycpávky) — bez výslovné ochrany hrozí opačná chyba, totiž
+    # ztracený požadavek. Výčet povolených výjimek musí být uzavřený.
+    c = _cleaner_with_fake()
+    c.clean("text", profile="ai")
+    system = c.client.messages.last["system"]
+
+    assert "NEZTRÁCEJ OBSAH" in system
+    assert "Nic jiného" in system, "výčet výjimek musí být uzavřený"
+
+
+def test_prompt_distinguishes_typo_fix_from_sound_alike_guess():
+    # Pravidla si nesmí odporovat: opravit zjevný překlep rozeznatelného názvu
+    # („Hradecká Králové") je v pořádku, dosadit podobně znějící jméno („kivel"
+    # → „Kia") ne. Dřív stálo jen „jména a místa NIKDY", což kolidovalo
+    # s pokynem „poznáš-li, co mělo zaznít, oprav pravopis".
+    c = _cleaner_with_fake()
+    c.clean("text", profile="ai")
+    system = c.client.messages.last["system"]
+
+    assert "ZJEVNÝ PŘEKLEP" in system
+    assert "nedosazuj" in system
+    i = system.index("ZJEVNÝ PŘEKLEP")
+    assert "Hradec" in system[i:i + 200] and "kivel" in system[i:i + 200]
+
+
+def test_glossary_terms_are_protected_from_deletion():
+    # Vlastní názvy („Domovoy", „TrackIO") znějí jako zkomolenina — bez ochrany
+    # by je nové pravidlo o mazání smazalo. Slovník je proti mazání chráněný.
+    c = _cleaner_with_fake()
+    c.clean("text", profile="ai", glossary=["Domovoy", "TrackIO"])
+    system = c.client.messages.last["system"]
+
+    assert "Domovoy" in system and "TrackIO" in system
+    assert "CHRÁNĚNÉ" in system
+    assert "nikdy je nemaž" in system
+    # Zároveň se termín nesmí vkládat, když nezazněl (původní bug s „Domovoy").
+    assert "NEZAZNĚL" in system
 
 
 # --- Vzdálená Windows plocha (RDP/AVD): Ctrl+V místo ⌘+V ---------------------
@@ -338,13 +400,12 @@ def test_prompt_has_self_repair_rule_and_resolves_conflict():
     assert "PŘEŘEKNUTÍ" in p
     for marker in ("teda", "vlastně", "pardon", "chci říct"):
         assert marker in p, f"chybí opravná vsuvka: {marker}"
-    assert "nech OBĚ" in p                       # protipříklad: skutečná volba
-    assert "Když si nejsi jistý" in p            # konzervativní default
-    # Konflikt vyřešen přímo u pravidla „nic nevynechávej" v sekci ZACHOVEJ
-    # (rindex — první výskyt je v nadpisu PŘEŘEKNUTÍ, ta sekce je v promptu dřív).
-    i = p.rindex("nic nevynechávej")
-    assert "výjimka" in p[i:i + 120] and "PŘEŘEKNUTÍ" in p[i:i + 120]
-    assert p.index("PŘEŘEKNUTÍ") < p.index("ZACHOVEJ (přísně)")
+    assert "nech obě" in p                       # protipříklad: skutečná volba
+    assert "Nejistota → obě" in p                # konzervativní default
+    # Oprava přeřeknutí je jediné povolené zahození údaje — nesmí kolidovat
+    # s pravidlem, že vše ve výstupu muselo zaznít (to řeší jen PŘIDÁVÁNÍ).
+    assert "musí ZAZNÍT ve vstupu" in p
+    assert p.index("VĚROHODNOST") < p.index("PŘEŘEKNUTÍ")
 
 
 def test_next_segment_boundary_cuts_in_silence():
@@ -1008,6 +1069,57 @@ def test_own_paste_events_are_marked_so_they_are_not_mistaken_for_user():
         paste.CGEventPost = orig_post
 
     assert seen and all(v == paste.SPILLWAY_EVENT_MARK for v in seen)
+
+
+def test_separator_newline_for_next_record_in_multiline_field():
+    # Ukládání záznamů pod sebe: navazuji za dokončenou větou ve víceřádkovém
+    # poli → další záznam patří na nový řádek, ne za mezeru (jinak vznikne jeden
+    # dlouhý řádek se dvěma záznamy).
+    from spillway.context import leading_separator
+
+    txt = "První poznámka."
+    assert leading_separator(txt, len(txt), role="AXTextArea") == "\n"
+    # Roli neznáme (web/Electron) → pozná se podle už existujícího odřádkování.
+    dvour = "První poznámka.\nDruhá poznámka."
+    assert leading_separator(dvour, len(dvour)) == "\n"
+    # Ostatní konce vět taky.
+    for konec in ("Hotovo!", "Půjdeme?", "Seznam:", "a tak dále…"):
+        assert leading_separator(konec, len(konec), role="AXTextArea") == "\n", konec
+
+
+def test_separator_keeps_space_when_continuing_a_sentence():
+    # Uprostřed věty (i po čárce) se pokračuje mezerou — nový řádek by větu roztrhl.
+    from spillway.context import leading_separator
+
+    for txt in ("Dobrý den, chtěl bych", "pokračuji v textu", "první bod,"):
+        assert leading_separator(txt, len(txt), role="AXTextArea") == " ", txt
+
+
+def test_separator_never_breaks_line_in_single_line_field():
+    # Jednořádkové pole (chat, hledání): nový řádek tam nepatří ani po tečce.
+    from spillway.context import leading_separator
+
+    txt = "Dokončená věta."
+    assert leading_separator(txt, len(txt), role="AXTextField") == " "
+
+
+def test_separator_never_breaks_line_on_remote_windows():
+    # Na RDP/AVD se text ťuká znak po znaku → „\n" by zafungoval jako Enter
+    # a odeslal rozepsanou zprávu. Tam nový řádek nikdy.
+    from spillway.context import leading_separator
+
+    txt = "Dokončená věta."
+    assert leading_separator(txt, len(txt), role="AXTextArea", allow_newline=False) == " "
+
+
+def test_separator_stays_silent_where_space_was_not_wanted():
+    # Regrese: kde dosud nevznikala mezera, nesmí nově vzniknout ani odřádkování.
+    from spillway.context import leading_separator
+
+    assert leading_separator("", 0) == ""                    # prázdné pole
+    assert leading_separator(None, None) == ""               # pole nezjistitelné
+    assert leading_separator("Text.\n", 6, role="AXTextArea") == ""   # už na novém řádku
+    assert leading_separator("Text. ", 6, role="AXTextArea") == ""    # už je tam mezera
 
 
 def test_leading_space_not_added_on_new_line():

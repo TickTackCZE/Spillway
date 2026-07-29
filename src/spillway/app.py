@@ -557,16 +557,27 @@ class Controller:
                 # odpovědi (max_tokens), náklad reálně vznikl a musí se započítat.
                 llm_cost = getattr(self.cleaner, "last_cost_usd", 0.0) or 0.0
 
-            # Chytrá mezera: jen když kurzor stojí těsně za nemezerovým znakem.
+            # Chytrý oddělovač: nic / mezera / nový řádek. Nový řádek jen když
+            # navazuji za dokončenou větou ve víceřádkovém poli — tam jde o další
+            # záznam pod sebe, ne o pokračování věty.
             # `at_line_start` má přednost — rich-text pole (Mail) nevrací koncový
             # konec řádku, takže z textu by to po Enteru vypadalo jako konec slova
-            # a vloudila by se mezera navíc na začátek nového řádku.
+            # a vloudil by se oddělovač navíc na začátek nového řádku.
             if config.auto_space() and not text[:1].isspace():
                 at_line_start = context.caret_at_line_start()
-                if at_line_start is not True and context.needs_leading_space(
-                    field_text, caret
-                ):
-                    text = " " + text
+                if at_line_start is not True:
+                    sig = ctx.get("field_sig")
+                    role = sig[0] if sig else None
+                    sep = context.leading_separator(
+                        field_text, caret,
+                        role=role,
+                        # RDP/AVD se ťuká znak po znaku → „\n" by byl Enter (odeslání).
+                        allow_newline=not win_target,
+                    )
+                    if sep:
+                        text = sep + text
+                    if sep == "\n":
+                        print(f"   ↳ nový řádek (pole: {role or 'role neznámá'})")
 
             # [F5] Poslední šance zrušit. Za tímhle bodem už se vkládá a rušit
             # nejde — `_pasting` zajistí, že Escape projde normálně dál a diktát
