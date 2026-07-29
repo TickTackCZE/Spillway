@@ -2,7 +2,8 @@
 
 > Kam dál. **Nic tady není hotové ani slíbené** — je to podklad k rozhodování, ne plán práce
 > (ten je v [spillway-plan-implementace.md](spillway-plan-implementace.md)).
-> Stav aplikace: **v1.1** · Aktualizováno: 25. 7. 2026
+> Stav aplikace: **v1.1** · Aktualizováno: 30. 7. 2026
+> **Sekce 6 = odmítnuto / neaktuální. Ty nápady se do návrhů nevracejí.**
 
 ---
 
@@ -18,6 +19,7 @@
 **Úprava textu (Claude)**
 - Opraví interpunkci, pády, zkomolené anglické termíny; vycpávky („ehm", „prostě") vyhodí.
 - **Pozná přeřeknutí**: „sejdeme se ve 4 nebo teda v 5" → „sejdeme se v 5".
+- **Nevymýšlí si** — věrohodnost je nadřazená všemu; nesrozumitelné zkomoleniny maže místo hádání, termíny ze slovníku jsou chráněné.
 - **Formátuje podle cílové aplikace** — jiný tón pro e-mail, chat, editor, prompt do AI.
 - **Angličtina zůstává anglicky** (nepřekládá „meeting" na „schůzka").
 - **Uživatelský slovník** — termíny, které má psát přesně.
@@ -25,7 +27,7 @@
 
 **Vkládání**
 - Kamkoliv přes schránku + `⌘V`; do **vzdálené Windows plochy** (RDP/AVD) naťukáním znaků.
-- **Chytrá mezera** — doplní mezeru, když navazuješ uprostřed věty.
+- **Chytrý oddělovač** — nic / mezera / nový řádek: uprostřed věty mezera, za dokončenou větou ve víceřádkovém poli nový řádek (další záznam pod sebe).
 - Když **odejdeš z pole nebo z aplikace**, text se nevloží jinam — zůstane ve schránce.
 
 **Okénko u kurzoru (HUD)**
@@ -301,23 +303,26 @@ aby se termíny psaly všude stejně.
 
 ---
 
-## 6. Zamítnuté nápady (a proč)
+## 6. ⛔ ODMÍTNUTO / NEAKTUÁLNÍ — už nenavrhovat
 
-Ať se nevracejí dokola:
+**Tohle se nesmí vracet do návrhů.** Každý řádek je uzavřené rozhodnutí; když se objeví znovu, musí k tomu být nový důvod (nová data, změněné zadání), ne opakování.
 
-| Nápad | Proč ne |
-|---|---|
-| **Fronta diktátů** (stisk klávesy během zpracování) | Nedává smysl — je správné počkat, než předchozí doběhne. Fronta by jen zvýšila riziko, že text spadne do špatného pole. |
-| **Automatický výběr modelu** (Haiku na krátké, Sonnet na dlouhé) | Ztratila by se kontrola nad tím, co text upravuje. Sonnet je dost rychlý. |
-| **Předplnění promptu (caching)** | Úspora je malá a část zadání se stejně mění podle aplikace. |
-| **Průběžné zobrazování odpovědi Claude** | K ničemu — text se stejně vkládá až celý. |
-| **Vrácení posledního vložení (undo)** | Ve většině aplikací funguje běžné `⌘Z`. |
-| **Náhled a potvrzení před vložením** | Další okno navíc, které zdržuje; smysl diktování je, že text prostě naskočí. |
-| **„Kopírovat místo vložit" zvláštní zkratkou** | Nahrazeno lepším nápadem — diktování bez zaklikaného pole (viz 3.3). |
-| **„Přemluvit" (nahradit poslední vložení)** | Jednodušší je smazat a nadiktovat znovu. |
-| **Tichý režim / pauza** | Řeší se sám — bez řeči se nic nepřepisuje (je tam filtr ticha). |
-| **Slovník jako páry „špatně → správně"** | Ruční slovník stačí; automatické učení je slepá ulička (viz 7). |
-| **Restart GPU vlákna při zaseknutí** | Zaseknutí se po opravách neděje. Řešit až kdyby nastalo. |
+| Nápad | Stav | Proč |
+|---|---|---|
+| **Prompt caching** | ⛔ odmítnuto 29. 7. | **Změřeno na reálném provozu:** stabilní část 1 560 tok., trefa 49 % (5 min) / 76 % (1 h) → úspora jen **$0,32–0,45/měsíc** (z $1,95). Nestojí to za změnu tvaru API volání. |
+| **Fronta diktátů** (stisk klávesy během zpracování) | ⛔ odmítnuto | Je správné počkat, než předchozí doběhne. Fronta by jen zvýšila riziko, že text spadne do špatného pole. |
+| **Automatický výběr modelu** (Haiku na krátké, Sonnet na dlouhé) | ⛔ odmítnuto | Ztratila by se kontrola nad tím, co text upravuje. Sonnet je dost rychlý. |
+| **Průběžné zobrazování odpovědi Claude** | ⛔ odmítnuto | K ničemu — text se stejně vkládá až celý. |
+| **Vrácení posledního vložení (undo)** | ⛔ odmítnuto | Ve většině aplikací funguje běžné `⌘Z`. |
+| **Náhled a potvrzení před vložením** | ⛔ odmítnuto | Další okno navíc, které zdržuje; smysl diktování je, že text prostě naskočí. |
+| **„Kopírovat místo vložit" zvláštní zkratkou** | 🕓 nahrazeno | Nahrazeno lepším nápadem — diktování bez zaklikaného pole (viz 3.3). |
+| **„Přemluvit" (nahradit poslední vložení)** | ⛔ odmítnuto | Jednodušší je smazat a nadiktovat znovu. |
+| **Tichý režim / pauza** | ⛔ odmítnuto | Řeší se sám — bez řeči se nic nepřepisuje (je tam filtr ticha). |
+| **Slovník jako páry „špatně → správně"** | ⛔ odmítnuto | Ruční slovník stačí; automatické učení je slepá ulička (viz 7). |
+| **Restart GPU vlákna při zaseknutí** | 🕓 neaktuální | Zaseknutí se po opravách neděje. Otevřít až kdyby nastalo. |
+
+### ✅ Hotovo — už to není nápad, ale funkce
+Streaming přepisu · oprava přeřeknutí („teda v 5") · prompt proti vymýšlení (věrohodnost nad cílem, mazání zkomolenin, chráněný slovník) · chytrý oddělovač (mezera vs. nový řádek) · HUD u ikony + lístek „Připraveno k vložení" · schránka při odchodu z pole · vkládání do RDP/AVD · statistiky, náklady, historie s kopírováním.
 
 ---
 
