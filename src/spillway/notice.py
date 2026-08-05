@@ -27,6 +27,7 @@ from AppKit import (
 from WebKit import WKWebView, WKWebViewConfiguration
 
 from . import design, models
+from .webview import run_js
 
 _BORDERLESS = 0
 _NONACTIVATING = 1 << 7
@@ -200,17 +201,9 @@ class NoticePanel:
 
     @objc.python_method
     def _render(self, state: dict) -> bool:
-        """Překreslí kartičku. Dokud se stránka nenačte, jen si stav pamatuje —
-        volání JS do nenačtené stránky jinak končí `undefined is not a function`
-        a v logu se to hromadí."""
-        from .settings_window import _run_js
-
-        try:
-            if self.web.isLoading():
-                return False
-        except Exception:  # noqa: BLE001
-            pass
-        _run_js(self.web, "render(" + json.dumps(state, ensure_ascii=False) + ")", "notice")
+        """Překreslí kartičku. O nenačtenou stránku se stará `_run_js` — volání
+        odloží, dokud se stránka nedonačte, místo aby ho zahodil."""
+        run_js(self.web, "render(" + json.dumps(state, ensure_ascii=False) + ")", "notice")
         return True
 
     @objc.python_method

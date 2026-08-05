@@ -1982,3 +1982,65 @@ def test_delivery_pastes_when_field_check_is_inconclusive(monkeypatch):
     # kdežto nevložení bez varování vypadá, jako by se diktát ztratil.
     ok, _why = ctx.decide_delivery(target_bundle="app.A", field_sig=None, win_target=False)
     assert ok is True
+
+
+# --- Doručování JS do oken ---------------------------------------------------
+def test_run_js_is_defined_exactly_once():
+    import pathlib
+    import re
+
+    # REGRESE: helper existoval ve třech modulech zvlášť. Když se v něm našla
+    # chyba, opravila se jen jedna kopie — a dvě okna zůstala rozbitá.
+    hits = []
+    for f in sorted(pathlib.Path("src/spillway").glob("*.py")):
+        src = f.read_text(encoding="utf-8")
+        if re.search(r"(?m)^def _?run_js\(", src):
+            hits.append(f.name)
+    assert hits == ["webview.py"], f"run_js má být na jednom místě, je v {hits}"
+
+
+def test_run_js_retries_instead_of_dropping_while_page_loads(monkeypatch):
+    from spillway import webview
+
+    # REGRESE: pojistka „do načítající se stránky neposílej" zahazovala i push,
+    # který okno naplňuje. `isLoading()` je totiž ještě True ve chvíli, kdy
+    # DOMContentLoaded už proběhl — okno pak zůstalo na „Zjišťuji…" navždy.
+    class FakeView:
+        def __init__(self):
+            self.loading = True
+            self.ran = []
+
+        def isLoading(self):  # noqa: N802
+            return self.loading
+
+        def evaluateJavaScript_completionHandler_(self, js, handler):  # noqa: N802
+            self.ran.append(js)
+            handler(None, None)
+
+    scheduled = []
+    monkeypatch.setattr(webview.AppHelper, "callLater",
+                        lambda delay, fn: scheduled.append(fn))
+
+    view = FakeView()
+    webview.run_js(view, "hello()", "test")
+    assert view.ran == [], "během načítání se nemá posílat"
+    assert scheduled, "…ale musí se to odložit, ne zahodit"
+
+    view.loading = False
+    scheduled.pop()()          # simulovat doběhnutí odkladu
+    assert view.ran == ["hello()"], "po načtení se volání musí doručit"
+
+
+def test_run_js_gives_up_eventually(monkeypatch):
+    from spillway import webview
+
+    class Stuck:
+        def isLoading(self):  # noqa: N802
+            return True
+
+    calls = []
+    monkeypatch.setattr(webview.AppHelper, "callLater",
+                        lambda delay, fn: calls.append(fn))
+    # Nekonečné odkládání by drželo frontu hlavního vlákna — musí to mít strop.
+    webview.run_js(Stuck(), "x()", "test", _tries=webview._MAX_TRIES)
+    assert not calls, "po vyčerpání pokusů se už nesmí plánovat další"

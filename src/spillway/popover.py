@@ -29,28 +29,7 @@ from WebKit import WKWebView, WKWebViewConfiguration
 
 from . import config, design, models, stats
 from .paste import copy_to_clipboard
-
-
-def _run_js(webview, js: str, what: str = "") -> None:
-    """Spustí JS v okně a **nahlásí chybu**.
-
-    Dřív se všude předával `None` jako completion handler, takže výjimka v JS
-    zmizela beze stopy — okno pak tiše ukazovalo zastaralý stav a nešlo poznat
-    proč. Chyba jde do logu vždy (ne jen v diagnostice): tichý nefunkční stav
-    je horší než řádek v logu.
-    """
-    if webview is None:
-        return
-
-    def done(_result, err) -> None:
-        if err is not None:
-            print(f"❌ JS selhal{' (' + what + ')' if what else ''}: {err}")
-
-    try:
-        webview.evaluateJavaScript_completionHandler_(js, done)
-    except Exception as exc:  # noqa: BLE001
-        print(f"❌ JS nešlo spustit{' (' + what + ')' if what else ''}: {exc}")
-
+from .webview import run_js
 
 _DBG_PATH = os.path.expanduser("~/Library/Logs/Spillway/popover-debug.log")
 
@@ -351,7 +330,7 @@ class _PopBridge(NSObject):
             if text:
                 copy_to_clipboard(text)
                 if self.webview is not None:
-                    _run_js(self.webview, "toast('Zkopírováno')")
+                    run_js(self.webview, "toast('Zkopírováno')", "popover")
 
     def push_state(self) -> None:
         if self.webview is None:
@@ -406,7 +385,7 @@ class _PopBridge(NSObject):
             ],
         }
         js = "applyState(" + json.dumps(state, ensure_ascii=False) + ")"
-        _run_js(self.webview, js)
+        run_js(self.webview, js, "popover")
 
 
 def _human_count(n: int) -> str:
