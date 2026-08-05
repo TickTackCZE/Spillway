@@ -178,6 +178,9 @@ def download(on_progress=None, cancel: threading.Event | None = None) -> str:
 
     def _watch() -> None:
         while not done.wait(0.5):
+            if cancel is not None and cancel.is_set():
+                return   # dál to nemá smysl hlásit; úklid dělá volající
+
             if on_progress is not None:
                 try:
                     # `_dir_size(target)`, ne `size_bytes()` — to hledá
@@ -233,6 +236,7 @@ _dl_lock = threading.Lock()
 _dl_thread: threading.Thread | None = None
 _dl_listeners: list = []
 _dl_state: dict = {"downloading": False, "percent": 0, "progress_text": ""}
+_dl_cancel = threading.Event()
 
 
 def download_state() -> dict:
@@ -270,12 +274,18 @@ def _emit(**state) -> None:
             pass
 
 
+def cancel_download() -> None:
+    """Požádá běžící stahování o ukončení. Nedokončená složka se uklidí."""
+    _dl_cancel.set()
+
+
 def download_async() -> bool:
     """Spustí stahování na pozadí. False = už běží, druhé se nespouští."""
     global _dl_thread
     with _dl_lock:
         if _dl_thread is not None and _dl_thread.is_alive():
             return False
+        _dl_cancel.clear()
 
         def run() -> None:
             def progress(done_b: int, total_b: int) -> None:
@@ -284,10 +294,13 @@ def download_async() -> bool:
                       progress_text=f"{human_size(done_b)} z {human_size(total_b)}")
 
             try:
-                download(on_progress=progress)
+                download(on_progress=progress, cancel=_dl_cancel)
                 print(f"⬇️  model stažen ({human_size(size_bytes())})")
             except Exception as exc:  # noqa: BLE001 — chyba sítě nesmí shodit UI
-                print(f"❌ stažení modelu selhalo: {exc}")
+                if _dl_cancel.is_set():
+                    print("⏹️  stahování modelu zrušeno")
+                else:
+                    print(f"❌ stažení modelu selhalo: {exc}")
             _emit(downloading=False, percent=0, progress_text="")
 
         _dl_thread = threading.Thread(target=run, daemon=True)

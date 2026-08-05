@@ -203,7 +203,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   <div class="foot">
     <div class="row">
       <button class="primary" onclick="send({action:'open_settings'})">Nastavení</button>
-      <button onclick="send({action:'open_help'})">Nápověda</button>
+      <button class="primary" onclick="send({action:'open_help'})">Nápověda</button>
     </div>
     <div class="quit"><button class="danger" onclick="send({action:'quit'})">Konec</button></div>
   </div>

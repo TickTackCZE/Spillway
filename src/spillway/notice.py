@@ -42,64 +42,81 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     --border:rgba(59,130,246,0.18);} }
   html,body{background:transparent;}
   body{font-family:-apple-system,'Raleway',sans-serif;padding:8px;}
-  /* Šipka míří doprava, na okno vedle. */
   .wrap{position:relative;}
   .card{background:var(--surface);border:0.5px solid var(--border);border-radius:12px;
     padding:12px 13px;box-shadow:0 8px 26px rgba(0,0,0,0.42);}
+  /* Šipka míří doprava, na okno vedle. */
   .arrow{position:absolute;right:-6px;top:26px;width:12px;height:12px;
     background:var(--surface);border-right:0.5px solid var(--border);
     border-top:0.5px solid var(--border);transform:rotate(45deg);}
-  .head{display:flex;align-items:center;gap:7px;margin-bottom:9px;}
+  .head{display:flex;align-items:center;gap:7px;margin-bottom:10px;}
   .head .t{font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;
     color:var(--muted);}
-  .item{display:flex;gap:9px;padding:8px 0;}
+  /* Každé sdělení je blok: text + jeho VLASTNÍ tlačítka hned pod ním. */
+  .item{padding:9px 0;}
   .item + .item{border-top:0.5px solid var(--border);}
+  .item .msg{display:flex;gap:9px;}
   .item .dot{width:8px;height:8px;border-radius:50%;flex:none;margin-top:4px;}
-  .item .msg{font-size:12px;color:var(--text);line-height:1.45;}
-  .item .msg small{display:block;font-size:11px;color:var(--muted);margin-top:2px;}
-  button{width:100%;border:0;border-radius:9px;background:var(--danger);color:#fff;
-    font:inherit;font-size:12px;font-weight:600;padding:9px;cursor:pointer;margin-top:10px;}
+  .item .txt{font-size:12px;color:var(--text);line-height:1.45;}
+  .item .txt small{display:block;font-size:11px;color:var(--muted);margin-top:2px;}
+  .acts{display:flex;gap:6px;margin-top:9px;}
+  button{flex:1;border:0;border-radius:8px;font:inherit;font-size:12px;font-weight:600;
+    padding:8px;cursor:pointer;background:var(--accent);color:#fff;}
+  button.ghost{background:transparent;border:0.5px solid var(--border);color:var(--muted);}
   button:disabled{opacity:.6;cursor:default;}
-  .prog{height:5px;background:rgba(148,163,184,0.22);border-radius:3px;overflow:hidden;margin-top:9px;}
-  .prog>div{height:100%;width:0;background:var(--danger);border-radius:3px;transition:width .3s;}
+  /* Drobný ukazatel TĚSNĚ nad tlačítkem, ne pod dělící čárou. */
+  .prog{height:4px;background:rgba(148,163,184,0.22);border-radius:2px;overflow:hidden;margin-top:9px;}
+  .prog>div{height:100%;width:0;background:var(--accent);border-radius:2px;transition:width .3s;}
+  .pct{font-size:11px;color:var(--muted);margin-top:5px;}
 </style></head><body>
   <div class="wrap">
     <div class="arrow"></div>
     <div class="card">
       <div class="head">__LOGO__<span class="t">Spillway</span></div>
-      <div id="items"></div>
-      <div class="prog" id="prog" style="display:none;"><div id="bar"></div></div>
-      <button id="btn" style="display:none;" onclick="grab()">Stáhnout model</button>
+
+      <div class="item" id="itModel" style="display:none;">
+        <div class="msg"><span class="dot" style="background:var(--danger)"></span>
+          <span class="txt"><b>Nefunguje, dokud nestáhneš model</b>
+            <small id="modelSub">Přepis běží u tebe v počítači. Stáhne se jednou, 1,6 GB.</small></span></div>
+        <div class="prog" id="prog" style="display:none;"><div id="bar"></div></div>
+        <div class="acts"><button id="btnModel" onclick="modelBtn()">Stáhnout model</button></div>
+      </div>
+
+      <div class="item" id="itKey" style="display:none;">
+        <div class="msg"><span class="dot" style="background:var(--warn)"></span>
+          <span class="txt"><b>Nemáš zadaný API klíč pro AI zpracování</b>
+            <small>Bez něj se řeč jen přepíše. S ním ji Claude ještě upraví.</small></span></div>
+        <div class="acts">
+          <button onclick="say('key_open')">Zadat</button>
+          <button class="ghost" onclick="say('key_snooze')">Neupozorňovat</button>
+        </div>
+      </div>
     </div>
   </div>
 <script>
-  function grab(){
-    var b=document.getElementById('btn');
-    b.disabled=true; b.textContent='Stahuji…';
-    try{ window.webkit.messageHandlers.spillway.postMessage({action:'download'}); }catch(e){}
+  function say(a){ try{ window.webkit.messageHandlers.spillway.postMessage({action:a}); }catch(e){} }
+  var _dl = false;
+  function modelBtn(){
+    // Během stahování se ze stejného tlačítka stane „Zrušit".
+    say(_dl ? 'cancel' : 'download');
+    document.getElementById('btnModel').disabled = true;
   }
   function render(s){
-    var box=document.getElementById('items'), html='';
-    if(!s.model){
-      html += '<div class="item"><span class="dot" style="background:var(--danger)"></span>'
-           + '<span class="msg"><b>Nefunguje, dokud nestáhneš model</b>'
-           + '<small>Přepis běží u tebe v počítači. Stáhne se jednou, 1,6 GB.</small></span></div>';
-    }
-    if(!s.key){
-      html += '<div class="item"><span class="dot" style="background:var(--warn)"></span>'
-           + '<span class="msg"><b>Nemáš zadaný API klíč pro AI zpracování</b>'
-           + '<small>Bez něj se řeč jen přepíše. S ním ji Claude ještě upraví.</small></span></div>';
-    }
-    box.innerHTML = html;
-    var btn=document.getElementById('btn'), prog=document.getElementById('prog');
-    btn.style.display = s.model ? 'none' : 'block';
+    document.getElementById('itModel').style.display = s.model ? 'none' : 'block';
+    document.getElementById('itKey').style.display = s.key ? 'none' : 'block';
+    _dl = !!s.downloading;
+    var b = document.getElementById('btnModel'), prog = document.getElementById('prog');
+    b.disabled = false;
     if(s.downloading){
-      prog.style.display='block';
-      document.getElementById('bar').style.width=(s.percent||0)+'%';
-      btn.disabled=true; btn.textContent='Stahuji '+(s.percent||0)+' %';
+      prog.style.display = 'block';
+      document.getElementById('bar').style.width = (s.percent||0) + '%';
+      document.getElementById('modelSub').textContent = (s.progress_text || 'Stahuji…');
+      b.textContent = 'Zrušit'; b.classList.add('ghost');
     } else {
-      prog.style.display='none';
-      btn.disabled=false; btn.textContent='Stáhnout model';
+      prog.style.display = 'none';
+      document.getElementById('modelSub').textContent =
+        'Přepis běží u tebe v počítači. Stáhne se jednou, 1,6 GB.';
+      b.textContent = 'Stáhnout model'; b.classList.remove('ghost');
     }
   }
 </script>
@@ -119,9 +136,14 @@ class _NoticeBridge(objc.lookUpClass("NSObject")):
     def userContentController_didReceiveScriptMessage_(self, ucc, message):  # noqa: N802
         try:
             body = dict(message.body()) if hasattr(message.body(), "keys") else {}
-            if str(body.get("action", "")) == "download":
+            action = str(body.get("action", ""))
+            if action == "download":
                 models.add_download_listener(self._owner.on_download_state)
                 models.download_async()
+            elif action == "cancel":
+                models.cancel_download()
+            elif action in ("key_open", "key_snooze"):
+                self._owner.on_key_action(action)
         except Exception as exc:  # noqa: BLE001
             print(f"[notice] chyba: {exc}")
 
@@ -129,7 +151,7 @@ class _NoticeBridge(objc.lookUpClass("NSObject")):
 class NoticePanel:
     """Kartička s upozorněním vedle jiného okna."""
 
-    W, H = 276, 268
+    W, H = 288, 300
 
     def __init__(self) -> None:
         rect = NSMakeRect(0, 0, self.W, self.H)
@@ -156,6 +178,7 @@ class NoticePanel:
 
         self._visible = False
         self._last: dict | None = None
+        self.on_key = None       # doplní tray: 'key_open' | 'key_snooze'
 
     # --- vzhled ---------------------------------------------------------------
 
@@ -181,6 +204,15 @@ class NoticePanel:
                 self.hide()
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
+
+    @objc.python_method
+    def on_key_action(self, what: str) -> None:
+        cb = self.on_key
+        if cb is not None:
+            try:
+                cb(what)
+            except Exception:  # noqa: BLE001 — klik nesmí nic shodit
+                pass
 
     # --- poloha a viditelnost -------------------------------------------------
 

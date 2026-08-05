@@ -55,6 +55,13 @@ class SpillwayTray(rumps.App):
         except Exception as exc:  # noqa: BLE001
             print(f"(HUD nedostupný: {exc})")
 
+        # Po dokončení stahování musí stav dojít do VŠECH oken, ne jen do toho,
+        # ze kterého se klikalo — jinak by menu ukazovalo starý stav, dokud
+        # ho uživatel nezavře a neotevře.
+        try:
+            models.add_download_listener(self._on_download_anywhere)
+        except Exception:  # noqa: BLE001
+            pass
         # Kartička s upozorněním vedle popoveru/nastavení (chybí model nebo klíč).
         self._notice = None
         self._notice_checked_at = 0.0
@@ -116,11 +123,33 @@ class SpillwayTray(rumps.App):
         except Exception:  # noqa: BLE001 — uvítání nesmí shodit start
             pass
 
+    def _on_download_anywhere(self, _st: dict) -> None:
+        """Stav stahování se změnil — přetlač ho do popoveru i nastavení."""
+        from Foundation import NSOperationQueue
+
+        def apply() -> None:
+            self._notice_checked_at = 0.0     # ať se stav přepočítá hned
+            try:
+                pop = getattr(self, "_popover", None)
+                if pop is not None and pop.is_shown():
+                    pop.bridge.push_state()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                win = self._settings
+                if win is not None and win.is_visible():
+                    win.refresh()
+            except Exception:  # noqa: BLE001
+                pass
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
+
     def _setup_state(self) -> tuple[bool, bool]:
-        """(je model, je klíč) — přepočítává se nejvýš jednou za 2 s.
+        """(je model, má se řešit klíč) — přepočítává se nejvýš jednou za 2 s.
 
         Čte se z časovače 6,7×/s; bez tlumení by to zbytečně sahalo na disk
-        a do Klíčenky při každém tiku.
+        a do Klíčenky při každém tiku. Odložené upozornění na klíč se tváří
+        jako by klíč byl — dokud odklad neuplyne.
         """
         import time as _t
 
@@ -129,28 +158,41 @@ class SpillwayTray(rumps.App):
             return self._notice_state
         self._notice_checked_at = now
         try:
-            self._notice_state = (models.is_ready(), bool(config.get_api_key()))
+            key_ok = bool(config.get_api_key())
+            if not key_ok:
+                snooze = float(settings.get("key_notice_snooze_until", 0) or 0)
+                key_ok = _t.time() < snooze
+            self._notice_state = (models.is_ready(), key_ok)
         except Exception:  # noqa: BLE001
             self._notice_state = (True, True)   # při chybě neotravovat
         return self._notice_state
 
-    def _update_notice(self) -> None:
-        """Kartička visí vedle otevřeného popoveru nebo nastavení; jinak je pryč."""
-        model_ok, key_ok = self._setup_state()
-
-        frame = None
+    def _notice_target(self):  # noqa: ANN201
+        """Rám okna, u kterého má kartička viset — nebo None, když žádné není."""
         pop = getattr(self, "_popover", None)
         if pop is not None and pop.is_shown():
             try:
-                frame = pop.popover.contentViewController().view().window().frame()
+                return pop.popover.contentViewController().view().window().frame()
             except Exception:  # noqa: BLE001
-                frame = None
-        if frame is None:
-            win = self._settings
-            if win is not None and win.is_visible():
-                frame = win.window.frame()
+                return None
+        win = self._settings
+        if win is not None and win.is_visible():
+            try:
+                return win.window.frame()
+            except Exception:  # noqa: BLE001
+                return None
+        return None
 
+    def _update_notice(self) -> None:
+        """Kartička visí vedle otevřeného popoveru nebo nastavení; jinak je pryč."""
+        frame = self._notice_target()
         if frame is None:
+            if self._notice is not None:
+                self._notice.hide()
+            return
+
+        model_ok, key_ok = self._setup_state()
+        if model_ok and key_ok:
             if self._notice is not None:
                 self._notice.hide()
             return
@@ -160,11 +202,26 @@ class SpillwayTray(rumps.App):
                 from .notice import NoticePanel
 
                 self._notice = NoticePanel()
+                self._notice.on_key = self._notice_key_action
+                # Odběr postupu NASTÁLE — stahování se dá spustit i odjinud
+                # (Nastavení) a kartička se musí dozvědět tak jako tak.
+                models.add_download_listener(self._notice.on_download_state)
             except Exception as exc:  # noqa: BLE001 — bez kartičky se dá žít
                 print(f"(upozornění nedostupné: {exc})")
                 self._notice_state = (True, True)
                 return
         self._notice.show_beside(frame, model_ready=model_ok, has_key=key_ok)
+
+    def _notice_key_action(self, what: str) -> None:
+        """Tlačítka u hlášky o API klíči."""
+        import time as _t
+
+        if what == "key_snooze":
+            settings.set("key_notice_snooze_until", _t.time() + 7 * 24 * 3600)
+            self._notice_checked_at = 0.0     # projeví se hned, ne za 2 s
+            print("🔕 upozornění na API klíč odloženo o týden")
+            return
+        self.open_settings(None)
 
     def _hud_clicked(self) -> None:
         """Klik na okénko: chybí-li model, otevře Nastavení u karty K provozu;

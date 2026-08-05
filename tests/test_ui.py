@@ -321,7 +321,12 @@ def test_notice_panel_states_the_two_conditions():
     assert "Nemáš zadaný API klíč pro AI zpracování" in html
     assert "var(--danger)" in html and "var(--warn)" in html
     # A tlačítko, které model stáhne rovnou odtud.
-    assert "Stáhnout model" in html and "action:'download'" in html
+    assert "Stáhnout model" in html and "'download'" in html
+    # Během stahování se ze stejného tlačítka stane Zrušit.
+    assert "Zrušit" in html and "'cancel'" in html
+    # U klíče dvě tlačítka vedle sebe.
+    assert "'key_open'" in html and "'key_snooze'" in html
+    assert 'class="acts"' in html
 
 
 def test_windows_no_longer_carry_inline_warnings():
@@ -366,3 +371,25 @@ def test_ai_options_are_locked_without_key():
     assert "classList.toggle('locked', !has)" in html
     # A dítě „Číst kontext pole" se řídí zamčeným rodičem.
     assert "!master.classList.contains('locked')" in html
+
+
+def test_help_starts_with_setup_before_how_it_works():
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    # Nový uživatel musí nejdřív vědět, co si má nastavit — teprve pak, jak se diktuje.
+    assert html.index("Než začneš") < html.index("Jak to funguje")
+    setup = html[html.index("Než začneš"):html.index("Jak to funguje")]
+    assert "Stáhnout model" in setup and "Zadat API klíč" in setup
+    assert "nepojede" in setup, "u modelu musí být jasné, že bez něj to nejede"
+    assert "Volitelné" in setup, "u klíče musí být jasné, že povinný není"
+    # A odkaz na kartu, kde se to nastaví.
+    assert "showPage('settings','cardSetup')" in setup
+
+
+def test_popover_footer_buttons_share_one_style():
+    from spillway import popover
+
+    # „Nastavení" a „Nápověda" jsou rovnocenné akce → stejná barva.
+    row = popover._HTML[popover._HTML.index('<div class="row">'):popover._HTML.index('class="quit"')]
+    assert row.count('class="primary"') == 2

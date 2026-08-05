@@ -82,13 +82,13 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   *{margin:0;padding:0;box-sizing:border-box;}
   :root{ /* DARK · Půlnoční (výchozí) */
     --bg:#0F1117;--surface:#1A1F2E;--surface2:#252D42;--text:#E2E8F0;--muted:#94A3B8;
-    --accent:#818CF8;--border:rgba(129,140,248,0.2);--onaccent:#0F1117;--success:#4ADE80;--danger:#E11D48;--shadow:rgba(0,0,0,0.5);--chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2394A3B8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");}
+    --accent:#818CF8;--border:rgba(129,140,248,0.2);--onaccent:#0F1117;--success:#4ADE80;--warn:#F59E0B;--danger:#E11D48;--shadow:rgba(0,0,0,0.5);--chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2394A3B8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");}
   @media (prefers-color-scheme: light){ :root:not([data-theme]){
     --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#EEF2F8;--text:#1E293B;--muted:#64748B;
-    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--danger:#E11D48;--shadow:rgba(30,41,59,0.18);--chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2364748B' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");} }
+    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--warn:#D97706;--danger:#E11D48;--shadow:rgba(30,41,59,0.18);--chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2364748B' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");} }
   :root[data-theme="light"]{
     --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#EEF2F8;--text:#1E293B;--muted:#64748B;--shadow:rgba(30,41,59,0.18);
-    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--danger:#E11D48;
+    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--warn:#D97706;--danger:#E11D48;
     --chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2364748B' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");}
   html,body{background:var(--surface);}
   body{font-family:-apple-system,'Raleway',sans-serif;color:var(--text);padding:22px;}
@@ -303,6 +303,25 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   </div><!-- /pageSettings -->
 
   <div id="pageHelp" class="hidden">
+
+  <div class="card"><h3>Než začneš</h3>
+    <div class="branch">
+      <div>
+        <div class="bt"><span class="dot" style="background:var(--danger)"></span>1&nbsp;· Stáhnout model</div>
+        <div class="bd">Přepis běží u tebe v počítači, ne na serveru. Model se stáhne
+          jednou (1,6&nbsp;GB) a zůstane i po aktualizaci. <b>Bez něj diktování nepojede.</b></div>
+      </div>
+      <div>
+        <div class="bt"><span class="dot" style="background:var(--warn)"></span>2&nbsp;· Zadat API klíč</div>
+        <div class="bd">Volitelné. Bez klíče se řeč jen přepíše; s ním ji Claude ještě
+          upraví&nbsp;— doplní interpunkci a naformátuje text podle aplikace.</div>
+      </div>
+    </div>
+    <div class="rowt" style="border-bottom:none;padding-top:12px;">
+      <div class="l">Obojí najdeš v Nastavení<small>Karta „K provozu"</small></div>
+      <button class="btn" onclick="showPage('settings','cardSetup')">Otevřít</button>
+    </div>
+  </div>
 
   <div class="card"><h3>Jak to funguje</h3>
     <div class="flow">

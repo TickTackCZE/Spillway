@@ -40,6 +40,9 @@ _DEFAULTS: dict = {
     "diagnostics": "",
     # Uvítání po instalaci se ukáže jednou; pak se klíč přepne na True.
     "seen_setup": False,
+    # Do kdy (unix čas) neotravovat s chybějícím API klíčem. Klíč je
+    # volitelný, takže musí jít umlčet — ale jen dočasně, ne navždy.
+    "key_notice_snooze_until": 0,
 }
 
 
