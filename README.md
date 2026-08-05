@@ -10,7 +10,7 @@ naťukání do RDP/AVD). Běží na pozadí jako **menu-bar app**.
 > Stav: **v1.2** — funkční, nasazeno. Data neopouštějí stroj kromě jednoho
 > textového API volání do Claude. API klíč jen v macOS Keychain.
 
-- 📄 [Analýza](_doc/spillway-analyza.md) · [Plán implementace](_doc/spillway-plan-implementace.md) · [Rozvoj a nápady](_doc/spillway-rozvoj-a-napady.md)
+- 📄 [Analýza](_doc/spillway-analyza.md) · [Plán implementace](_doc/spillway-plan-implementace.md) · [Rozvoj a nápady](_doc/spillway-rozvoj-a-napady.md) · [Log rozhodnutí](_doc/spillway-log.md)
 
 ## Co umí
 

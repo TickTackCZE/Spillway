@@ -80,7 +80,7 @@ Log: `~/Library/Logs/Spillway/spillway.log` (obsahuje `AXIsProcessTrusted`, stav
 
 ## Směr produktu (v1.3+)
 
-Rozhodnuto: aplikace se bude **monetizovat** (viz [rozvoj a nápady, sekce 6](spillway-rozvoj-a-napady.md)).
+Rozhodnuto: aplikace se bude **monetizovat** (viz [rozvoj a nápady](spillway-rozvoj-a-napady.md), oblast Monetizace).
 Model: **roční licence (~1 000 Kč) + vlastní API klíč uživatele.** Nulový variabilní
 náklad, žádný proxy v cestě diktátu. Licence je podepsaný klíč ověřovaný **offline**
 (Ed25519), prodejna typu Lemon Squeezy generuje klíče i řeší DPH — vlastní server zatím
