@@ -81,13 +81,17 @@ Log: `~/Library/Logs/Spillway/spillway.log` (obsahuje `AXIsProcessTrusted`, stav
 ## Směr produktu (v1.3+)
 
 Rozhodnuto: aplikace se bude **monetizovat** (viz [rozvoj a nápady, sekce 6](spillway-rozvoj-a-napady.md)).
-Dvě varianty — **vlastní klíč** (levnější, nulový variabilní náklad) a **náš klíč s limitem**
-(pohodlnější, vyžaduje proxy). Potřebuje: notarizaci, licencování s offline ověřením,
-platební bránu (Paddle kvůli DPH), automatické aktualizace a export diagnostiky.
+Model: **roční licence (~1 000 Kč) + vlastní API klíč uživatele.** Nulový variabilní
+náklad, žádný proxy v cestě diktátu. Licence je podepsaný klíč ověřovaný **offline**
+(Ed25519), prodejna typu Lemon Squeezy generuje klíče i řeší DPH — vlastní server zatím
+netřeba. Před prodejem: **notarizace**, ověřování licence, automatické aktualizace,
+export diagnostiky, průvodce oprávněními, anglické UI. Repozitář musí přestat být veřejný.
 
 Největší nová funkce v plánu je **režim schůzka** — dlouhý přepis čistě lokálně, bez AI
-a bez sítě. Klíčová technická otázka: zachytávání zvuku systému (macOS 14.4+ to umí bez
-ovladače) a běh přes hodinové nahrávky (dnešní strop je 5 minut v RAM).
+a bez sítě. Dělí se na dva scénáře: **Mac na stole** (mikrofon slyší všechny — žádné zachytávání
+zvuku systému, snadná půlka) a **online hovor** (nutné zachytit zvuk systému; macOS 14.4+
+to umí bez ovladače). Otevřené: běh přes hodinové nahrávky (dnešní strop je 5 minut v RAM)
+a rozlišení mluvčích přes ONNX modely, bez tažení PyTorch do bundlu.
 
 ---
 

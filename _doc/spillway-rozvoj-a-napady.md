@@ -165,7 +165,17 @@ interní porady), to není detail.
 **Jako bonus je to zadarmo na provoz** — žádné volání API, tedy nulový variabilní náklad.
 Sedne to přesně do varianty s vlastním klíčem (viz Monetizace).
 
-### Kde je skutečný háček — slyšet druhou stranu
+### Dva scénáře, každý s jinou obtížností
+
+**A) Mac leží na stole a poslouchá místnost.** Mikrofon zachytí všechny — **žádné
+zachytávání zvuku systému není potřeba**, žádné čtvrté oprávnění, žádný ovladač.
+Technicky je to jen „dlouhé nahrávání + přepis po částech". **Tohle je ta snadná půlka
+a dá se udělat první.**
+
+**B) Online hovor (Teams, Meet, Zoom).** Tady mikrofon slyší jen tebe, protistrana jde
+do sluchátek. Musí se zachytit zvuk systému:
+
+### Kde je háček u online hovorů
 
 Bez zvuku protistrany je funkce k ničemu; mikrofon zachytí jen tebe. macOS **od 14.4**
 umí zachytit zvuk běžících aplikací (Core Audio process taps) **bez instalace ovladače**.
@@ -175,6 +185,42 @@ Loopback), což je bariéra, o kterou většina lidí zakopne.
 - Pravděpodobně přibude **čtvrté oprávnění** (zachytávání zvuku / nahrávání obrazovky).
 - Míchání dvou zdrojů (mikrofon + systém) do jedné stopy je práce navíc; oddělené stopy
   by naopak umožnily rozlišit „já" vs „ostatní" bez skutečné diarizace.
+
+
+### Rozlišení mluvčích (diarizace) — hypotéza
+
+**Nápad:** u přepisu schůzky odlišit, kdo co řekl — „Mluvčí 1 / 2 / 3", případně
+pojmenovaní ručně.
+
+**Jde to lokálně?** Ano, ale záleží jak. Standardní nástroj (`pyannote.audio`) stojí
+na PyTorch, což by aplikaci nafouklo **o stovky MB až jednotky GB** — Spillway dnes
+PyTorch nepoužívá (přepis jede přes mlx a ctranslate2). Reálnější cesta jsou **ONNX
+modely** (např. sherpa-onnx): segmentace + hlasové otisky, dohromady **desítky MB**
+a bez nové těžké závislosti. Tudy by se to dalo udělat, aniž by se porušil slib
+„všechno lokálně".
+
+**Jak to funguje:** zvuk se rozseká na úseky, ke každému se spočítá „otisk hlasu"
+(embedding), otisky se shlukují a shluk = mluvčí. Whisper zvlášť dodá text s časy;
+obojí se pak spojí přes časovou osu.
+
+**Kde to bude drhnout — a je fér to čekat:**
+- **Jeden mikrofon uprostřed stolu je nejhorší možný vstup.** Vzdálenost, odrazy
+  v místnosti a různá hlasitost mluvčích přesnost citelně srážejí. Kvalita bude jinde
+  než u nahrávky, kde má každý svůj mikrofon.
+- **Překrývající se řeč** (lidé si skáčou do řeči) se rozdělit v podstatě nedá.
+- **Podobné hlasy** splynou do jednoho mluvčího.
+- **Chyba na hranici střídání** — poslední slova se často připíšou předchozímu mluvčímu.
+  Zlepšuje to zarovnání po slovech, což je práce navíc.
+- Výsledek jsou **anonymní čísla**, ne jména. Pojmenování musí udělat uživatel ručně
+  (nebo by šlo hlasy „naučit", což je další funkce).
+
+**Jak to prodat, aniž by to zklamalo:** nabízet to jako **pomůcku pro orientaci**
+v přepisu („kdo asi mluvil"), ne jako spolehlivý zápis. Uživatel si jména doplní sám
+a případné chyby opraví.
+
+**Náročnost:** střední až velká — **1–2 týdny** nad hotovým režimem schůzky, z toho
+podstatná část na spojení s časovými značkami přepisu a na ověření na reálné nahrávce
+z porady. **Doporučení:** až jako druhý krok, po tom, co samotný přepis schůzky funguje.
 
 ### Další věci, které se musí vyřešit
 
@@ -319,28 +365,84 @@ Náklad ale **roste se spotřebou**, zatímco předplatné je fixní:
 Z těch +21 Kč navíc ukousne platební brána a DPH. **Aktivní uživatel by byl ztrátový** —
 a právě ten má nejsilnější důvod platit.
 
-### 6.2 Dvě varianty produktu
-- **Vlastní klíč** — uživatel si zadá klíč k Anthropic (případně jinému poskytovateli,
-  viz 2.2). **Nulový variabilní náklad**, žádný server v cestě diktátu. Levnější varianta.
-  Bariéra: uživatel si musí založit účet a nabít kredit.
-- **S naším klíčem** — pohodlné, klik a jede. Vyžaduje **proxy server** (klíč nesmí do
-  aplikace), měření spotřeby a **limit**, jinak platí předchozí tabulka. Dražší varianta.
+### 6.2 Zvolený model: roční licence + vlastní klíč
 
-Režim schůzka (viz 3) sedí do levnější varianty ideálně — neplatí se za něj nic.
+**Rozhodnuto:** uživatel si platí **roční licenci** (řádově 1 000 Kč) a **API klíč má
+vlastní**. Není to SaaS ani jednorázový nákup — licence má platnost, po roce se obnovuje.
 
-### 6.3 Co je potřeba postavit
-| Věc | Proč | Odhad |
-|---|---|---|
-| **Notarizace u Apple** ($99/rok) | dnes self-signed → Gatekeeper hlásí „nelze ověřit vývojáře" a cizí člověk to nenainstaluje | 1 den |
-| **Licencování** | klíč, aktivace, kontrola platnosti. **Musí fungovat offline** (podepsaný token, ověření bez sítě, občasná kontrola) — jinak přestane fungovat ve vlaku | 1–2 týdny |
-| **Platební brána** | Paddle je *merchant of record* → vyřeší DPH v celé EU za tebe; Stripe ne | 3–5 dní |
-| **Proxy na API** | jen pro dražší variantu; s ním přichází odpovědnost za zneužití a provozní náklad | 1–2 týdny |
-| **Automatické aktualizace** (Sparkle) | bez nich zůstanou zákazníci na rozbité verzi | 2–3 dny |
-| **Export diagnostiky** (5.2) | jinak je podpora neúnosná | ½ dne |
-| **Průvodce oprávněními** (4.1) | tři povolení; když jedno chybí, „prostě to nefunguje" → okamžitý refund | 3–4 dny |
-| **Anglické UI** | bez něj je trh jen ČR+SK | 3–5 dní |
+**Proč zrovna tohle:**
+- **Nulový variabilní náklad.** Tokeny platí uživatel svému poskytovateli. Nezáleží,
+  jestli diktuje desetkrát nebo tisíckrát denně — příjem je stejný a nikdy ztrátový.
+- **Žádný proxy server v cestě diktátu.** Odpadá měření spotřeby, limity, ochrana proti
+  zneužití, odpovědnost za cizí provoz i provozní náklad.
+- **Nic navíc o uživateli neuchováváš.** Sedí to k tomu, co je na produktu prodejné.
+- Obnova po roce dává důvod na aplikaci dál pracovat, což jednorázový prodej nemá.
 
-### 6.4 Co se snadno přehlédne
+**Cena vs. náklad uživatele:** změřeno **29 Kč/měsíc** na API při ~10 diktátech denně.
+Uživatel tedy zaplatí ~1 000 Kč licence + ~350 Kč ročně za tokeny. Proti konkurenci
+(3 000–4 300 Kč/rok) je to i tak výrazně levnější — a s lepším soukromím.
+
+**Bariéra, kterou to má:** uživatel si musí založit účet u Anthropic a nabít kredit.
+Část zájemců na tom odpadne. Zmírňuje to podpora více poskytovatelů (viz 2.2) — kdo už
+platí OpenAI, klíč má.
+
+### 6.3 Licencování a uzavření kódu
+
+**Ověřování licence — offline, s podpisem.** Licenční klíč je **podepsaný údaj**
+(Ed25519): komu patří, do kdy platí, kolik zařízení. Aplikace v sobě nese jen **veřejný**
+klíč a ověří podpis **bez internetu**. Privátní klíč zůstává u autora.
+- Funguje ve vlaku i bez sítě — zásadní, aplikace je nástroj na každodenní psaní.
+- Občasná kontrola u serveru jen kvůli odvolání ukradených klíčů; **selhání sítě nikdy
+  nesmí zablokovat práci** (např. tolerance 30 dní).
+- **Server na začátku není potřeba vůbec.** Prodejny typu Lemon Squeezy / Gumroad
+  generují i ověřují licenční klíče samy a fungují jako *merchant of record* (vyřeší
+  DPH). Vlastní server dává smysl teprve při větších počtech.
+
+**Uzavření zdrojového kódu — realistický pohled.** Dnešní bundle (PyInstaller) obsahuje
+Python bytecode, který jde poměrně snadno převést zpátky na čitelný kód. Kdo chce, najde
+i ověřování licence a obejde ho.
+- **Nuitka** (překlad do C) je z dostupných cest nejúčinnější — vznikne skutečná binárka.
+  Riziko: kombinace s PyObjC a mlx není samozřejmá, chce ověřit na malém pokusu dřív,
+  než se na to spolehne.
+- **Obfuskace kupuje čas, ne bezpečí.** U nástroje za tisícovku ročně, cíleného na lidi,
+  kteří řeší práci a ne crackování, je rozumné počítat s určitým únikem a soustředit se
+  na to, aby **zaplatit bylo snazší než hledat crack**.
+- Co má smysl udělat vždy: ověření licence nesmí být jediná podmínka na jednom místě,
+  a **repozitář musí přestat být veřejný** dřív, než se začne prodávat.
+
+
+### 6.4 Co je potřeba postavit
+
+Pořadí je záměrné — bez prvních tří se nedá prodat vůbec.
+
+| # | Věc | Proč | Odhad |
+|---|---|---|---|
+| 1 | **Notarizace u Apple** ($99/rok) | dnes self-signed → Gatekeeper hlásí „nelze ověřit vývojáře" a cizí člověk aplikaci nenainstaluje | 1 den |
+| 2 | **Ověřování licence** | podepsaný klíč, kontrola offline, tolerance výpadku sítě (viz 6.3) | 3–5 dní |
+| 3 | **Prodejna s licenčními klíči** | Lemon Squeezy / Gumroad — generují klíče a řeší DPH; **vlastní server zatím netřeba** | 1–2 dny |
+| 4 | **Automatické aktualizace** (Sparkle) | bez nich zůstanou zákazníci na rozbité verzi | 2–3 dny |
+| 5 | **Export diagnostiky** (5.2) | jinak je podpora neúnosná | ½ dne |
+| 6 | **Průvodce oprávněními** (4.1) | tři povolení; když jedno chybí, „prostě to nefunguje" → okamžitý refund | 3–4 dny |
+| 7 | **Anglické UI** | bez něj je trh jen ČR+SK | 3–5 dní |
+| 8 | **Průvodce zadáním API klíče** | u varianty s vlastním klíčem je to první překážka, kterou uživatel potká | 1–2 dny |
+
+**Dohromady ~3–4 týdny** k první prodejné verzi. Žádná z položek není funkce aplikace —
+je to infrastruktura kolem produktu, které je dnes nula.
+
+### 6.5 Kdyby se přece jen limitovalo — ne na kusy
+
+Kdyby v budoucnu vznikla varianta „s naším klíčem", limit **nesmí být na počet diktátů**.
+Změřeno na 126 diktátech: medián řeči **5,7 s**, nejdelší **140 s** — tedy **25× rozdíl**.
+Deset procent nejdelších diktátů spotřebuje **polovinu všech minut**, ale v počtu kusů
+váží stejně jako pětisekundovky.
+
+**Férová metrika jsou minuty řeči.** Korelace mezi délkou řeči a skutečnou cenou vyšla
+**0,93** — minuty tedy cenu sledují téměř přesně. Aplikace je navíc už dnes měří
+(`speech_s`, délka bez ticha), takže k tomu není potřeba nic nového.
+
+Pro představu: dnešní provoz je **~50 minut řeči měsíčně**.
+
+### 6.6 Co se snadno přehlédne
 - **Pasivní příjem není pasivní.** macOS každý rok něco rozbije (oprávnění, Accessibility),
   API mění modely a ceny. Nejblíž pasivnímu je **jednorázová licence s vlastním klíčem** —
   žádný server, žádné měření, žádné předplatné ke správě.
