@@ -438,6 +438,21 @@ class Controller:
         return box.get("r")
 
     def _process(self) -> None:
+        # Bez modelu nemá smysl pouštět pipeline: mlx by si ho začal TIŠE
+        # stahovat (1,6 GB na GPU vlákně) a aplikace by na minutu zamrzla.
+        # Nahrávku zahodíme a necháme svítit výzvu ke stažení.
+        if getattr(self, "model_missing", False):
+            print("⛔ diktát zahozen — chybí model pro přepis")
+            try:
+                self.recorder.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            with self._lock:
+                self.state = IDLE
+                self._processing_since = 0.0
+            self._cancel_watchdog()
+            return
+
         t_start = time.perf_counter()
         audio_secs = 0.0
         speech_secs = 0.0  # skutečná řeč bez ticha — pro „tempo řeči"

@@ -251,16 +251,22 @@ def download(on_progress=None, cancel: threading.Event | None = None) -> str:
     return target
 
 
-def path_for_transcribe() -> str:
-    """Co předat mlx-whisperu.
+class ModelMissing(Exception):
+    """Model pro přepis není na stroji. Stáhnout ho smí JEN uživatel vědomě."""
 
-    Když je model kdekoliv na stroji, vrátí **lokální cestu** (mlx ji použije
-    přímo, bez sítě). Když ne, vrátí jméno repozitáře — mlx si ho stáhne sám.
-    To je záchranná brzda, ne běžná cesta: bez ukazatele průběhu vypadá první
-    diktát, jako by aplikace zamrzla.
+
+def path_for_transcribe() -> str:
+    """Lokální cesta k modelu pro mlx-whisper.
+
+    **Vyhazuje `ModelMissing`, když model chybí.** Dřív se vracelo jméno
+    repozitáře jako „záchranná brzda" — jenže mlx si ho pak tiše stáhl sám,
+    1,6 GB na GPU vlákně, a celá aplikace na minutu zamrzla bez vysvětlení.
+    Stahování patří výhradně do UI, kde je vidět průběh a jde ho zrušit.
     """
     found = find_local()
-    return found[0] if found else REPO
+    if found is None:
+        raise ModelMissing(REPO)
+    return found[0]
 
 
 # --- Sdílené stahování ------------------------------------------------------

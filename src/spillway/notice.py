@@ -194,14 +194,24 @@ class NoticePanel:
         self._last: dict | None = None
         self.on_key = None       # doplní tray: 'key_open' | 'key_snooze'
         self._parent = None      # okno, ke kterému je kartička připnutá
+        self._pos = None         # poslední poloha, ať se nepřesazuje zbytečně
 
     # --- vzhled ---------------------------------------------------------------
 
     @objc.python_method
-    def _render(self, state: dict) -> None:
+    def _render(self, state: dict) -> bool:
+        """Překreslí kartičku. Dokud se stránka nenačte, jen si stav pamatuje —
+        volání JS do nenačtené stránky jinak končí `undefined is not a function`
+        a v logu se to hromadí."""
         from .settings_window import _run_js
 
+        try:
+            if self.web.isLoading():
+                return False
+        except Exception:  # noqa: BLE001
+            pass
         _run_js(self.web, "render(" + json.dumps(state, ensure_ascii=False) + ")", "notice")
+        return True
 
     @objc.python_method
     def on_download_state(self, st: dict) -> None:
@@ -213,8 +223,8 @@ class NoticePanel:
             base.update({"model": models.is_ready(),
                          "downloading": st.get("downloading", False),
                          "percent": st.get("percent", 0)})
-            self._last = base
-            self._render(base)
+            if self._render(base):
+                self._last = base
             if base["model"]:
                 self.hide()
 
@@ -248,8 +258,13 @@ class NoticePanel:
             return
 
         state = {"model": model_ready, "key": has_key, **models.download_state()}
-        self._last = state
-        self._render(state)
+        # Překreslovat JEN při změně. Volá se z časovače 6,7×/s a každé
+        # `evaluateJavaScript` je práce navíc na hlavním vlákně — bez téhle
+        # podmínky se UI během stahování znatelně seká.
+        # `_last` se zapamatuje JEN když se opravdu vykreslilo — jinak by se
+        # stav u nenačtené stránky označil za hotový a už se nikdy nepřekreslil.
+        if state != self._last and self._render(state):
+            self._last = state
 
         pf = parent.frame()
         gap = 8.0
@@ -264,7 +279,9 @@ class NoticePanel:
                 x = float(pf.origin.x) + float(pf.size.width) + gap
             y = max(bottom + 4.0, y)
 
-        self.panel.setFrameOrigin_(NSMakePoint(x, y))
+        if (x, y) != self._pos:
+            self._pos = (x, y)
+            self.panel.setFrameOrigin_(NSMakePoint(x, y))
 
         if self._parent is not parent:
             self._detach()

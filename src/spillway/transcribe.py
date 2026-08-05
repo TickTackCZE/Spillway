@@ -243,6 +243,8 @@ class Transcriber:
 
         try:
             return bool(self._mlx.submit(_check))
+        except models.ModelMissing:
+            return False   # není co kontrolovat; stáhne ho uživatel z UI
         except Exception as exc:  # noqa: BLE001
             print(f"mlx health-check selhal: {exc}")
             return False

@@ -1590,17 +1590,36 @@ def test_model_readiness_needs_both_config_and_weights(monkeypatch, tmp_path):
     assert models.is_ready() is True
 
 
-def test_model_path_falls_back_to_repo_when_missing(monkeypatch, tmp_path):
+def test_missing_model_raises_instead_of_triggering_hidden_download(monkeypatch, tmp_path):
+    import pytest
+
     from spillway import models
 
     monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path))
     monkeypatch.setattr(models, "_hf_cache_dir", lambda: None)
-    # Bez staženého modelu se předá jméno repozitáře — mlx si poradí sám.
-    assert models.path_for_transcribe() == models.REPO
+
+    # REGRESE: dřív se vracelo jméno repozitáře jako „záchranná brzda". mlx si
+    # ho pak TIŠE stáhl sám — 1,6 GB na GPU vlákně a aplikace na minutu zamrzla.
+    # Stahování patří výhradně do UI, kde je vidět průběh a jde ho zrušit.
+    with pytest.raises(models.ModelMissing):
+        models.path_for_transcribe()
 
     (tmp_path / "config.json").write_text("{}", encoding="utf-8")
     (tmp_path / "weights.npz").write_bytes(b"x")
     assert models.path_for_transcribe() == str(tmp_path)
+
+
+def test_pipeline_refuses_to_run_without_model():
+    import pathlib
+
+    # A druhá pojistka: i kdyby se cesta někde protlačila, pipeline se bez
+    # modelu vůbec nespustí a nahrávku zahodí.
+    src = pathlib.Path("src/spillway/app.py").read_text(encoding="utf-8")
+    body = src[src.index("def _process(self) -> None:"):]
+    body = body[:body.index("t_start = time.perf_counter()")]
+    assert 'model_missing' in body and "return" in body, (
+        "_process musí bez modelu skončit hned, ne pustit přepis"
+    )
 
 
 def test_model_size_and_removal(monkeypatch, tmp_path):

@@ -469,7 +469,10 @@ class SpillwayTray(rumps.App):
             at_icon = self._left_target_app() or getattr(
                 self.controller, "no_field", False
             )
-            if getattr(self.controller, "model_missing", False) and state != IDLE:
+            # Výzva ke stažení drží, dokud na ni uživatel neklikne — i po
+            # návratu do klidu. Přeskočit ji na „Zpracovávám" nedává smysl,
+            # protože bez modelu se nic nezpracovává.
+            if getattr(self.controller, "model_missing", False):
                 self.hud.show("nomodel")
             elif state == RECORDING:
                 self.hud.show("rec", at_icon=at_icon)

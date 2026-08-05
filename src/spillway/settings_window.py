@@ -40,6 +40,13 @@ def _run_js(webview, js: str, what: str = "") -> None:
     """
     if webview is None:
         return
+    try:
+        # Do nenačtené stránky nemá smysl posílat nic — skončilo by to
+        # „undefined is not a function" a log by se tím zaplnil.
+        if webview.isLoading():
+            return
+    except Exception:  # noqa: BLE001
+        pass
 
     def done(_result, err) -> None:
         if err is not None:
