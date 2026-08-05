@@ -97,7 +97,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="Spillway.app",
-    icon=os.path.join(ROOT, "build", "icon.icns"),
+    icon=os.path.join(ROOT, "build", "spillway-icon-v12.icns"),
     bundle_identifier="com.spillway.app",
     info_plist={
         "CFBundleName": "Spillway",

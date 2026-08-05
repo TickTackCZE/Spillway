@@ -105,6 +105,9 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .status .dot{width:7px;height:7px;border-radius:50%;background:var(--success);}
   .rowt{display:flex;align-items:center;justify-content:space-between;padding:9px 0;gap:12px;}
   .rowt:not(:last-child){border-bottom:0.5px solid var(--border);}
+  /* Řádek, po kterém následuje podnastavení, čáru nemá — jinak by se
+     vizuálně oddělil od svého dítěte, ke kterému patří. */
+  .rowt:has(+ .rowt.sub){border-bottom:none;}
   .rowt .l{font-size:13px;} .rowt .l small{display:block;font-size:11px;color:var(--muted);margin-top:1px;}
   .rowt.sub{margin-left:12px;padding-left:12px;border-left:2px solid var(--border);border-bottom:none;}
   .rowt.disabled{opacity:.45;}
@@ -211,7 +214,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div id="keyset" style="display:none">
       <div class="rowt" style="border-bottom:none;padding:0;">
         <div class="l"><span style="color:var(--success)">●</span> Klíč je nastavený<small>uložený v macOS Keychain</small></div>
-        <button class="btn danger" onclick="send({action:'delkey'})">Smazat</button>
+        <button class="btn danger" data-label="Smazat" onclick="armReset(this,'delkey')">Smazat</button>
       </div>
     </div>
     <div id="keyunset" style="display:none">

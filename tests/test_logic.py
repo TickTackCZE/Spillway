@@ -1774,3 +1774,31 @@ def test_help_links_point_at_existing_cards():
     assert targets, "nápověda má odkazovat aspoň na jednu kartu"
     for t in targets:
         assert f'id="{t}"' in html, f"odkaz na neexistující kartu: {t}"
+
+
+def test_destructive_actions_all_require_confirmation():
+    import re
+
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    # Každá nevratná akce musí projít pětisekundovým potvrzením — smazání
+    # API klíče na to dřív jako jediné nečekalo a mazalo na první klik.
+    danger = re.findall(r'<button class="btn danger"[^>]*>', html)
+    assert danger, "očekáváme aspoň jedno destruktivní tlačítko"
+    for btn in danger:
+        assert "armReset(this," in btn, f"maže bez potvrzení: {btn}"
+        assert "data-label=" in btn, f"chybí popisek pro návrat do klidu: {btn}"
+
+    # Konkrétně tři: reset statistik, reset historie, smazání klíče.
+    for action in ("reset_stats", "reset_history", "delkey"):
+        assert f"armReset(this,'{action}')" in html, action
+
+
+def test_parent_row_has_no_divider_above_its_suboption():
+    from spillway import settings_window as sw
+
+    css = sw._HTML[:sw._HTML.index("</style>")]
+    # Čára mezi „Odesílání do AI modelu" a jeho podnastavením je vizuálně
+    # oddělovala, i když patří k sobě.
+    assert ".rowt:has(+ .rowt.sub){border-bottom:none;}" in css
