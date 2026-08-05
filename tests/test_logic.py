@@ -1726,3 +1726,37 @@ def test_help_shows_no_hardcoded_configurable_keys():
             )
     # ⌘V je systémová zkratka pro vložení, ta se nenastavuje — smí být natvrdo.
     assert "⌘V" in help_part
+
+
+def test_help_has_no_orphan_punctuation_or_inline_emphasis():
+    import re
+
+    from spillway import settings_window as sw
+
+    part = sw._HTML[sw._HTML.index('id="pageHelp"'):sw._HTML.index("/pageHelp")]
+
+    # Zvýraznění uprostřed věty láme řádek a interpunkce za ním padá na začátek
+    # dalšího — přesně tohle vypadalo v krabičce „Úprava" rozbitě.
+    assert not re.findall(r"<span>[^<]*<b>.*?</b>[^<]*</span>", part), (
+        "v krabičkách nesmí být zvýraznění uprostřed věty"
+    )
+
+    # Pomlčky, lomítka a čárky musí být svázané s předchozím slovem, jinak
+    # můžou skončit samy na začátku řádku.
+    text = re.sub(r"<[^>]+>", " ", part)
+    orphans = re.findall(r"(?<!&nbsp;)\s([—–+·×/,;])\s", text)
+    assert not orphans, f"volně stojící symboly: {orphans}"
+
+
+def test_settings_buttons_have_uniform_width():
+    from spillway import settings_window as sw
+
+    css = sw._HTML[:sw._HTML.index("</style>")]
+    # Popisky se za běhu mění („Změnit" → „5 s" → „Potvrdit"); bez pevné šířky
+    # by řádek poskakoval.
+    btn = css[css.index("  .btn{"):css.index("  .btn:disabled")]
+    assert "min-width:112px" in btn and "text-align:center" in btn
+
+    # Výzva „Stiskni klávesu…" patří k popisku, ne do tlačítka.
+    assert "'Stiskni klávesu…'" in sw._HTML
+    assert "Btn').textContent = 'Stiskni klávesu…'" not in sw._HTML

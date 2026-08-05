@@ -91,10 +91,16 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     background-repeat:no-repeat;background-position:right 12px center;padding-right:34px;cursor:pointer;}
   select:hover{border-color:color-mix(in srgb,var(--accent) 55%,transparent);}
   input:focus,textarea:focus,select:focus{border-color:var(--accent);}
-  .btn{background:var(--accent);color:var(--onaccent);border:none;border-radius:9px;padding:9px 16px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;white-space:nowrap;}
-  .btn.danger{background:transparent;border:0.5px solid var(--danger);color:var(--danger);min-width:112px;text-align:center;}
+  /* Jedna velikost pro všechna tlačítka. Popisky se za běhu mění
+     („Změnit" → „5 s" → „Potvrdit"), a bez pevné šířky by se řádek
+     přeléval sem tam. */
+  .btn{background:var(--accent);color:var(--onaccent);border:none;border-radius:9px;padding:9px 16px;
+    font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;white-space:nowrap;
+    min-width:112px;text-align:center;}
+  .btn:disabled{opacity:0.55;cursor:default;}
+  .btn.danger{background:transparent;border:0.5px solid var(--danger);color:var(--danger);}
   .btn:disabled{opacity:.5;cursor:default;}
-  .hint{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5;}
+  .hint{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5;text-wrap:pretty;}
   .status{font-size:12px;margin-bottom:10px;display:flex;align-items:center;gap:7px;color:var(--text);}
   .status .dot{width:7px;height:7px;border-radius:50%;background:var(--success);}
   .rowt{display:flex;align-items:center;justify-content:space-between;padding:9px 0;gap:12px;}
@@ -118,13 +124,13 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .step{flex:1;background:var(--surface);border:0.5px solid var(--border);border-radius:10px;padding:10px 8px;text-align:center;}
   .step .big{font-size:20px;line-height:1.3;}
   .step .t{font-size:11px;font-weight:600;margin-top:3px;}
-  .step .d{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.35;}
+  .step .d{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.4;text-wrap:balance;}
   .arrow{align-self:center;color:var(--muted);font-size:13px;}
   .kbd{display:inline-block;background:var(--surface2);border:0.5px solid var(--border);border-bottom-width:2px;border-radius:5px;padding:1px 6px;font-size:11px;font-weight:700;}
   .branch{display:flex;gap:8px;}
   .branch>div{flex:1;background:var(--surface);border:0.5px solid var(--border);border-radius:10px;padding:11px;}
   .branch .bt{font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;}
-  .branch .bd{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.45;}
+  .branch .bd{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.5;text-wrap:pretty;}
   .dot{width:7px;height:7px;border-radius:50%;flex:none;}
   .states{display:flex;flex-direction:column;gap:2px;}
   .st{display:flex;align-items:center;gap:12px;padding:8px 0;}
@@ -141,7 +147,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     background:var(--surface);border:0.5px solid var(--border);border-radius:9px;padding:9px;text-align:center;}
   .privacy .arrow{display:flex;align-items:center;}
   .privacy .box b{display:block;font-size:12px;margin-bottom:2px;}
-  .privacy .box span{color:var(--muted);font-size:10px;line-height:1.35;display:block;}
+  .privacy .box span{color:var(--muted);font-size:10px;line-height:1.45;display:block;text-wrap:balance;}
 </style></head><body>
   <div class="head">__LOGO__<div><div class="name">SPILLWAY</div><div class="sub" id="sub">Nastavení</div></div></div>
   <div class="tabs">
@@ -234,9 +240,9 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="flow">
       <div class="step"><div class="big"><span class="kbd hk">F5</span></div><div class="t">Podrž</div><div class="d">kdekoliv v systému</div></div>
       <div class="arrow">→</div>
-      <div class="step"><div class="big">🎙️</div><div class="t">Mluv</div><div class="d">běžně, i s přeřeknutím</div></div>
+      <div class="step"><div class="big">🎙️</div><div class="t">Mluv</div><div class="d">i s přeřeknutím</div></div>
       <div class="arrow">→</div>
-      <div class="step"><div class="big">✋</div><div class="t">Pusť</div><div class="d">přepis + úprava</div></div>
+      <div class="step"><div class="big">✋</div><div class="t">Pusť</div><div class="d">přepis a úprava</div></div>
       <div class="arrow">→</div>
       <div class="step"><div class="big">✨</div><div class="t">Hotovo</div><div class="d">text je na místě</div></div>
     </div>
@@ -251,16 +257,16 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
       </div>
       <div>
         <div class="bt"><span class="dot" style="background:var(--accent)"></span>Pole není</div>
-        <div class="bd">Nikam se nevkládá naslepo. Text čeká ve schránce a u ikony visí lístek — vložíš ho <span class="kbd">⌘V</span>.</div>
+        <div class="bd">Nikam se nevkládá naslepo. Text čeká ve schránce a u ikony visí lístek&nbsp;— vložíš&nbsp;ho&nbsp;<span class="kbd">⌘V</span>.</div>
       </div>
     </div>
-    <div class="hint">Totéž platí, když během zpracování odejdeš jinam — text se neztratí, jen počká.</div>
+    <div class="hint">Totéž platí, když během zpracování odejdeš jinam&nbsp;— text se neztratí, jen počká.</div>
   </div>
 
   <div class="card"><h3>Ikona v liště</h3>
     <div class="states">
       <div class="st"><div class="ic one">__IC_IDLE__</div><div><div class="sl">Klid</div><div class="sd">Nic neběží</div></div></div>
-      <div class="st"><div class="ic">__IC_REC__</div><div><div class="sl">Nahrávám</div><div class="sd">Sloupce skáčou podle tvého hlasu — poznáš, že tě mikrofon slyší</div></div></div>
+      <div class="st"><div class="ic">__IC_REC__</div><div><div class="sl">Nahrávám</div><div class="sd">Sloupce skáčou podle tvého hlasu&nbsp;— poznáš, že tě mikrofon slyší</div></div></div>
       <div class="st"><div class="ic">__IC_PROC__</div><div><div class="sl">Zpracovávám</div><div class="sd">Vlna běží zleva doprava</div></div></div>
       <div class="st"><div class="ic one">__IC_CANCEL__</div><div><div class="sl">Ruším</div><div class="sd">Po stisku <span class="kbd ck">Escape</span></div></div></div>
     </div>
@@ -274,19 +280,19 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
   <div class="card"><h3>Kudy tečou data</h3>
     <div class="privacy">
-      <div class="box"><b>🎙️ Zvuk</b><span>Zůstává v Macu. Nikdy se neodesílá ani neukládá na disk.</span></div>
+      <div class="box"><b>🎙️ Zvuk</b><span>Zůstává v Macu. Neodchází nikam.</span></div>
       <div class="arrow">→</div>
-      <div class="box"><b>💻 Přepis</b><span>Běží lokálně na GPU tvého Macu (Whisper).</span></div>
+      <div class="box"><b>💻 Přepis</b><span>Běží lokálně na GPU tvého Macu.</span></div>
       <div class="arrow">→</div>
-      <div class="box"><b>☁️ Úprava</b><span>K Anthropic jde jen <b>text</b> — a jen když je úprava zapnutá.</span></div>
+      <div class="box"><b>☁️ Úprava</b><span>Ven jde jen text, a to nepovinně.</span></div>
     </div>
     <div class="hint">API klíč leží v systémové Klíčence, ne v souboru. Do logu se obsah diktátů nezapisuje.</div>
   </div>
 
   <div class="card"><h3>Slovník a náklady</h3>
     <div class="rowt"><div class="l">Slovník výrazů<small>Vlastní jména a termíny, které se často komolí</small></div><button class="btn" onclick="showPage('settings')">Otevřít</button></div>
-    <div class="rowt"><div class="l">Cena<small>Platí se jen za úpravu textu, přepis je zdarma</small></div><div class="l" style="color:var(--accent);font-weight:600;">~$2 / měsíc</div></div>
-    <div class="hint">Krátké diktáty se AI modelu neposílají vůbec — upraví se lokálně.</div>
+    <div class="rowt"><div class="l">Cena<small>Platí se jen za úpravu textu, přepis je zdarma</small></div><div class="l" style="color:var(--accent);font-weight:600;">~$2&nbsp;/&nbsp;měsíc</div></div>
+    <div class="hint">Krátké diktáty se AI modelu neposílají vůbec&nbsp;— upraví se lokálně.</div>
   </div>
 
   </div><!-- /pageHelp -->
@@ -327,22 +333,16 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     clearTimeout(unloadTimer);
     unloadTimer = setTimeout(function(){ h.style.display = 'none'; }, 3200);
   }
-  function recordHotkey(){
-    document.getElementById('hotkeyBtn').textContent = 'Stiskni klávesu…';
-    document.getElementById('hotkeyBtn').disabled = true;
-    document.getElementById('hotkeyLabel').textContent = '…';
-    send({action:'record_hotkey'});
+  function arm(which, action){
+    document.getElementById(which+'Btn').disabled = true;   // popisek zůstává
+    document.getElementById(which+'Label').textContent = 'Stiskni klávesu…';
+    send({action:action});
   }
-  function recordCancel(){
-    document.getElementById('cancelBtn').textContent = 'Stiskni klávesu…';
-    document.getElementById('cancelBtn').disabled = true;
-    document.getElementById('cancelLabel').textContent = '…';
-    send({action:'record_cancel'});
-  }
+  function recordHotkey(){ arm('hotkey', 'record_hotkey'); }
+  function recordCancel(){ arm('cancel', 'record_cancel'); }
   // `which` = 'hotkey' | 'cancel' — jeden pár funkcí pro obě klávesy.
   function applyHotkey(h){
     var which = h.which || 'hotkey';
-    document.getElementById(which+'Btn').textContent = 'Změnit';
     document.getElementById(which+'Btn').disabled = false;
     document.getElementById(which+'Label').textContent = h.label;
     var cls = which === 'cancel' ? '.kbd.ck' : '.kbd.hk';
@@ -352,7 +352,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   }
   function cancelHotkey(which){
     which = which || 'hotkey';
-    document.getElementById(which+'Btn').textContent = 'Změnit';
     document.getElementById(which+'Btn').disabled = false;
   }
   // [F3] Obě klávesy nesmí být stejné — vrátíme tlačítko a krátce to vysvětlíme.
