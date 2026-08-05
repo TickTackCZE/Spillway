@@ -18,7 +18,6 @@ Vrací cestu k PNG, nebo None při chybě (tray pak použije emoji placeholder).
 
 from __future__ import annotations
 
-import math
 import os
 
 from . import design
@@ -69,43 +68,12 @@ def _scale_for(kind: str, index: int) -> float:
     return _K_MAX  # idle
 
 
-def _bars_scaled(k: float) -> tuple[tuple[float, float, float], ...]:
-    """Sloupce loga zmenšené na `k` výšky, každý kolem svého středu."""
-    out = []
-    for x, top, bot in design._WAVE_BARS:
-        center = (top + bot) / 2.0
-        half = (bot - top) / 2.0 * k
-        out.append((x, center - half, center + half))
-    return tuple(out)
-
-
-def _bars_wave(index: int) -> tuple[tuple[float, float, float], ...]:
-    """Vlna běžící zleva doprava — stav „zpracovávám".
-
-    Každý sloupec má vlastní fázi podle své pozice, takže hřeben putuje po
-    vlnovce; za `PULSE_FRAMES` snímků projde celou ikonu a plynule naváže.
-    Pohyb má směr — tím se odliší od ukazatele hlasitosti, který jen skáče.
-
-    Výšku tady určuje POUZE vlna, ne původní tvar loga: to má sloupce hodně
-    různě vysoké (uprostřed skoro čtyřnásobek krajních), takže by se v něm
-    putující hřeben ztratil a vypadalo by to jako blikání na místě.
-    """
-    bars = design._WAVE_BARS
-    n = len(bars)
-    center = sum((t + b) / 2.0 for _, t, b in bars) / n
-    ref_half = max((b - t) / 2.0 for _, t, b in bars)
-    out = []
-    for j, (x, _t, _b) in enumerate(bars):
-        phase = 2 * math.pi * (j / n - (index % PULSE_FRAMES) / PULSE_FRAMES)
-        k = _WAVE_LO + (_WAVE_HI - _WAVE_LO) * (0.5 + 0.5 * math.sin(phase))
-        half = ref_half * k
-        out.append((x, center - half, center + half))
-    return tuple(out)
-
-
 def _bars_for(kind: str, index: int) -> tuple[tuple[float, float, float], ...]:
-    """Sloupce pro daný snímek."""
-    return _bars_wave(index) if kind == "proc" else _bars_scaled(_scale_for(kind, index))
+    """Sloupce pro daný snímek. Geometrii drží `design`, ať vypadá stejně
+    v liště i ve schématech v nápovědě."""
+    if kind == "proc":
+        return design.wave_bars(index, PULSE_FRAMES, _WAVE_LO, _WAVE_HI)
+    return design.scaled_bars(_scale_for(kind, index))
 
 
 def _render(bars, path: str) -> str | None:

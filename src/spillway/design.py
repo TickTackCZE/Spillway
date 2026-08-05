@@ -28,22 +28,56 @@ _WAVE_BARS = (
 )
 
 
-def logo_svg(color: str = "#818CF8", width: int = 18, height: int = 18, drops: bool = True) -> str:
-    """Logo Spillway: roztékající se zvuková vlna (řeč, která přetéká — „spillway").
+def scaled_bars(k: float) -> tuple[tuple[float, float, float], ...]:
+    """Sloupce loga zmenšené na `k` původní výšky, každý kolem svého středu.
 
-    Svislé zaoblené sloupce (waveform) + drobné kapky pod nimi. `drops=False`
-    pro malé velikosti (lišta/HUD), kde by kapky splynuly.
+    Geometrie vlnovky žije tady, ne u volajících — kreslí ji ikona v liště
+    (animace stavů) i nápověda (schémata), a musí vypadat stejně.
     """
-    bars = "".join(
-        f'<rect x="{x - 3}" y="{t}" width="6" height="{b - t}" rx="3" fill="{color}"/>'
-        for x, t, b in _WAVE_BARS
+    out = []
+    for x, top, bot in _WAVE_BARS:
+        center = (top + bot) / 2.0
+        half = (bot - top) / 2.0 * k
+        out.append((x, center - half, center + half))
+    return tuple(out)
+
+
+def wave_bars(index: int, frames: int, lo: float = 0.28, hi: float = 0.78
+              ) -> tuple[tuple[float, float, float], ...]:
+    """Vlna běžící zleva doprava — snímek `index` z `frames`.
+
+    Výšku určuje POUZE vlna, ne původní tvar loga: ten má sloupce hodně různě
+    vysoké a putující hřeben by se v něm ztratil.
+    """
+    import math
+
+    n = len(_WAVE_BARS)
+    center = sum((t + b) / 2.0 for _, t, b in _WAVE_BARS) / n
+    ref_half = max((b - t) / 2.0 for _, t, b in _WAVE_BARS)
+    out = []
+    for j in range(n):
+        phase = 2 * math.pi * (j / n - (index % frames) / frames)
+        half = ref_half * (lo + (hi - lo) * (0.5 + 0.5 * math.sin(phase)))
+        out.append((_WAVE_BARS[j][0], center - half, center + half))
+    return tuple(out)
+
+
+def bars_svg(bars, color: str = "#818CF8", width: int = 18, height: int = 18) -> str:
+    """Libovolná sada sloupců jako SVG (viewBox 100×100)."""
+    rects = "".join(
+        f'<rect x="{x - 3:.1f}" y="{t:.1f}" width="6" height="{b - t:.1f}" rx="3" fill="{color}"/>'
+        for x, t, b in bars
     )
-    d = (
-        f'<circle cx="50" cy="90" r="3.4" fill="{color}"/>'
-        f'<circle cx="63" cy="93" r="2.4" fill="{color}" opacity="0.7"/>'
-        f'<circle cx="40" cy="92" r="2" fill="{color}" opacity="0.6"/>'
-    ) if drops else ""
     return (
         f'<svg viewBox="0 0 100 100" width="{width}" height="{height}" '
-        f'xmlns="http://www.w3.org/2000/svg">{bars}{d}</svg>'
+        f'xmlns="http://www.w3.org/2000/svg">{rects}</svg>'
     )
+
+
+def logo_svg(color: str = "#818CF8", width: int = 18, height: int = 18) -> str:
+    """Logo Spillway: zvuková vlna (řeč, která přetéká — „spillway").
+
+    Svislé zaoblené sloupce (waveform). Nic pod nimi — kapky se ukázaly jako
+    šum, který se v malých velikostech slil a do loga nepatřil.
+    """
+    return bars_svg(_WAVE_BARS, color, width, height)

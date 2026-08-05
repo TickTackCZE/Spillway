@@ -30,7 +30,25 @@ from PyObjCTools import AppHelper
 from . import autostart, config, design, keymap, settings, stats
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 
-_LOGO = design.logo_svg(color="#818CF8", width=30, height=30, drops=False)
+_LOGO = design.logo_svg(color="#818CF8", width=30, height=30)
+
+# Ikony stavů do nápovědy — kreslí se ze STEJNÉ geometrie jako skutečná ikona
+# v liště (`design.scaled_bars` / `wave_bars`), takže se nemůžou rozejít.
+# Pohyblivé stavy se ukazují jako SEKVENCE snímků: na statickém obrázku by
+# jinak „nahrávám" a „zpracovávám" vypadaly skoro stejně jako klid.
+_A = "#818CF8"
+
+
+def _seq(bars_list, size=24):
+    return "".join(design.bars_svg(b, _A, size, size) for b in bars_list)
+
+
+_ICONS = {
+    "idle": _seq([design.scaled_bars(1.0)], 26),
+    "rec": _seq([design.scaled_bars(k) for k in (0.30, 0.95, 0.55)]),
+    "proc": _seq([design.wave_bars(i, 8) for i in (0, 3, 6)]),
+    "cancel": _seq([design.scaled_bars(0.18)], 26),
+}
 
 _LANGS = [
     ("cs", "Čeština"), ("en", "Angličtina"), ("sk", "Slovenština"),
@@ -86,8 +104,44 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .sw::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.15s;}
   .sw.on::after{left:18px;}
   .foot{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--muted);text-align:center;margin-top:18px;}
+  /* Záložky pod logem — přepínání Nastavení / Nápověda. */
+  .tabs{display:flex;gap:4px;background:var(--surface2);border:0.5px solid var(--border);border-radius:10px;padding:3px;margin-top:12px;}
+  .tabs button{flex:1;border:0.5px solid transparent;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:600;padding:7px;border-radius:8px;cursor:pointer;}
+  .tabs button.on{background:var(--surface);color:var(--text);border-color:var(--border);}
+  .hidden{display:none;}
+  /* --- Nápověda: schémata místo odstavců --- */
+  .flow{display:flex;align-items:stretch;gap:6px;}
+  .step{flex:1;background:var(--surface);border:0.5px solid var(--border);border-radius:10px;padding:10px 8px;text-align:center;}
+  .step .big{font-size:20px;line-height:1.3;}
+  .step .t{font-size:11px;font-weight:600;margin-top:3px;}
+  .step .d{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.35;}
+  .arrow{align-self:center;color:var(--muted);font-size:13px;}
+  .kbd{display:inline-block;background:var(--surface2);border:0.5px solid var(--border);border-bottom-width:2px;border-radius:5px;padding:1px 6px;font-size:11px;font-weight:700;}
+  .branch{display:flex;gap:8px;}
+  .branch>div{flex:1;background:var(--surface);border:0.5px solid var(--border);border-radius:10px;padding:11px;}
+  .branch .bt{font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;}
+  .branch .bd{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.45;}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none;}
+  .states{display:flex;flex-direction:column;gap:2px;}
+  .st{display:flex;align-items:center;gap:12px;padding:8px 0;}
+  .st:not(:last-child){border-bottom:0.5px solid var(--border);}
+  .st .ic{width:86px;display:flex;align-items:center;gap:3px;flex:none;}
+  .st .ic svg{display:block;opacity:0.55;}
+  .st .ic svg:last-child{opacity:1;}
+  .st .ic.one svg{opacity:1;}
+  .st .sl{font-size:12px;font-weight:600;} .st .sd{font-size:11px;color:var(--muted);margin-top:1px;}
+  .privacy{display:flex;align-items:center;gap:8px;font-size:11px;}
+  .privacy .box{flex:1;background:var(--surface);border:0.5px solid var(--border);border-radius:9px;padding:9px;text-align:center;}
+  .privacy .box b{display:block;font-size:12px;margin-bottom:2px;}
+  .privacy .box span{color:var(--muted);font-size:10px;line-height:1.35;display:block;}
 </style></head><body>
-  <div class="head">__LOGO__<div><div class="name">SPILLWAY</div><div class="sub">Nastavení</div></div></div>
+  <div class="head">__LOGO__<div><div class="name">SPILLWAY</div><div class="sub" id="sub">Nastavení</div></div></div>
+  <div class="tabs">
+    <button id="tabSet" class="on" onclick="showPage('settings')">Nastavení</button>
+    <button id="tabHelp" onclick="showPage('help')">Nápověda</button>
+  </div>
+
+  <div id="pageSettings">
 
   <div class="card"><h3>Klávesy</h3>
     <div class="rowt">
@@ -116,6 +170,15 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="rowt"><div class="l">Chytrá mezera<small>Mezera před textem, když jsi na konci slova</small></div><div class="sw" data-key="auto_space" onclick="tog(this)"></div></div>
     <div class="rowt"><div class="l">Odesílání do AI modelu<small>Úprava a formátování diktátu přes Claude</small></div><div class="sw" data-key="ai_edit" onclick="tog(this)"></div></div>
     <div class="rowt sub" id="fieldCtxRow"><div class="l">Číst kontext pole<small>Odesílání obsahu pole AI modelu</small></div><div class="sw" data-key="field_context" onclick="tog(this)"></div></div>
+    <div class="rowt">
+      <div class="l">Uvolnit model z paměti<small>Po jaké nečinnosti (v sekundách). 0 = držet stále</small></div>
+      <div class="field" style="width:auto;align-items:center;gap:8px;">
+        <input id="unload" type="text" inputmode="numeric" style="width:74px;text-align:right;"
+               onchange="saveUnload()" onblur="saveUnload()">
+        <span class="l" style="color:var(--muted);">s</span>
+      </div>
+    </div>
+    <div class="hint" id="unloadHint">Model zabírá ~2 GB. Znovu se načte při dalším diktátu (~1,6 s). Rozsah 10–600 s.</div>
   </div>
 
   <div class="card"><h3>Slovník výrazů</h3>
@@ -155,10 +218,109 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     </div>
   </div>
 
+  </div><!-- /pageSettings -->
+
+  <div id="pageHelp" class="hidden">
+
+  <div class="card"><h3>Jak to funguje</h3>
+    <div class="flow">
+      <div class="step"><div class="big"><span class="kbd">F5</span></div><div class="t">Podrž</div><div class="d">kdekoliv v systému</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="big">🎙️</div><div class="t">Mluv</div><div class="d">běžně, i s přeřeknutím</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="big">✋</div><div class="t">Pusť</div><div class="d">přepis + úprava</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="big">✨</div><div class="t">Hotovo</div><div class="d">text je na místě</div></div>
+    </div>
+    <div class="hint">Přeřeknutí se opraví samo: „sejdeme se ve 4, teda v 5“ → „sejdeme se v 5“.</div>
+  </div>
+
+  <div class="card"><h3>Kam text půjde</h3>
+    <div class="branch">
+      <div>
+        <div class="bt"><span class="dot" style="background:var(--success)"></span>Kurzor je v poli</div>
+        <div class="bd">Text se vloží rovnou tam, kde píšeš. Před něj se podle potřeby doplní mezera nebo nový řádek.</div>
+      </div>
+      <div>
+        <div class="bt"><span class="dot" style="background:var(--accent)"></span>Pole není</div>
+        <div class="bd">Nikam se nevkládá naslepo. Text čeká ve schránce a u ikony visí lístek — vložíš ho <span class="kbd">⌘V</span>.</div>
+      </div>
+    </div>
+    <div class="hint">Totéž platí, když během zpracování odejdeš jinam — text se neztratí, jen počká.</div>
+  </div>
+
+  <div class="card"><h3>Ikona v liště</h3>
+    <div class="states">
+      <div class="st"><div class="ic one">__IC_IDLE__</div><div><div class="sl">Klid</div><div class="sd">Nic neběží</div></div></div>
+      <div class="st"><div class="ic">__IC_REC__</div><div><div class="sl">Nahrávám</div><div class="sd">Sloupce skáčou podle tvého hlasu — poznáš, že tě mikrofon slyší</div></div></div>
+      <div class="st"><div class="ic">__IC_PROC__</div><div><div class="sl">Zpracovávám</div><div class="sd">Vlna běží zleva doprava</div></div></div>
+      <div class="st"><div class="ic one">__IC_CANCEL__</div><div><div class="sl">Ruším</div><div class="sd">Po stisku <span class="kbd">Escape</span></div></div></div>
+    </div>
+  </div>
+
+  <div class="card"><h3>Klávesy</h3>
+    <div class="rowt"><div class="l">Diktování<small>Drž po celou dobu mluvení</small></div><span class="kbd" id="helpHotkey">F5</span></div>
+    <div class="rowt"><div class="l">Zrušit zpracování<small>Zahodí diktát, ušetří tokeny</small></div><span class="kbd" id="helpCancel">Escape</span></div>
+    <div class="rowt"><div class="l">Vložit čekající text<small>Když text zůstal ve schránce</small></div><span class="kbd">⌘V</span></div>
+  </div>
+
+  <div class="card"><h3>Kudy tečou data</h3>
+    <div class="privacy">
+      <div class="box"><b>🎙️ Zvuk</b><span>Zůstává v Macu. Nikdy se neodesílá ani neukládá na disk.</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>💻 Přepis</b><span>Běží lokálně na GPU tvého Macu (Whisper).</span></div>
+      <div class="arrow">→</div>
+      <div class="box"><b>☁️ Úprava</b><span>K Anthropic jde jen <b>text</b> — a jen když je úprava zapnutá.</span></div>
+    </div>
+    <div class="hint">API klíč leží v systémové Klíčence, ne v souboru. Do logu se obsah diktátů nezapisuje.</div>
+  </div>
+
+  <div class="card"><h3>Slovník a náklady</h3>
+    <div class="rowt"><div class="l">Slovník výrazů<small>Vlastní jména a termíny, které se často komolí</small></div><button class="btn" onclick="showPage('settings')">Otevřít</button></div>
+    <div class="rowt"><div class="l">Cena<small>Platí se jen za úpravu textu, přepis je zdarma</small></div><div class="l" style="color:var(--accent);font-weight:600;">~$2 / měsíc</div></div>
+    <div class="hint">Krátké diktáty se AI modelu neposílají vůbec — upraví se lokálně.</div>
+  </div>
+
+  </div><!-- /pageHelp -->
+
   <div class="foot">Spillway · v1.1</div>
 
 <script>
   function send(m){ try{ window.webkit.messageHandlers.spillway.postMessage(m); }catch(e){} }
+  function showPage(name){
+    var help = name === 'help';
+    document.getElementById('pageSettings').classList.toggle('hidden', help);
+    document.getElementById('pageHelp').classList.toggle('hidden', !help);
+    document.getElementById('tabSet').classList.toggle('on', !help);
+    document.getElementById('tabHelp').classList.toggle('on', help);
+    document.getElementById('sub').textContent = help ? 'Nápověda' : 'Nastavení';
+    window.scrollTo(0, 0);
+  }
+  // Práh uvolnění modelu: pustíme dál jen celé sekundy v rozsahu. Nesmysl
+  // (písmena, prázdno) se needituje na půl cesty — vrátíme poslední platnou
+  // hodnotu, kterou pošle Python zpět v `applyUnload`.
+  var lastUnload = 60;
+  function saveUnload(){
+    var el = document.getElementById('unload');
+    var raw = (el.value || '').trim().replace(',', '.');
+    var n = Number(raw);
+    if(raw === '' || !isFinite(n)){ el.value = lastUnload; flashUnload('Zadej číslo v sekundách.'); return; }
+    n = Math.round(n);
+    if(n > 0 && n < 10){ n = 10; flashUnload('Nejméně 10 s — jinak by se model uvolňoval mezi větami.'); }
+    if(n > 600){ n = 600; flashUnload('Nejvíc 600 s (10 minut).'); }
+    if(n < 0){ n = 0; }
+    el.value = n; lastUnload = n;
+    send({action:'auto_unload', value:n});
+  }
+  var unloadTimer = null;
+  function flashUnload(msg){
+    var h = document.getElementById('unloadHint');
+    if(!h) return;
+    h.dataset.base = h.dataset.base || h.textContent;
+    h.textContent = msg; h.style.color = 'var(--danger)';
+    clearTimeout(unloadTimer);
+    unloadTimer = setTimeout(function(){ h.textContent = h.dataset.base; h.style.color = ''; }, 3200);
+  }
   function recordHotkey(){
     document.getElementById('hotkeyBtn').textContent = 'Stiskni klávesu…';
     document.getElementById('hotkeyBtn').disabled = true;
@@ -177,6 +339,8 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     document.getElementById(which+'Btn').textContent = 'Změnit';
     document.getElementById(which+'Btn').disabled = false;
     document.getElementById(which+'Label').textContent = h.label;
+    var help = document.getElementById(which === 'cancel' ? 'helpCancel' : 'helpHotkey');
+    if(help) help.textContent = h.label;
   }
   function cancelHotkey(which){
     which = which || 'hotkey';
@@ -246,9 +410,18 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
       syncAiEdit();
     }
   }
+  function setKeyLabels(hotkey, cancel){
+    // Klávesy se ukazují na dvou místech (Nastavení i Nápověda) — nastavují se
+    // jedním voláním, ať se nemůžou rozejít.
+    [['hotkeyLabel',hotkey],['helpHotkey',hotkey],['cancelLabel',cancel],['helpCancel',cancel]]
+      .forEach(function(kv){ var el=document.getElementById(kv[0]); if(el && kv[1]) el.textContent = kv[1]; });
+  }
   function applyState(s){
-    document.getElementById('hotkeyLabel').textContent = s.hotkey_label || 'F5';
-    document.getElementById('cancelLabel').textContent = s.cancel_label || 'Escape';
+    setKeyLabels(s.hotkey_label || 'F5', s.cancel_label || 'Escape');
+    if(typeof s.auto_unload_sec === 'number'){
+      lastUnload = s.auto_unload_sec;
+      document.getElementById('unload').value = s.auto_unload_sec;
+    }
     applyTheme(s.theme||'system');
     document.getElementById('lang').value = s.language || 'cs';
     document.getElementById('keyset').style.display = s.has_key ? 'block' : 'none';
@@ -262,6 +435,10 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   window.addEventListener('DOMContentLoaded', function(){ send({action:'ready'}); });
 </script>
 </body></html>""".replace("__LOGO__", _LOGO).replace("__LANGS__", _LANG_OPTIONS)
+
+# Ikony stavů do schémat v nápovědě.
+for _key, _svg in _ICONS.items():
+    _HTML = _HTML.replace(f"__IC_{_key.upper()}__", _svg)
 
 
 class _Bridge(NSObject):
@@ -305,6 +482,12 @@ class _Bridge(NSObject):
                 config.set_api_key_cache(None)
                 self.controller.set_api_key(None)
                 self._push_state()
+            elif action == "auto_unload":
+                # Validace i tady, ne jen v UI — z WKWebView může přijít cokoliv.
+                sec = config.clamp_auto_unload(body.get("value"))
+                if sec is not None:
+                    settings.set("auto_unload_sec", sec)
+                    print(f"⚙️  práh uvolnění modelu: {sec} s")
             elif action == "glossary":
                 text = str(body.get("value", "")).replace("\n", ",")
                 terms = [t.strip() for t in text.split(",") if t.strip()]
@@ -396,6 +579,7 @@ class _Bridge(NSObject):
             # AI úpravě maskuje na False) — dítě má v UI ukazovat vlastní stav.
             "field_context": bool(settings.get("field_context", True)),
             "auto_space": config.auto_space(),
+            "auto_unload_sec": config.get_auto_unload_seconds(),
         }
         js = "applyState(" + json.dumps(state, ensure_ascii=False) + ")"
         self.webview.evaluateJavaScript_completionHandler_(js, None)
@@ -429,7 +613,9 @@ class SettingsWindow:
         cfg = WKWebViewConfiguration.alloc().init()
         cfg.userContentController().addScriptMessageHandler_name_(self.bridge, "spillway")
 
-        rect = NSMakeRect(0, 0, 480, 760)
+        # Šířka kvůli schématům v nápovědě (kroky a větve vedle sebe),
+        # výška kvůli delší stránce nastavení.
+        rect = NSMakeRect(0, 0, 560, 820)
         self.web = WKWebView.alloc().initWithFrame_configuration_(rect, cfg)
         self.bridge.webview = self.web
         self.web.loadHTMLString_baseURL_(_HTML, None)
@@ -448,7 +634,8 @@ class SettingsWindow:
         self._delegate = _WinDelegate.alloc().initWithController_(controller)
         self.window.setDelegate_(self._delegate)
 
-    def show(self) -> None:
+    def show(self, page: str = "settings") -> None:
+        """Zobrazí okno; `page="help"` rovnou přepne na Nápovědu."""
         try:
             NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         except Exception:  # noqa: BLE001
@@ -456,10 +643,20 @@ class SettingsWindow:
         self.window.center()
         self.window.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
+        self._show_page(page)
         # Okno se vytvoří jednou a pak recykluje — bez tohohle by karta
         # Statistiky ukazovala zamrzlá data z prvního otevření (`ready` už
         # podruhé nenastane, protože se HTML znovu nenačítá).
         self.refresh()
+
+    def _show_page(self, page: str) -> None:
+        """Přepne záložku. Volá se i při recyklaci okna, takže Nápověda z
+        popoveru otevře Nápovědu i tehdy, když okno zůstalo na Nastavení."""
+        try:
+            name = "help" if page == "help" else "settings"
+            self.web.evaluateJavaScript_completionHandler_(f"showPage('{name}')", None)
+        except Exception:  # noqa: BLE001
+            pass
 
     def refresh(self) -> None:
         """Přenačte stav do okna (hlavně Statistiky). Musí běžet na main threadu."""

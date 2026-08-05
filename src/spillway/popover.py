@@ -2,7 +2,7 @@
 
 Levý klik na ikonu → tenhle popover: přehled na první pohled (statistiky, tempo
 řeči, náklady za měsíc, 7denní aktivita), historie diktátů s kopírováním klikem,
-přepínač modelu úpravy a tlačítka Nastavení… / Konec.
+přepínač modelu úpravy a tlačítka Nastavení / Nápověda / Konec.
 
 Data tečou přes JS↔Python most (stejný vzor jako `settings_window.py`). Popover
 se sám přeměří po naplnění (JS pošle výšku), takže scrolluje jen seznam historie.
@@ -42,21 +42,21 @@ def _dbg(msg: str) -> None:
     except Exception:  # noqa: BLE001
         pass
 
-_LOGO = design.logo_svg(color="#818CF8", width=22, height=24, drops=False)
+_LOGO = design.logo_svg(color="#818CF8", width=22, height=24)
 
 _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   *{margin:0;padding:0;box-sizing:border-box;}
   :root, :root[data-theme="dark"]{
     --bg:#0F1117;--surface:#1A1F2E;--surface2:#252D42;--text:#E2E8F0;--muted:#94A3B8;--faint:#3B4255;
-    --accent:#818CF8;--accent-text:#A5B4FC;--onaccent:#0F1117;--border:rgba(129,140,248,0.20);
+    --accent:#818CF8;--accent-text:#A5B4FC;--onaccent:#0F1117;--border:rgba(129,140,248,0.20);--danger:#E11D48;
     --hair:rgba(129,140,248,0.12);--ok:#4ADE80;--shadow:rgba(0,0,0,0.55);}
   @media (prefers-color-scheme: light){ :root:not([data-theme]){
     --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#EEF2F8;--text:#1E293B;--muted:#64748B;--faint:#CBD5E1;
-    --accent:#3B82F6;--accent-text:#2563EB;--onaccent:#FFFFFF;--border:rgba(59,130,246,0.16);
+    --accent:#3B82F6;--accent-text:#2563EB;--onaccent:#FFFFFF;--border:rgba(59,130,246,0.16);--danger:#E11D48;
     --hair:rgba(59,130,246,0.10);--ok:#16A34A;--shadow:rgba(30,41,59,0.18);} }
   :root[data-theme="light"]{
     --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#EEF2F8;--text:#1E293B;--muted:#64748B;--faint:#CBD5E1;
-    --accent:#3B82F6;--accent-text:#2563EB;--onaccent:#FFFFFF;--border:rgba(59,130,246,0.16);
+    --accent:#3B82F6;--accent-text:#2563EB;--onaccent:#FFFFFF;--border:rgba(59,130,246,0.16);--danger:#E11D48;
     --hair:rgba(59,130,246,0.10);--ok:#16A34A;--shadow:rgba(30,41,59,0.18);}
   html,body{background:var(--surface);}
   body{font-family:-apple-system,'Raleway',sans-serif;color:var(--text);width:320px;padding:6px;overflow:hidden;}
@@ -112,9 +112,12 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .seg small{color:var(--muted);font-weight:500;}
   .metaline{font-size:11px;color:var(--muted);text-align:center;padding:6px 0 4px;display:flex;align-items:center;justify-content:center;gap:7px;}
   .metaline .gpu{color:var(--accent-text);font-weight:600;}
-  .foot{display:flex;gap:6px;padding:4px 2px 2px;}
+  .foot{display:flex;flex-direction:column;gap:6px;padding:4px 2px 2px;}
+  .foot .row{display:flex;gap:6px;}
   .foot button{flex:1;border:0.5px solid var(--border);background:transparent;color:var(--text);font:inherit;font-size:13px;font-weight:600;padding:9px;border-radius:9px;cursor:pointer;}
   .foot button.primary{background:var(--accent);color:var(--onaccent);border-color:transparent;}
+  /* Konec je jediná nevratná akce v popoveru → barevně oddělený od zbytku. */
+  .foot button.danger{background:var(--danger);color:#fff;border-color:transparent;}
   #toast{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:var(--accent);color:var(--onaccent);
     font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;opacity:0;transition:opacity .18s;pointer-events:none;box-shadow:0 4px 14px var(--shadow);}
   #toast.show{opacity:1;}
@@ -159,8 +162,11 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   <div class="metaline" id="gpuLine"><span class="gpu">⚡ GPU</span> · model načten</div>
 
   <div class="foot">
-    <button class="primary" onclick="send({action:'open_settings'})">Nastavení…</button>
-    <button onclick="send({action:'quit'})">Konec</button>
+    <div class="row">
+      <button class="primary" onclick="send({action:'open_settings'})">Nastavení</button>
+      <button onclick="send({action:'open_help'})">Nápověda</button>
+    </div>
+    <button class="danger" onclick="send({action:'quit'})">Konec</button>
   </div>
 
   <div id="toast">Zkopírováno</div>
@@ -251,6 +257,7 @@ class _PopBridge(NSObject):
         self._recent: list[dict] = []
         self.on_open_settings = None  # nastaví tray
         self.on_quit = None
+        self.on_open_help = None
         return self
 
     def userContentController_didReceiveScriptMessage_(self, ucc, message):  # noqa: N802
@@ -275,6 +282,9 @@ class _PopBridge(NSObject):
                 self.popover.close()
                 if self.on_open_settings is not None:
                     self.on_open_settings()
+            elif action == "open_help":
+                if self.on_open_help is not None:
+                    self.on_open_help()
             elif action == "quit":
                 self.popover.close()
                 if self.on_quit is not None:
@@ -393,11 +403,13 @@ class _ButtonHandler(NSObject):
 class PopoverController:
     """Vlastní NSPopover s WKWebView, napojený na tlačítko status itemu."""
 
-    def __init__(self, controller, *, on_open_settings=None, on_quit=None):  # noqa: ANN001
+    def __init__(self, controller, *, on_open_settings=None, on_open_help=None,
+                 on_quit=None):  # noqa: ANN001
         cfg = WKWebViewConfiguration.alloc().init()
         self.popover = NSPopover.alloc().init()
         self.bridge = _PopBridge.alloc().initWithController_popover_(controller, self.popover)
         self.bridge.on_open_settings = on_open_settings
+        self.bridge.on_open_help = on_open_help
         self.bridge.on_quit = on_quit
         cfg.userContentController().addScriptMessageHandler_name_(self.bridge, "spillway")
 

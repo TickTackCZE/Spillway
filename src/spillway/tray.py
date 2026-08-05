@@ -3,7 +3,7 @@
 Ikona v liště je Spillway logo (`baricon.py`), které odráží stav: v klidu stojí,
 při nahrávání se hýbe podle hlasitosti mikrofonu, při zpracování jí běží vlna
 zleva doprava.
-Klik → menu s „Nastavení…" (otevře Domovoy okno) a „Konec". Veškeré nastavení je
+Klik → menu s „Nastavení" (otevře Domovoy okno) a „Konec". Veškeré nastavení je
 v okně (`settings_window.py`), ne v menu.
 
 Stav se navíc ukazuje v plovoucím HUD u kurzoru (`hud.py`). Obojí řídí jeden
@@ -68,7 +68,7 @@ class SpillwayTray(rumps.App):
             "⚠️ Klávesa nefunguje — povol oprávnění", callback=self._open_privacy
         )
         self.menu = [
-            rumps.MenuItem("Nastavení…", callback=self.open_settings),
+            rumps.MenuItem("Nastavení", callback=self.open_settings),
             None,
             rumps.MenuItem("Konec", callback=self.quit_app),
         ]
@@ -105,7 +105,7 @@ class SpillwayTray(rumps.App):
                 "Chybí Zpřístupnění / Monitorování vstupu. Klikni v menu na ⚠️.",
             )
             if self._warn_item.title not in self.menu:
-                self.menu.insert_before("Nastavení…", self._warn_item)
+                self.menu.insert_before("Nastavení", self._warn_item)
             try:
                 if not getattr(self, "template", False):
                     self.title = "🎙️⚠️"
@@ -129,9 +129,11 @@ class SpillwayTray(rumps.App):
         try:
             if getattr(self.controller, "state", "IDLE") != "IDLE":
                 return  # neuvolňovat uprostřed nahrávání/zpracování
-            idle_min = config.get_auto_unload_minutes()
-            if self.controller.transcriber.unload_if_idle(idle_min * 60):
-                print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_min * 60:.0f} s).")
+            idle_sec = config.get_auto_unload_seconds()
+            if not idle_sec:
+                return  # 0 = uživatel si přeje model držet načtený
+            if self.controller.transcriber.unload_if_idle(idle_sec):
+                print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_sec} s).")
         except Exception:  # noqa: BLE001
             pass
 
@@ -233,6 +235,7 @@ class SpillwayTray(rumps.App):
             self._popover = PopoverController(
                 self.controller,
                 on_open_settings=lambda: self.open_settings(None),
+                on_open_help=lambda: self.open_settings(None, page="help"),
                 on_quit=lambda: self.quit_app(None),
             )
             self._popover.attach_to_button(button)
@@ -321,13 +324,13 @@ class SpillwayTray(rumps.App):
         except Exception:  # noqa: BLE001
             pass
 
-    def open_settings(self, _sender) -> None:  # noqa: ANN001
+    def open_settings(self, _sender, page: str = "settings") -> None:  # noqa: ANN001
         try:
             if self._settings is None:
                 from .settings_window import SettingsWindow
 
                 self._settings = SettingsWindow(self.controller)
-            self._settings.show()
+            self._settings.show(page)
         except Exception as exc:  # noqa: BLE001
             rumps.alert("Nastavení nelze otevřít", str(exc))
 

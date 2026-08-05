@@ -45,8 +45,10 @@
 - Graf aktivity za 7 dní, **historie diktátů** (klik = zkopírovat).
 - Přepínač modelu (Haiku / Sonnet), stav GPU.
 
-**Nastavení**
+**Nastavení a nápověda**
+- Okno má dvě záložky: **Nastavení** a **Nápověda** (schémata: jak to funguje, kam text půjde, co znamenají stavy ikony, kudy tečou data).
 - Klávesy, jazyk, autostart, chytrá mezera, slovník, API klíč (v Keychain), vzhled (Systém/Light/Dark).
+- **Práh uvolnění modelu** v sekundách (0 = držet stále, jinak 10–600 s).
 - **Diagnostika** — standardně vypnutá. Zapíná se klíčem `diagnostics` v `settings.json` nebo proměnnou `SPILLWAY_DIAG` (`all`, nebo výčet `focus,hud,audio,text`). Teprve pak se do logu píšou podrobnosti o fokusu, poloze okénka a mikrofonu. Pozor: oblast `text` zapisuje do logu **přepsaný text**, ne jen jeho délku.
 - Reset statistik a historie.
 
@@ -160,17 +162,7 @@ musíš najít sám a když jedno chybí, projeví se to jen tím, že „to nef
 tlačítkem otevře přesné místo v Nastavení systému, a na konci nabídne **zkušební diktát**
 s potvrzením „funguje".
 
-### 4.2 Stránka „Co Spillway umí" přímo v aplikaci
-Dnes je veškerý popis jen v těchhle dokumentech. **Návrh:** v menu položka, která otevře
-přehlednou stránku:
-- co která funkce dělá, jednou větou,
-- **ukázky workflow** („diktuji e-mail", „diktuji prompt do AI", „diktuji do vzdálené plochy"),
-- seznam klávesových zkratek,
-- tipy (např. že přeřeknutí umí opravit, nebo že ⌘V schová lístek).
-
-Je to nejlevnější způsob, jak zpřístupnit funkce, o kterých uživatel neví že existují.
-
-### 4.3 Úprava zadání pro AI (promptu) s resetem
+### 4.2 Úprava zadání pro AI (promptu) s resetem
 **Návrh:** v nastavení textové pole s tím, co se posílá Claudovi, plus tlačítko
 **„Vrátit na výchozí"**. Kdo chce, doladí si tón; kdo ne, nesahá na to.
 
@@ -183,12 +175,12 @@ zhoršit.
   „nepoužívej pomlčky") — připojí se k našemu promptu, nepřepíše ho.
 - **Expertní úroveň:** celý prompt k přepsání, schované za varováním, s resetem na výchozí.
 
-### 4.4 Úprava profilů aplikací
+### 4.3 Úprava profilů aplikací
 Dnes je pevně dané, že Mail = formální e-mail, Slack = neformální chat, editor = kód atd.
 **Návrh:** v nastavení tabulka „aplikace → profil", kde si to přepíšeš (třeba že Slack u tebe
 má být formální), a možnost přidat vlastní aplikaci nebo webovou doménu.
 
-### 4.5 Drobnosti
+### 4.4 Drobnosti
 - **Zabalit font Raleway** do aplikace (dnes padá na systémový, když ho nemáš).
 - **Doladit okénko u kurzoru** na více monitorech.
 - **Notarizace u Apple** (Developer ID, ~$99/rok) — odstraní varování „nelze ověřit vývojáře"
@@ -259,7 +251,7 @@ aby se termíny psaly všude stejně.
 | **Restart GPU vlákna při zaseknutí** | 🕓 neaktuální | Zaseknutí se po opravách neděje. Otevřít až kdyby nastalo. |
 
 ### ✅ Hotovo — už to není nápad, ale funkce
-Streaming přepisu · oprava přeřeknutí („teda v 5") · prompt proti vymýšlení (věrohodnost nad cílem, mazání zkomolenin, chráněný slovník) · chytrý oddělovač (mezera vs. nový řádek) · HUD u ikony + lístek „Připraveno k vložení" · schránka při odchodu z pole · vkládání do RDP/AVD · statistiky, náklady, historie s kopírováním · **diktování bez zaklikaného pole** (není-li kam vložit, text jde do schránky s lístkem) · **animovaná ikona v liště** (živý ukazatel hlasitosti při nahrávání, běžící vlna při zpracování).
+Streaming přepisu · oprava přeřeknutí („teda v 5") · prompt proti vymýšlení (věrohodnost nad cílem, mazání zkomolenin, chráněný slovník) · chytrý oddělovač (mezera vs. nový řádek) · HUD u ikony + lístek „Připraveno k vložení" · schránka při odchodu z pole · vkládání do RDP/AVD · statistiky, náklady, historie s kopírováním · **diktování bez zaklikaného pole** (není-li kam vložit, text jde do schránky s lístkem) · **animovaná ikona v liště** (živý ukazatel hlasitosti při nahrávání, běžící vlna při zpracování) · **nápověda v aplikaci** (schémata místo odstavců) · **nastavitelný práh uvolnění modelu**.
 
 ---
 

@@ -3,7 +3,6 @@
 Kryjí hlavně regrese z code review (B8, B14, B15, B17) a mapování profilů.
 """
 
-import importlib
 
 import pytest
 
@@ -76,7 +75,6 @@ def test_settings_roundtrip(tmp_path, monkeypatch):
 
     settings.set("model", "claude-sonnet-5")
     settings.set("glossary", ["commit", "repo"])
-    importlib.reload  # no-op, jen dokumentace
 
     assert settings.get("model") == "claude-sonnet-5"
     assert settings.get("glossary") == ["commit", "repo"]
@@ -474,7 +472,7 @@ def test_streaming_segments_partition_and_cut_in_silence():
     assert len(cuts) == 2                                   # dvě pauzy → dva řezy
     for b in cuts:
         assert abs(float(audio[b])) < 1e-6                 # řez leží v tichu (nula)
-    covered = sum(b - a for a, b in zip([0] + cuts, cuts + [audio.size]))
+    covered = sum(b - a for a, b in zip([0] + cuts, cuts + [audio.size], strict=True))
     assert covered == audio.size                            # bez ztráty
 
 
@@ -1225,7 +1223,7 @@ def test_cancel_key_swallowed_only_when_it_cancelled_something(monkeypatch):
     for cancelled, expect_swallow in ((True, True), (False, False)):
         lis = hk.HotkeyListener(
             keycode=176, on_press=lambda: None, on_release=lambda: None,
-            cancel_keycode=53, on_cancel_key=lambda: cancelled,
+            cancel_keycode=53, on_cancel_key=lambda c=cancelled: c,
         )
         ev = object()
         res = lis._callback(None, kCGEventKeyDown, ev, None)
@@ -1308,13 +1306,13 @@ def test_level_step_maps_into_frame_range():
 
 
 def test_bars_scaled_keeps_centers_and_shrinks_height():
-    from spillway import baricon, design
+    from spillway import design
 
-    full = baricon._bars_scaled(1.0)
+    full = design.scaled_bars(1.0)
     assert full == design._WAVE_BARS, "k=1 musí dát přesně původní logo"
 
-    half = baricon._bars_scaled(0.5)
-    for (x0, t0, b0), (x1, t1, b1) in zip(design._WAVE_BARS, half):
+    half = design.scaled_bars(0.5)
+    for (x0, t0, b0), (x1, t1, b1) in zip(design._WAVE_BARS, half, strict=True):
         assert x1 == x0, "sloupce se nesmí posouvat do stran"
         assert (t1 + b1) / 2 == pytest.approx((t0 + b0) / 2), "střed zůstává"
         assert (b1 - t1) == pytest.approx((b0 - t0) / 2)
@@ -1337,31 +1335,31 @@ def _tallest_bar(bars) -> int:
 
 
 def test_processing_wave_travels_left_to_right():
-    from spillway import baricon
+    from spillway import baricon, design
 
-    peaks = [_tallest_bar(baricon._bars_wave(i)) for i in range(baricon.PULSE_FRAMES)]
+    peaks = [_tallest_bar(design.wave_bars(i, baricon.PULSE_FRAMES)) for i in range(baricon.PULSE_FRAMES)]
     # Hřeben musí obejít celou vlnovku — jinak to není běžící vlna, ale blikání.
     assert len(set(peaks)) == baricon.PULSE_FRAMES, f"hřeben stojí: {peaks}"
 
     # …a postupovat doprava (s přetečením na začátek, protože se to zacyklí).
-    n = len(baricon._bars_wave(0))
-    steps = [(b - a) % n for a, b in zip(peaks, peaks[1:])]
+    n = len(design.wave_bars(0, baricon.PULSE_FRAMES))
+    steps = [(b - a) % n for a, b in zip(peaks, peaks[1:], strict=False)]
     assert all(s == steps[0] for s in steps), f"vlna nejde rovnoměrně: {peaks}"
     assert steps[0] == 1, f"hřeben se má posouvat o sloupec doprava, jde o {steps[0]}"
 
 
 def test_processing_wave_loops_seamlessly_and_stays_calm():
-    from spillway import baricon
+    from spillway import baricon, design
 
-    assert baricon._bars_wave(0) == baricon._bars_wave(baricon.PULSE_FRAMES), (
+    assert design.wave_bars(0, baricon.PULSE_FRAMES) == design.wave_bars(baricon.PULSE_FRAMES, baricon.PULSE_FRAMES), (
         "poslední snímek musí navázat na první, jinak animace cukne"
     )
 
-    full = {b - t for _, t, b in baricon._bars_scaled(1.0)}
+    full = {b - t for _, t, b in design.scaled_bars(1.0)}
     wave = [
         b - t
         for i in range(baricon.PULSE_FRAMES)
-        for _, t, b in baricon._bars_wave(i)
+        for _, t, b in design.wave_bars(i, baricon.PULSE_FRAMES)
     ]
     # Zpracování nesmí vypadat jako plná výchylka ukazatele hlasitosti.
     assert max(wave) < max(full), "vlna nesmí dosáhnout výšky základního loga"
@@ -1506,8 +1504,48 @@ def test_auto_unload_default_is_one_minute_on_fresh_install(monkeypatch):
     # inline default v config.py se nikdy neuplatnil. Čerstvá instalace tak
     # dostala 15 s navzdory zdokumentovanému rozhodnutí.
     monkeypatch.setattr(settings, "_PATH", "/nonexistent/settings.json")
-    monkeypatch.delenv("SPILLWAY_AUTO_UNLOAD_MIN", raising=False)
-    assert config.get_auto_unload_minutes() == 1.0
+    monkeypatch.delenv("SPILLWAY_AUTO_UNLOAD_SEC", raising=False)
+    assert config.get_auto_unload_seconds() == 60
+
+
+def test_auto_unload_migrates_from_old_minutes_key(tmp_path, monkeypatch):
+    import json
+
+    from spillway import config, settings
+
+    # Kdo má uložený starý klíč v minutách, nesmí tiše spadnout na výchozí práh.
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"auto_unload_min": 2.5}), encoding="utf-8")
+    monkeypatch.setattr(settings, "_PATH", str(path))
+    monkeypatch.delenv("SPILLWAY_AUTO_UNLOAD_SEC", raising=False)
+    assert config.get_auto_unload_seconds() == 150
+    assert "auto_unload_min" not in settings._load(), "starý klíč se má zahodit"
+
+
+def test_auto_unload_rejects_nonsense_and_clamps_to_range():
+    from spillway.config import (
+        AUTO_UNLOAD_MAX_SEC,
+        AUTO_UNLOAD_MIN_SEC,
+        clamp_auto_unload,
+    )
+
+    # Nesmysl → None, volající si nechá starou hodnotu.
+    for bad in ("", "abc", "12x", None, "  ", "1.2.3"):
+        assert clamp_auto_unload(bad) is None, f"{bad!r} mělo být odmítnuto"
+
+    # 0 je platné a znamená „neuvolňovat nikdy".
+    assert clamp_auto_unload(0) == 0
+    assert clamp_auto_unload("-5") == 0
+
+    # Ořez do rozsahu — z UI ani z prostředí nesmí přijít hodnota, co appku rozhodí.
+    assert clamp_auto_unload(1) == AUTO_UNLOAD_MIN_SEC
+    assert clamp_auto_unload(99999) == AUTO_UNLOAD_MAX_SEC
+    assert AUTO_UNLOAD_MAX_SEC == 600, "strop je 10 minut"
+
+    # Běžné vstupy projdou beze změny, včetně desetinné čárky a mezer.
+    assert clamp_auto_unload(60) == 60
+    assert clamp_auto_unload(" 120 ") == 120
+    assert clamp_auto_unload("90,4") == 90
 
 
 def test_v_keycode_has_single_source_of_truth():
@@ -1606,3 +1644,64 @@ def test_price_picks_longest_matching_prefix():
     assert _price_for("claude-sonnet-5") == (3.0, 15.0)
     assert _price_for("claude-haiku-4-5") == (1.0, 5.0)
     assert _price_for("neznamy-model") == _PRICING_DEFAULT
+
+
+# --- Logo a schémata (jedna geometrie pro lištu i nápovědu) -------------------
+def test_logo_has_no_drops():
+    from spillway import design
+
+    # Kapky pod vlnou se v malých velikostech slily a do loga nepatří.
+    svg = design.logo_svg()
+    assert "<circle" not in svg, "logo nesmí obsahovat kapky"
+    assert svg.count("<rect") == len(design._WAVE_BARS)
+
+
+def test_bars_svg_is_wellformed_and_uses_shared_geometry():
+    from spillway import baricon, design
+
+    svg = design.bars_svg(design.scaled_bars(0.5), "#FF0000", 24, 24)
+    assert svg.startswith("<svg") and svg.endswith("</svg>")
+    assert 'viewBox="0 0 100 100"' in svg and 'fill="#FF0000"' in svg
+
+    # Ikona v liště i schémata v nápovědě musí kreslit z týchž funkcí, jinak
+    # se rozejdou a nápověda přestane odpovídat tomu, co uživatel vidí.
+    assert baricon._bars_for("idle", 0) == design.scaled_bars(1.0)
+    assert baricon._bars_for("proc", 3) == design.wave_bars(
+        3, baricon.PULSE_FRAMES, baricon._WAVE_LO, baricon._WAVE_HI
+    )
+
+
+# --- Okno nastavení: dvě stránky --------------------------------------------
+def test_settings_window_has_both_pages_and_no_leftover_placeholders():
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    for marker in ("pageSettings", "pageHelp", "showPage(", "saveUnload("):
+        assert marker in html, marker
+    # Placeholdery se musí všechny vyřešit, jinak by v okně svítilo „__IC_REC__".
+    assert "__" not in html.replace("__", "", 0) or not any(
+        t in html for t in ("__LOGO__", "__LANGS__", "__IC_IDLE__", "__IC_REC__",
+                            "__IC_PROC__", "__IC_CANCEL__")
+    )
+
+
+def test_settings_window_offers_unload_field_within_allowed_range():
+    from spillway import config
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    assert 'id="unload"' in html
+    # Meze v nápovědě musí odpovídat tomu, co skutečně vynucuje config.
+    assert f"{config.AUTO_UNLOAD_MIN_SEC}–{config.AUTO_UNLOAD_MAX_SEC}" in html
+
+
+# --- Popover -----------------------------------------------------------------
+def test_popover_footer_actions():
+    from spillway import popover
+
+    html = popover._HTML if hasattr(popover, "_HTML") else popover.HTML
+    assert "Nastavení…" not in html, "tři tečky pryč"
+    assert ">Nastavení<" in html and ">Nápověda<" in html
+    # Konec je jediná nevratná akce → musí být barevně oddělený.
+    assert 'class="danger"' in html and "open_help" in html
+    assert "--danger:#E11D48" in html, "červená z Domovoy palety"

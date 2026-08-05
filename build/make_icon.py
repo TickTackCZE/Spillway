@@ -1,5 +1,5 @@
 """Vygeneruje app ikonu (.icns) z waveform loga — zaoblený čtverec v accentu
-(#818CF8) na tmavém pozadí (Domovoy Půlnoční), bílá vlna uprostřed + kapky.
+(#818CF8) na tmavém pozadí (Domovoy Půlnoční) a waveform vlna uprostřed.
 
 Spuštění:  uv run python build/make_icon.py
 Výstup:    build/icon.icns
@@ -69,13 +69,6 @@ def render(size: int) -> NSImage:
         p = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(r, bar_w / 2, bar_w / 2)
         _color(_ACCENT).set()
         p.fill()
-
-    # Kapky pod vlnou.
-    for cx, cy, r in ((50, 90, 3.4), (63, 93, 2.4), (40, 92, 2.0)):
-        rect = NSMakeRect(mx(cx) - r * scale, my(cy) - r * scale, 2 * r * scale, 2 * r * scale)
-        dot = NSBezierPath.bezierPathWithOvalInRect_(rect)
-        _color(_ACCENT).set()
-        dot.fill()
 
     img.unlockFocus()
     return img
