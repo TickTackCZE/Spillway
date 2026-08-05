@@ -28,8 +28,16 @@ _DEFAULTS: dict = {
     # Potlačí se JEN během zpracování — jinde klávesa funguje normálně.
     "cancel_keycode": 53,            # Escape
     "cancel_label": "Escape",
-    "auto_unload_min": 0.25,         # [R5] uvolnit Whisper model po N min nečinnosti (15s); reload je levný (~1,6s)
+    # [R5] Uvolnit Whisper model po N min nečinnosti; reload je levný (~1,6 s).
+    # 1 min je vědomé rozhodnutí (změřeno na reálném provozu — viz
+    # _doc/spillway-rozvoj-a-napady.md): kratší práh sráží model uprostřed
+    # aktivní práce. Tenhle údaj je JEDINÝ zdroj pravdy — `config.py` z něj čte.
+    "auto_unload_min": 1.0,
     "llm_min_seconds": 5.0,          # kratší diktát → jen lokální úprava, bez volání Clauda
+    # Diagnostika (viz `diag.py`) — standardně vypnutá, ať log nenaroste a
+    # nezapisuje se víc, než je potřeba. "all" nebo výčet: "focus,hud,audio,text".
+    # Pozor: "text" zapisuje do logu PŘEPSANÝ TEXT, ne jen jeho délku.
+    "diagnostics": "",
 }
 
 

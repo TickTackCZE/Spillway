@@ -47,9 +47,10 @@ def record(
     """Zapíše jeden diktát do historie. Best-effort — chyby polkne.
 
     `outcome`: "pasted" (text se vložil) | "cancelled" (Escape) | "empty"
-    (prázdný přepis) | "error" (pád pipeline). Do statistik se počítá jen
-    "pasted" — jinak by prázdné a zrušené pokusy nafukovaly počty a srážely
-    vykázanou úsporu času.
+    (prázdný přepis) | "error" (pád pipeline) | "clipboard" (text skončil ve
+    schránce, protože nebylo kam vložit). Do statistik se počítají "pasted"
+    a "clipboard" — obojí je hotový, použitelný diktát. Prázdné a zrušené
+    pokusy ne, nafukovaly by počty a srážely vykázanou úsporu času.
 
     `app` je jen název aplikace; `domain` (u prohlížeče) se ukládá zvlášť, ať se
     „Chrome (claude.ai)" a „Chrome (gmail.com)" neroztříští v žebříčku aplikací.

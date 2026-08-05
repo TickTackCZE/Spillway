@@ -1250,3 +1250,359 @@ def test_cancel_key_untouched_when_not_the_cancel_key(monkeypatch):
     ev = object()
     assert lis._callback(None, kCGEventKeyDown, ev, None) is ev
     assert not calls, "rušicí callback se nesmí volat pro cizí klávesu"
+
+
+# --- Živý ukazatel hlasitosti v ikoně lišty ---------------------------------
+def test_rms_to_level_silence_is_zero_and_loud_is_full():
+    from spillway.audio import _rms_to_level
+
+    assert _rms_to_level(0.0) == 0.0
+    assert _rms_to_level(1e-9) == 0.0, "digitální ticho nesmí ikonu rozhýbat"
+    assert _rms_to_level(1.0) == 1.0, "plný signál = plná výchylka"
+
+
+def test_rms_to_level_is_monotonic_and_bounded():
+    from spillway.audio import _rms_to_level
+
+    vals = [_rms_to_level(r) for r in (0.0005, 0.005, 0.02, 0.08, 0.3)]
+    assert all(0.0 <= v <= 1.0 for v in vals), "ukazatel musí zůstat v 0..1"
+    assert vals == sorted(vals), "hlasitější vstup nesmí dát nižší výchylku"
+    assert vals[1] < vals[3], "běžná řeč se musí vejít doprostřed rozsahu"
+
+
+def test_recorder_level_reads_only_tail_and_survives_empty():
+    import numpy as np
+
+    from spillway.audio import Recorder
+
+    r = Recorder()
+    assert r.level() == 0.0, "bez nahrávky nemá co ukazovat"
+
+    # Dlouhé ticho + hlasitý konec: ukazatel musí reagovat na KONEC bufferu,
+    # jinak by v liště zaostával za řečí o celou nahrávku.
+    quiet = np.zeros(16000 * 5, dtype=np.float32)
+    loud = np.full(16000, 0.3, dtype=np.float32)
+    r._frames = [quiet, loud]
+    assert r.level() > 0.5
+
+
+def test_recorder_level_ignores_old_loud_audio():
+    import numpy as np
+
+    from spillway.audio import Recorder
+
+    r = Recorder()
+    r._frames = [np.full(16000, 0.5, dtype=np.float32), np.zeros(16000, dtype=np.float32)]
+    assert r.level() == 0.0, "hlasitý úsek před vteřinou už do ukazatele nepatří"
+
+
+# --- Snímky animované ikony -------------------------------------------------
+def test_level_step_maps_into_frame_range():
+    from spillway import baricon
+
+    assert baricon.level_step(0.0) == 0
+    assert baricon.level_step(1.0) == baricon.LEVEL_STEPS - 1
+    assert baricon.level_step(2.5) == baricon.LEVEL_STEPS - 1, "musí ořezat"
+    assert baricon.level_step(-1.0) == 0
+    assert baricon.level_step(float("nan")) == 0
+
+
+def test_bars_scaled_keeps_centers_and_shrinks_height():
+    from spillway import baricon, design
+
+    full = baricon._bars_scaled(1.0)
+    assert full == design._WAVE_BARS, "k=1 musí dát přesně původní logo"
+
+    half = baricon._bars_scaled(0.5)
+    for (x0, t0, b0), (x1, t1, b1) in zip(design._WAVE_BARS, half):
+        assert x1 == x0, "sloupce se nesmí posouvat do stran"
+        assert (t1 + b1) / 2 == pytest.approx((t0 + b0) / 2), "střed zůstává"
+        assert (b1 - t1) == pytest.approx((b0 - t0) / 2)
+
+
+def test_frame_scales_distinguish_states():
+    from spillway import baricon
+
+    rec = [baricon._scale_for("rec", i) for i in range(baricon.LEVEL_STEPS)]
+    assert rec == sorted(rec), "hlasitěji = vyšší sloupce"
+    assert rec[-1] == 1.0 and rec[0] > 0, "v tichu zbyde aspoň řádka teček"
+
+    assert baricon._scale_for("idle", 0) == 1.0, "klid = základní logo"
+    assert baricon._scale_for("cancel", 0) < 0.5
+
+
+def _tallest_bar(bars) -> int:
+    heights = [b - t for _, t, b in bars]
+    return heights.index(max(heights))
+
+
+def test_processing_wave_travels_left_to_right():
+    from spillway import baricon
+
+    peaks = [_tallest_bar(baricon._bars_wave(i)) for i in range(baricon.PULSE_FRAMES)]
+    # Hřeben musí obejít celou vlnovku — jinak to není běžící vlna, ale blikání.
+    assert len(set(peaks)) == baricon.PULSE_FRAMES, f"hřeben stojí: {peaks}"
+
+    # …a postupovat doprava (s přetečením na začátek, protože se to zacyklí).
+    n = len(baricon._bars_wave(0))
+    steps = [(b - a) % n for a, b in zip(peaks, peaks[1:])]
+    assert all(s == steps[0] for s in steps), f"vlna nejde rovnoměrně: {peaks}"
+    assert steps[0] == 1, f"hřeben se má posouvat o sloupec doprava, jde o {steps[0]}"
+
+
+def test_processing_wave_loops_seamlessly_and_stays_calm():
+    from spillway import baricon
+
+    assert baricon._bars_wave(0) == baricon._bars_wave(baricon.PULSE_FRAMES), (
+        "poslední snímek musí navázat na první, jinak animace cukne"
+    )
+
+    full = {b - t for _, t, b in baricon._bars_scaled(1.0)}
+    wave = [
+        b - t
+        for i in range(baricon.PULSE_FRAMES)
+        for _, t, b in baricon._bars_wave(i)
+    ]
+    # Zpracování nesmí vypadat jako plná výchylka ukazatele hlasitosti.
+    assert max(wave) < max(full), "vlna nesmí dosáhnout výšky základního loga"
+    assert min(wave) > 0, "sloupce nesmí zmizet úplně"
+
+
+# --- „Není kam vložit" (třetí větev) ----------------------------------------
+def test_text_input_decided_by_editability_not_by_role_or_selection():
+    from spillway.context import is_text_input
+
+    # Podle role to nejde: plocha Finderu, rám okna i webový editor se hlásí
+    # stejně (AXGroup/AXScrollArea). Podle výběru textu taky ne: Chromium hlásí
+    # AXSelectedTextRange i pro celou stránku bez zaměřeného pole a jako „kurzor"
+    # vrátí začátek dokumentu — proto okénko přistávalo v rohu okna.
+    # Rozhoduje editovatelnost: jde prvku nastavit hodnotu?
+    for role in ("AXGroup", "AXScrollArea", "AXWebArea", "AXUnknown", None):
+        assert is_text_input(True, role), "editovatelný prvek = dá se do něj psát"
+        assert not is_text_input(False, role), "needitovatelný prvek není pole"
+
+    # Okno ani tlačítko se polem nestane.
+    for role in ("AXWindow", "AXButton", "AXList", "AXToolbar"):
+        assert not is_text_input(False, role)
+
+    # Doplněk pro vstupy, které editovatelnost nehlásí.
+    for role in ("AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"):
+        assert is_text_input(False, role)
+
+
+def test_has_focused_text_field_returns_none_when_ax_unavailable(monkeypatch):
+    import builtins
+
+    from spillway import context
+
+    real_import = builtins.__import__
+
+    def blocked(name, *a, **kw):
+        if name == "ApplicationServices":
+            raise ImportError("bez AX")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    # Bez Accessibility se nesmí tvrdit „není pole" — to by zablokovalo vkládání.
+    assert context.has_focused_text_field() is None
+
+
+def test_no_field_dictation_keeps_hud_at_icon_for_whole_flow():
+    from spillway.app import Controller
+
+    # Rozhodnutí „diktuje se bez pole" padne jednou na začátku a drží celý
+    # diktát — jinak by okénko během zpracování poskakovalo podle toho, co má
+    # zrovna fokus, místo aby zůstalo pod ikonou až po „Připraveno k vložení".
+    c = Controller.__new__(Controller)
+    assert getattr(c, "no_field", False) is False, "výchozí stav = diktuje se do pole"
+
+    c.no_field = True
+    c.target_bundle = "com.apple.finder"
+
+    # Tohle je přesně podmínka, kterou tray počítá pro polohu okénka.
+    left_app = False
+    assert left_app or c.no_field, "bez pole musí okénko k ikoně i bez odchodu z appky"
+
+
+# --- Sjednocené zjišťování fokusu (code review) ------------------------------
+def test_only_one_place_reads_the_focused_element():
+    import pathlib
+
+    # Regrese na třídu bugu, která nás pokousala dvakrát: když si každá funkce
+    # tahá zaměřený prvek sama, můžou se ptát na různé prvky a rozejít se
+    # v závěrech (okénko viselo jinde, než kam text šel).
+    src = pathlib.Path("src/spillway/context.py").read_text(encoding="utf-8")
+    assert src.count("kAXFocusedUIElementAttribute") == 1, (
+        "zaměřený prvek smí číst jediné místo (_focused_element)"
+    )
+
+
+def test_focus_snapshot_survives_without_accessibility(monkeypatch):
+    from spillway import context
+
+    monkeypatch.setattr(context, "_ax", lambda: None)
+    snap = context.focus_snapshot(want_text=True, want_line=True, want_sig=True)
+    assert snap.ok is False
+    assert snap.is_input is False
+    assert (snap.text, snap.caret, snap.sig, snap.at_line_start) == (None, None, None, None)
+    assert "neodpověděl" in snap.description
+    # Bez AX se nesmí tvrdit „není pole" — to by zablokovalo vkládání.
+    assert context.has_focused_text_field() is None
+
+
+def test_focus_snapshot_reads_only_what_caller_asked_for(monkeypatch):
+    from spillway import context
+
+    read = []
+    monkeypatch.setattr(context, "_ax", lambda: object())
+    monkeypatch.setattr(context, "_focused_element", lambda ax: object())
+    monkeypatch.setattr(context, "_read_role", lambda ax, el: "AXTextArea")
+    monkeypatch.setattr(context, "_read_settable", lambda ax, el: True)
+    monkeypatch.setattr(context, "_read_text_caret",
+                        lambda ax, el: (read.append("text"), ("ahoj", 4))[1])
+    monkeypatch.setattr(context, "_read_at_line_start",
+                        lambda ax, el: (read.append("line"), False)[1])
+    monkeypatch.setattr(context, "_read_sig",
+                        lambda ax, el, role: (read.append("sig"), (role, 1, 2, 3, 4))[1])
+
+    # Každý AX atribut je round-trip do cizí appky s vlastním sekundovým stropem,
+    # takže se nesmí číst nic, co volající nechtěl.
+    context.focus_snapshot()
+    assert read == [], "bez parametrů se nesmí číst nic navíc"
+
+    read.clear()
+    snap = context.focus_snapshot(want_text=True)
+    assert read == ["text"] and snap.text == "ahoj" and snap.caret == 4
+
+    read.clear()
+    snap = context.focus_snapshot(want_text=True, want_line=True, want_sig=True)
+    assert set(read) == {"text", "line", "sig"}
+    assert snap.sig == ("AXTextArea", 1, 2, 3, 4)
+
+
+def test_focus_snapshot_skips_field_reads_when_not_an_input(monkeypatch):
+    from spillway import context
+
+    read = []
+    monkeypatch.setattr(context, "_ax", lambda: object())
+    monkeypatch.setattr(context, "_focused_element", lambda ax: object())
+    monkeypatch.setattr(context, "_read_role", lambda ax, el: "AXWindow")
+    monkeypatch.setattr(context, "_read_settable", lambda ax, el: False)
+    monkeypatch.setattr(context, "_read_text_caret",
+                        lambda ax, el: (read.append("text"), (None, None))[1])
+    monkeypatch.setattr(context, "_read_at_line_start",
+                        lambda ax, el: (read.append("line"), None)[1])
+
+    snap = context.focus_snapshot(want_text=True, want_line=True)
+    assert snap.ok is True and snap.is_input is False
+    assert read == [], "u prvku, kam se psát nedá, nemá smysl číst obsah ani kurzor"
+
+
+def test_auto_unload_default_is_one_minute_on_fresh_install(monkeypatch):
+    from spillway import config, settings
+
+    # Výchozí hodnota byla dřív na dvou místech a rozešla se: settings.py mělo
+    # 0.25 (15 s), config.py 1.0 — a protože _load() vždy doplní _DEFAULTS,
+    # inline default v config.py se nikdy neuplatnil. Čerstvá instalace tak
+    # dostala 15 s navzdory zdokumentovanému rozhodnutí.
+    monkeypatch.setattr(settings, "_PATH", "/nonexistent/settings.json")
+    monkeypatch.delenv("SPILLWAY_AUTO_UNLOAD_MIN", raising=False)
+    assert config.get_auto_unload_minutes() == 1.0
+
+
+def test_v_keycode_has_single_source_of_truth():
+    from spillway import hotkey, paste
+
+    # Tentýž fyzický kód slouží k odeslání našeho ⌘V i k rozpoznání uživatelova.
+    assert hotkey.V_KEYCODE is paste.V_KEYCODE
+
+
+# --- Diagnostický režim ------------------------------------------------------
+def test_diagnostics_off_by_default(monkeypatch):
+    from spillway import diag, settings
+
+    monkeypatch.delenv("SPILLWAY_DIAG", raising=False)
+    monkeypatch.setattr(settings, "_PATH", "/nonexistent/settings.json")
+    assert diag.active() == frozenset(), "diagnostika nesmí být zapnutá sama od sebe"
+    assert not any(diag.enabled(a) for a in diag.AREAS)
+
+
+def test_diagnostics_env_overrides_settings(monkeypatch):
+    from spillway import diag, settings
+
+    monkeypatch.setattr(settings, "get", lambda k, d=None: "audio" if k == "diagnostics" else d)
+    assert diag.active() == frozenset({"audio"}), "bez proměnné platí nastavení"
+
+    # Proměnná musí přebít uložené nastavení, ať jde appka spustit s diagnostikou
+    # jednorázově, bez zásahu do konfigurace.
+    monkeypatch.setenv("SPILLWAY_DIAG", "focus,hud")
+    assert diag.active() == frozenset({"focus", "hud"})
+
+    monkeypatch.setenv("SPILLWAY_DIAG", "all")
+    assert diag.active() == frozenset(diag.AREAS)
+
+    # Prázdná hodnota diagnostiku vypne, i když je v nastavení zapnutá.
+    monkeypatch.setenv("SPILLWAY_DIAG", "")
+    assert diag.active() == frozenset()
+
+
+def test_diagnostics_ignores_unknown_areas(monkeypatch):
+    from spillway import diag
+
+    monkeypatch.setenv("SPILLWAY_DIAG", "focus, nesmysl ,HUD")
+    # Neznámé se zahodí, známé projdou bez ohledu na velikost písmen a mezery.
+    assert diag.active() == frozenset({"focus", "hud"})
+
+    monkeypatch.setenv("SPILLWAY_DIAG", "uplny-nesmysl")
+    assert diag.active() == frozenset()
+
+
+def test_diagnostics_log_is_silent_when_area_off(monkeypatch, capsys):
+    from spillway import diag
+
+    monkeypatch.setenv("SPILLWAY_DIAG", "hud")
+    diag.log("focus", "tohle nesmí být vidět")
+    diag.log("hud", "tohle ano")
+    out = capsys.readouterr().out
+    assert "nesmí být vidět" not in out
+    assert "[hud] tohle ano" in out
+
+
+def test_diagnostics_survives_broken_settings(monkeypatch):
+    from spillway import diag, settings
+
+    def boom(*a, **kw):
+        raise RuntimeError("rozbité nastavení")
+
+    monkeypatch.delenv("SPILLWAY_DIAG", raising=False)
+    monkeypatch.setattr(settings, "get", boom)
+    # Diagnostika nikdy nesmí shodit provoz — nanejvýš mlčí.
+    assert diag.active() == frozenset()
+    diag.log("focus", "nespadnout")
+
+
+def test_log_never_contains_dictation_text_by_default(monkeypatch):
+    from spillway import app, settings
+
+    secret = "tajná diktovaná věta o penězích"
+    monkeypatch.delenv("SPILLWAY_DIAG", raising=False)
+    monkeypatch.setattr(settings, "_PATH", "/nonexistent/settings.json")
+    # [security] Log není šifrovaný a leží v běžném umístění.
+    assert secret not in app._preview(secret)
+    assert app._preview(secret) == f"{len(secret)} zn."
+
+    monkeypatch.setenv("SPILLWAY_DIAG", "text")
+    assert secret in app._preview(secret), "při ladění se text vypsat má"
+
+
+# --- Cenění modelů -----------------------------------------------------------
+def test_price_picks_longest_matching_prefix():
+    from spillway.llm import _PRICING_DEFAULT, _price_for
+
+    # "claude-opus-4-8" musí přebít obecnější "claude-opus", jinak by se
+    # účtovalo trojnásobkem.
+    assert _price_for("claude-opus-4-8-20250101") == (5.0, 25.0)
+    assert _price_for("claude-opus-4-1") == (15.0, 75.0)
+    assert _price_for("claude-sonnet-5") == (3.0, 15.0)
+    assert _price_for("claude-haiku-4-5") == (1.0, 5.0)
+    assert _price_for("neznamy-model") == _PRICING_DEFAULT

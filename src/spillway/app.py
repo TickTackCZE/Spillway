@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-from . import config, context, stats
+from . import config, context, diag, stats
 from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner, basic_cleanup
@@ -34,16 +34,14 @@ CANCEL_MIN_VISIBLE_S = 0.6
 
 _CANCELLED = object()  # sentinel: běh přerušen Escapem uprostřed
 
-# [security] Do logu se ve výchozím stavu NEpíše obsah diktátů (log není šifrovaný
-# a je v běžném umístění). Plný text jen s SPILLWAY_DEBUG_TEXT=1 na ladění.
-import os as _os  # noqa: E402
-
-_LOG_TEXT = _os.environ.get("SPILLWAY_DEBUG_TEXT", "0").lower() not in ("0", "false", "no")
-
-
 def _preview(text: str) -> str:
-    """Bezpečný náhled pro log: buď délka (default), nebo plný text při ladění."""
-    return repr(text) if _LOG_TEXT else f"{len(text)} zn."
+    """Bezpečný náhled pro log: buď délka (default), nebo plný text při ladění.
+
+    [security] Do logu se ve výchozím stavu NEpíše obsah diktátů — log není
+    šifrovaný a leží v běžném umístění. Plný text jen s diagnostickou oblastí
+    `text` (viz `diag.py`).
+    """
+    return repr(text) if diag.enabled("text") else f"{len(text)} zn."
 
 
 def _setup_logging() -> str | None:
@@ -122,6 +120,18 @@ class Controller:
         # Aplikace, do které se diktuje (bundle ID). Podle ní HUD pozná, že jsi
         # odešel jinam, a přeskočí od kurzoru nahoru k ikoně v liště.
         self.target_bundle: str | None = None
+        # Diktuje se bez zaklikaného pole? Zjistí se JEDNOU na začátku nahrávání
+        # a platí pro celý diktát, ať je flow jednotný: okénko visí pod ikonou
+        # už při nahrávání a zůstane tam přes zpracování až po lístek
+        # „Připraveno k vložení". Bez toho by okénko během diktátu poskakovalo
+        # podle toho, co zrovna má fokus.
+        self.no_field = False
+        # Jak dopadlo zjištění fokusu ("ano"/"ne"/"?") — jde do souhrnu diktátu,
+        # ať se dá i bez zapnuté diagnostiky zpětně poznat, proč text skončil
+        # ve schránce místo v poli.
+        self._focus_field = "?"
+        # Vyhlazená hlasitost mikrofonu (0..1) pro animovanou ikonu v liště.
+        self._level_smooth = 0.0
         # [F2] Vlákno, které otevírá mikrofon; `_process` na něj počká.
         self._start_thread: threading.Thread | None = None
         # Streaming přepis: vlákno segmentuje řeč v tichu a přepisuje segmenty už
@@ -200,6 +210,24 @@ class Controller:
         na lístek, nebo začal nový diktát."""
         self.awaiting_paste = False
 
+    def mic_level(self) -> float:
+        """Vyhlazená hlasitost mikrofonu 0..1 pro živý ukazatel v ikoně lišty.
+
+        Vyhlazení je záměrně asymetrické (nahoru skokem, dolů pozvolna) — stejně
+        jako u studiových ukazatelů. Bez něj by ikona mezi slabikami padala na nulu
+        a jen by blikala; takhle sleduje řeč a v tichu klidně klesne.
+        Mimo nahrávání vrací 0, ať se nesahá na buffer zbytečně.
+        """
+        if self.state != RECORDING:
+            self._level_smooth = 0.0
+            return 0.0
+        try:
+            raw = self.recorder.level()
+        except Exception:  # noqa: BLE001 — ukazatel nikdy nesmí shodit nahrávání
+            return self._level_smooth
+        self._level_smooth = max(raw, self._level_smooth * 0.65)
+        return self._level_smooth
+
     def is_cancelling(self) -> bool:
         """True, dokud má HUD ukazovat „Ruším".
 
@@ -270,6 +298,17 @@ class Controller:
                 self.target_bundle = context.frontmost_app()[1]
             except Exception:  # noqa: BLE001
                 self.target_bundle = None
+            # Není kam psát? Pak celý diktát běží „u ikony" (viz `no_field`).
+            try:
+                snap = context.focus_snapshot()
+                self.no_field = snap.ok and not snap.is_input
+                self._focus_field = ("ano" if snap.is_input else "ne") if snap.ok else "?"
+                why = snap.description
+            except Exception:  # noqa: BLE001
+                self.no_field = False
+                self._focus_field = "?"
+                why = "chyba zjišťování fokusu"
+            diag.log("focus", f"{why} → okénko {'u ikony' if self.no_field else 'u pole'}")
             self.recorder.start()
         except Exception as exc:  # noqa: BLE001 — [O6] viditelná chyba, ne tichý pád
             print(f"❌ mikrofon se nepodařilo spustit: {exc}")
@@ -430,13 +469,20 @@ class Controller:
                 try:
                     a_name, a_bundle = context.frontmost_app()
                     ctx["app_name"], ctx["bundle"] = a_name, a_bundle
+                    # HUD se řídí `target_bundle`, vkládání `ctx["bundle"]` —
+                    # sjednotit, jinak okénko hlásí jiný cíl, než kam text půjde.
+                    # Rozejdou se, když uživatel přepne appku, zatímco drží klávesu.
+                    self.target_bundle = a_bundle
                     ctx["profile"] = context.app_profile(a_bundle, a_name)
                     ctx["win_target"] = context.is_windows_target(a_bundle, a_name)
-                    ctx["field_text"], ctx["caret"] = context.focused_field()
-                    ctx["at_line_start"] = context.caret_at_line_start()
-                    # Otisk cílového pole — před vložením ověříme, že jsme pořád
-                    # v něm (jinak text jen do schránky, viz níž).
-                    ctx["field_sig"] = context.focused_field_signature()
+                    # JEDEN snímek fokusu pro všechno — obsah pole, kurzor i otisk
+                    # pole musí pocházet ze stejného okamžiku. Dřív to byly tři
+                    # nezávislé dotazy a mezi nimi se fokus mohl změnit.
+                    # Otisk pole slouží k ověření před vložením, že jsme pořád
+                    # ve stejném poli (jinak text jen do schránky, viz níž).
+                    snap = context.focus_snapshot(want_text=True, want_sig=True)
+                    ctx["field_text"], ctx["caret"] = snap.text, snap.caret
+                    ctx["field_sig"] = snap.sig
                     if config.field_context():
                         b_profile, b_domain = context.browser_context(a_bundle)
                         ctx["domain"] = b_domain
@@ -564,12 +610,18 @@ class Controller:
             # konec řádku, takže z textu by to po Enteru vypadalo jako konec slova
             # a vloudil by se oddělovač navíc na začátek nového řádku.
             if config.auto_space() and not text[:1].isspace():
-                at_line_start = context.caret_at_line_start()
-                if at_line_start is not True:
-                    sig = ctx.get("field_sig")
+                # ČERSTVÝ snímek, a to celý najednou. Mezi sběrem kontextu a tímhle
+                # bodem uběhl přepis i volání Clauda (klidně sekundy) a uživatel
+                # mohl v poli sám psát — oddělovač se proto musí rozhodovat podle
+                # toho, jak pole vypadá TEĎ. Dřív se míchal čerstvý `at_line_start`
+                # se starým obsahem pole, což dávalo špatnou mezeru nebo řádek.
+                now = context.focus_snapshot(want_text=True, want_line=True, want_sig=True)
+                if now.at_line_start is not True:
+                    sig = now.sig or ctx.get("field_sig")
                     role = sig[0] if sig else None
                     sep = context.leading_separator(
-                        field_text, caret,
+                        now.text if now.text is not None else field_text,
+                        now.caret if now.text is not None else caret,
                         role=role,
                         # RDP/AVD se ťuká znak po znaku → „\n" by byl Enter (odeslání).
                         allow_newline=not win_target,
@@ -604,9 +656,22 @@ class Controller:
             # okno)? Taky nevkládat — jinak text spadne do cizího pole ve stejné
             # appce. `same_field` vrací None, když otisk nejde získat (web/Electron)
             # — tam se chováme jako dřív a vložíme (jinak by to hlásilo pořád).
-            if context.same_field(ctx.get("field_sig"), context.focused_field_signature()) is False:
+            now_sig = context.focus_snapshot(want_sig=True).sig
+            if context.same_field(ctx.get("field_sig"), now_sig) is False:
                 copy_to_clipboard(text)
                 print("📋 jsi v jiném poli → text ve schránce, nevkládám.")
+                self.awaiting_paste = True
+                outcome = "clipboard"
+                return
+
+            # Není vůbec kam vložit (fokus na okně, seznamu, tlačítku)? Text by
+            # spadl do prázdna — nebo by ho appka vzala jako klávesové zkratky.
+            # Jen prokazatelné „ne"; `None` (web/Electron) vkládáme jako dosud.
+            # U RDP/AVD se neptáme vůbec: pole je uvnitř vzdálené plochy a macOS
+            # do ní nevidí, takže by odpověď stejně nic neznamenala.
+            if not win_target and context.has_focused_text_field() is False:
+                copy_to_clipboard(text)
+                print("📋 není zaměřené textové pole → text ve schránce, nevkládám.")
                 self.awaiting_paste = True
                 outcome = "clipboard"
                 return
@@ -638,7 +703,7 @@ class Controller:
             total = time.perf_counter() - t_start
             print(
                 f"🏁 diktát: outcome={outcome} audio={audio_secs:.1f}s řeč={speech_secs:.1f}s "
-                f"raw={len(raw)}zn final={len(text)}zn app={app_name} "
+                f"raw={len(raw)}zn final={len(text)}zn app={app_name} pole={self._focus_field} "
                 f"cena=${llm_cost:.4f} celkem={total:.1f}s"
             )
             with self._lock:

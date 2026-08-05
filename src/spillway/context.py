@@ -6,7 +6,11 @@ Titulek okna schválně neřešíme (vyžadoval by Screen Recording — viz plá
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from AppKit import NSWorkspace
+
+from . import diag
 
 # Bundle ID → profil formátování.
 _PROFILES = {
@@ -170,64 +174,12 @@ def app_profile(bundle_id: str | None, app_name: str | None = None) -> str:
     return "generic"
 
 
-def focused_field_signature() -> tuple | None:
-    """„Otisk" právě zaměřeného pole — k ověření, že vkládáme TAM, kam se diktovalo.
-
-    Vrací (role, x, y, šířka, výška) zaměřeného prvku, nebo None, když to nejde
-    zjistit (web/Electron, chybí oprávnění). Různá pole mají různou pozici/velikost,
-    takže se rozliší i dvě prázdná pole (obsah k tomu schválně nepoužíváme — ten se
-    legitimně mění tím, jak uživatel píše).
-
-    Použití je záměrně konzervativní: když otisk nesedí NEBO ho nejde získat,
-    volající text raději nechá ve schránce, než aby ho vložil do cizího pole.
-    """
-    try:
-        from ApplicationServices import (
-            AXUIElementCopyAttributeValue,
-            AXUIElementCreateSystemWide,
-            AXUIElementSetMessagingTimeout,
-            AXValueGetValue,
-            kAXFocusedUIElementAttribute,
-            kAXPositionAttribute,
-            kAXRoleAttribute,
-            kAXSizeAttribute,
-            kAXValueCGPointType,
-            kAXValueCGSizeType,
-        )
-    except Exception:  # noqa: BLE001
-        return None
-    try:
-        system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 1.0)
-        err, focused = AXUIElementCopyAttributeValue(
-            system, kAXFocusedUIElementAttribute, None
-        )
-        if err or focused is None:
-            return None
-        AXUIElementSetMessagingTimeout(focused, 1.0)
-
-        role = None
-        err, role_val = AXUIElementCopyAttributeValue(focused, kAXRoleAttribute, None)
-        if not err and isinstance(role_val, str):
-            role = role_val
-
-        err1, pos_val = AXUIElementCopyAttributeValue(focused, kAXPositionAttribute, None)
-        err2, size_val = AXUIElementCopyAttributeValue(focused, kAXSizeAttribute, None)
-        if err1 or err2 or pos_val is None or size_val is None:
-            return None
-        okp, pt = AXValueGetValue(pos_val, kAXValueCGPointType, None)
-        oks, sz = AXValueGetValue(size_val, kAXValueCGSizeType, None)
-        if not (okp and oks):
-            return None
-        # Zaokrouhlení na celé body — drobné subpixelové rozdíly nejsou změna pole.
-        return (role, round(float(pt.x)), round(float(pt.y)),
-                round(float(sz.width)), round(float(sz.height)))
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def same_field(before: tuple | None, now: tuple | None, tol: int = 8) -> bool | None:
     """Je zaměřené pole pořád to samé jako při diktování?
+
+    Porovnává „otisky" z `focus_snapshot(want_sig=True).sig`, tedy
+    (role, x, y, šířka, výška). Obsah pole k tomu schválně nepoužíváme — ten
+    se legitimně mění tím, jak uživatel píše.
 
     True = ano, False = jiné pole, None = nelze rozhodnout (otisk chybí — typicky
     web/Electron). `tol` je tolerance v bodech na drobné posuny (scroll o pár pixelů,
@@ -242,61 +194,241 @@ def same_field(before: tuple | None, now: tuple | None, tol: int = 8) -> bool | 
     return abs(before[1] - now[1]) <= tol and abs(before[2] - now[2]) <= tol
 
 
-def focused_field() -> tuple[str | None, int | None]:
-    """(existující text zaměřeného pole, pozice kurzoru) přes Accessibility.
+# Role, které JSOU textový vstup. `AXComboBox`/`AXSearchField` taky — dá se do
+# nich psát, takže vložení dává smysl.
+_TEXT_ROLES = frozenset(
+    {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
+)
+def is_text_input(value_settable: bool, role: str | None) -> bool:
+    """Jádro rozhodnutí „dá se do toho psát?".
 
-    Vrátí (None, None), když pole nejde inspektovat (Electron/web, chybí
-    oprávnění). Prázdné pole vrací ("", caret). Čtení je lokální — nic neodesílá.
+    **Rozhoduje editovatelnost** — jde prvku nastavit `AXValue`. Ani role, ani
+    přítomnost výběru textu na to nestačí:
+
+    - podle *role* to nejde, protože plocha Finderu, rám okna i webový editor
+      se běžně hlásí stejně (`AXGroup`, `AXScrollArea`);
+    - podle *výběru textu* to nejde, protože Chromium hlásí `AXSelectedTextRange`
+      i pro celou stránku, na které žádné pole zaměřené není — a `AXBoundsForRange`
+      pak vrátí začátek dokumentu, tedy levý horní roh okna.
+
+    Role zůstává jako doplněk pro vstupy, které editovatelnost nehlásí
+    (typicky `AXComboBox`).
+
+    Oddělené od AX volání, aby šlo pravidlo otestovat bez GUI.
+    """
+    return bool(value_settable) or role in _TEXT_ROLES
+
+
+def _ax():
+    """Zkratka na ApplicationServices; None, když modul není (test/CI bez GUI)."""
+    try:
+        import ApplicationServices as _mod
+
+        return _mod
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cfrange_type(ax) -> int:  # noqa: ANN001
+    """Konstanta typu CFRange — jméno se mezi verzemi PyObjC liší."""
+    return getattr(ax, "kAXValueCFRangeType", None) or getattr(
+        ax, "kAXValueTypeCFRange", None
+    ) or 4
+
+
+def _range_location(ax, rng_val) -> int | None:  # noqa: ANN001
+    """Začátek rozsahu (`CFRange.location`) z AX hodnoty."""
+    if rng_val is None:
+        return None
+    try:
+        ok, rng = ax.AXValueGetValue(rng_val, _cfrange_type(ax), None)
+        if not ok:
+            return None
+        loc = getattr(rng, "location", None)
+        if loc is None:
+            loc = rng[0]
+        return int(loc)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _focused_element(ax):  # noqa: ANN001
+    """Zaměřený prvek s nastaveným timeoutem, nebo None.
+
+    Jediné místo v modulu, které sahá na `AXFocusedUIElement`. Všechno ostatní
+    z něj jen odvozuje — dřív si ho tahaly čtyři funkce zvlášť, takže se mohly
+    ptát na různé prvky a rozejít se v závěrech.
     """
     try:
-        from ApplicationServices import (
-            AXUIElementCopyAttributeValue,
-            AXUIElementCreateSystemWide,
-            AXUIElementSetMessagingTimeout,
-            AXValueGetValue,
-            kAXFocusedUIElementAttribute,
-            kAXSelectedTextRangeAttribute,
-            kAXValueAttribute,
-        )
-    except Exception:  # noqa: BLE001
-        return (None, None)
-    try:
-        from ApplicationServices import kAXValueCFRangeType as cfrange
-    except Exception:  # noqa: BLE001
-        try:
-            from ApplicationServices import kAXValueTypeCFRange as cfrange
-        except Exception:  # noqa: BLE001
-            cfrange = 4
-
-    try:
-        system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 1.0)  # [hang] AX nesmí blokovat
-        err, focused = AXUIElementCopyAttributeValue(
-            system, kAXFocusedUIElementAttribute, None
+        system = ax.AXUIElementCreateSystemWide()
+        # AX volání nemají default timeout — na hlavním vlákně (HUD) by
+        # nereagující cílová appka zmrazila celou aplikaci. Strop 1 s.
+        ax.AXUIElementSetMessagingTimeout(system, 1.0)
+        err, focused = ax.AXUIElementCopyAttributeValue(
+            system, ax.kAXFocusedUIElementAttribute, None
         )
         if err or focused is None:
-            return (None, None)
-        AXUIElementSetMessagingTimeout(focused, 1.0)
-        err, text = AXUIElementCopyAttributeValue(focused, kAXValueAttribute, None)
+            return None
+        ax.AXUIElementSetMessagingTimeout(focused, 1.0)
+        return focused
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _read_role(ax, el) -> str | None:  # noqa: ANN001
+    try:
+        err, role = ax.AXUIElementCopyAttributeValue(el, ax.kAXRoleAttribute, None)
+        return role if (not err and isinstance(role, str)) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _read_settable(ax, el) -> bool:  # noqa: ANN001
+    try:
+        err, val = ax.AXUIElementIsAttributeSettable(el, ax.kAXValueAttribute, None)
+        return bool(val) if not err else False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _read_sig(ax, el, role) -> tuple | None:  # noqa: ANN001
+    """Otisk pole (role, x, y, šířka, výška) — k ověření, že vkládáme tam,
+    kam se diktovalo."""
+    try:
+        err1, pos_val = ax.AXUIElementCopyAttributeValue(el, ax.kAXPositionAttribute, None)
+        err2, size_val = ax.AXUIElementCopyAttributeValue(el, ax.kAXSizeAttribute, None)
+        if err1 or err2 or pos_val is None or size_val is None:
+            return None
+        okp, pt = ax.AXValueGetValue(pos_val, ax.kAXValueCGPointType, None)
+        oks, sz = ax.AXValueGetValue(size_val, ax.kAXValueCGSizeType, None)
+        if not (okp and oks):
+            return None
+        # Zaokrouhlení na celé body — subpixelové rozdíly nejsou změna pole.
+        return (role, round(float(pt.x)), round(float(pt.y)),
+                round(float(sz.width)), round(float(sz.height)))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _read_text_caret(ax, el) -> tuple[str | None, int | None]:  # noqa: ANN001
+    """(obsah pole, pozice kurzoru). Prázdné pole vrací ("", caret)."""
+    try:
+        err, text = ax.AXUIElementCopyAttributeValue(el, ax.kAXValueAttribute, None)
         if err or not isinstance(text, str):
             return (None, None)
-
-        caret: int | None = None
-        err, rng_val = AXUIElementCopyAttributeValue(
-            focused, kAXSelectedTextRangeAttribute, None
+        err, rng_val = ax.AXUIElementCopyAttributeValue(
+            el, ax.kAXSelectedTextRangeAttribute, None
         )
-        if not err and rng_val is not None:
-            ok, rng = AXValueGetValue(rng_val, cfrange, None)
-            if ok:
-                caret = getattr(rng, "location", None)
-                if caret is None:
-                    try:
-                        caret = rng[0]
-                    except Exception:  # noqa: BLE001
-                        caret = None
+        caret = _range_location(ax, rng_val) if not err else None
         return (text, caret)
     except Exception:  # noqa: BLE001
         return (None, None)
+
+
+def _read_at_line_start(ax, el) -> bool | None:  # noqa: ANN001
+    """Stojí kurzor na začátku řádku? None = nezjistitelné.
+
+    Nutné proto, že rich-text editory (Mail, Outlook) vracejí v AXValue text
+    BEZ koncového konce řádku — po „Dobrý den" + Enter tedy z textu vypadá, že
+    kurzor stojí za písmenem „n", a `needs_leading_space` by chybně přidala
+    mezeru. Číslo řádku + rozsah řádku to poznají správně i tam.
+    """
+    try:
+        err, line = ax.AXUIElementCopyAttributeValue(
+            el, ax.kAXInsertionPointLineNumberAttribute, None
+        )
+        if err or line is None:
+            return None
+        err, line_rng = ax.AXUIElementCopyParameterizedAttributeValue(
+            el, ax.kAXRangeForLineParameterizedAttribute, line, None
+        )
+        if err or line_rng is None:
+            return None
+        err, sel = ax.AXUIElementCopyAttributeValue(
+            el, ax.kAXSelectedTextRangeAttribute, None
+        )
+        if err or sel is None:
+            return None
+        line_start = _range_location(ax, line_rng)
+        caret = _range_location(ax, sel)
+        if line_start is None or caret is None:
+            return None
+        return caret <= line_start
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class Focus(NamedTuple):
+    """Jeden snímek zaměřeného prvku — vše z JEDNOHO dotazu na fokus.
+
+    Existuje proto, aby se rozhodnutí, která spolu souvisejí (kam ukotvit
+    okénko, jestli vložit nebo nechat ve schránce, jaký dát oddělovač),
+    nedělala každé z jiného okamžiku. Když se dřív ptala každá funkce zvlášť,
+    mohl se mezi dotazy fokus změnit a závěry se rozešly.
+    """
+
+    ok: bool                    # podařilo se fokus vůbec zjistit?
+    is_input: bool              # dá se do toho psát?
+    role: str | None
+    sig: tuple | None           # otisk pole (role, x, y, w, h)
+    text: str | None            # obsah pole
+    caret: int | None
+    at_line_start: bool | None
+
+    @property
+    def description(self) -> str:
+        """Krátký popis do logu, ať jde zpětně ověřit chování diktátu."""
+        if not self.ok:
+            return "fokus neznámý (AX neodpověděl)"
+        return f"role={self.role or '?'} pole={'ano' if self.is_input else 'ne'}"
+
+
+_NO_FOCUS = Focus(False, False, None, None, None, None, None)
+
+
+def focus_snapshot(*, want_text: bool = False, want_line: bool = False,
+                   want_sig: bool = False) -> Focus:
+    """Snímek zaměřeného prvku jedním dotazem na fokus.
+
+    Volitelné části se čtou jen na vyžádání — každý AX atribut je round-trip
+    do cizí aplikace s vlastním sekundovým stropem, takže je zbytečné tahat
+    obsah pole tam, kde volajícího zajímá jen „je to pole?".
+    """
+    ax = _ax()
+    if ax is None:
+        return _NO_FOCUS
+    el = _focused_element(ax)
+    if el is None:
+        return _NO_FOCUS
+
+    role = _read_role(ax, el)
+    is_input = is_text_input(_read_settable(ax, el), role)
+    text = caret = at_line_start = sig = None
+    if is_input:
+        # U prvku, do kterého se psát nedá, nemá smysl číst obsah ani kurzor.
+        if want_text:
+            text, caret = _read_text_caret(ax, el)
+        if want_line:
+            at_line_start = _read_at_line_start(ax, el)
+    if want_sig:
+        sig = _read_sig(ax, el, role)
+    return Focus(True, is_input, role, sig, text, caret, at_line_start)
+
+
+def has_focused_text_field() -> bool | None:
+    """Je teď zaměřené něco, do čeho se dá psát?
+
+    True = ano, False = ne, None = nelze zjistit vůbec (chybí Accessibility
+    nebo appka nehlásí žádný fokus).
+
+    Accessibility je kooperativní — appka nemusí odpovědět nebo může lhát —
+    takže absolutní jistota z principu neexistuje. Když se prvek za textový
+    vstup neoznačí, chováme se, jako by pole nebylo: text zůstane ve schránce
+    s lístkem „Připraveno k vložení". Nejhorší případ je tedy `⌘V` navíc, ne
+    ztracený diktát.
+    """
+    snap = focus_snapshot()
+    return snap.is_input if snap.ok else None
 
 
 def needs_leading_space(field_text: str | None, caret: int | None) -> bool:
@@ -355,104 +487,21 @@ def leading_separator(
     return " "
 
 
-def caret_at_line_start() -> bool | None:
-    """Stojí kurzor na začátku řádku? True/False, None = nezjistitelné.
-
-    Nutné proto, že rich-text editory (Mail, Outlook) vracejí v AXValue text
-    BEZ koncového konce řádku — po „Dobrý den" + Enter tedy z textu vypadá, že
-    kurzor stojí za písmenem „n", a `needs_leading_space` by chybně přidala
-    mezeru. Číslo řádku + rozsah řádku to poznají správně i tam.
-    """
-    try:
-        from ApplicationServices import (
-            AXUIElementCopyAttributeValue,
-            AXUIElementCopyParameterizedAttributeValue,
-            AXUIElementCreateSystemWide,
-            AXUIElementSetMessagingTimeout,
-            AXValueGetValue,
-            kAXFocusedUIElementAttribute,
-            kAXInsertionPointLineNumberAttribute,
-            kAXRangeForLineParameterizedAttribute,
-            kAXSelectedTextRangeAttribute,
-        )
-    except Exception:  # noqa: BLE001
-        return None
-    try:
-        from ApplicationServices import kAXValueCFRangeType as cfrange
-    except Exception:  # noqa: BLE001
-        try:
-            from ApplicationServices import kAXValueTypeCFRange as cfrange
-        except Exception:  # noqa: BLE001
-            cfrange = 4
-
-    def _location(rng_val):
-        ok, rng = AXValueGetValue(rng_val, cfrange, None)
-        if not ok:
-            return None
-        loc = getattr(rng, "location", None)
-        if loc is None:
-            try:
-                loc = rng[0]
-            except Exception:  # noqa: BLE001
-                return None
-        return int(loc)
-
-    try:
-        system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 1.0)  # [hang] AX nesmí blokovat
-        err, focused = AXUIElementCopyAttributeValue(
-            system, kAXFocusedUIElementAttribute, None
-        )
-        if err or focused is None:
-            return None
-        AXUIElementSetMessagingTimeout(focused, 1.0)
-        err, line = AXUIElementCopyAttributeValue(
-            focused, kAXInsertionPointLineNumberAttribute, None
-        )
-        if err or line is None:
-            return None
-        err, line_rng = AXUIElementCopyParameterizedAttributeValue(
-            focused, kAXRangeForLineParameterizedAttribute, line, None
-        )
-        if err or line_rng is None:
-            return None
-        line_start = _location(line_rng)
-        err, sel = AXUIElementCopyAttributeValue(
-            focused, kAXSelectedTextRangeAttribute, None
-        )
-        if err or sel is None:
-            return None
-        caret = _location(sel)
-        if line_start is None or caret is None:
-            return None
-        return caret <= line_start
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def caret_screen_rect() -> tuple[float, float, float, float] | None:
     """Obdélník textového kurzoru na obrazovce (x, y, w, h) v AX souřadnicích
     (počátek vlevo NAHOŘE, y roste dolů). None, když to appka nepodporuje.
 
-    Ladění: `SPILLWAY_DEBUG_HUD=1` vypíše, na kterém kroku AX selhal (appka
+    Ladění: diagnostická oblast `hud` vypíše, na kterém kroku AX selhal (appka
     prostě nemusí `kAXBoundsForRangeParameterizedAttribute` implementovat —
     i u „nativních" appek to není univerzální)."""
-    import os
-
-    debug = os.environ.get("SPILLWAY_DEBUG_HUD", "0").lower() not in ("0", "false", "no")
-
     def _dbg(msg: str) -> None:
-        if debug:
-            print(f"[caret] {msg}")
+        diag.log("hud", f"caret: {msg}")
 
     try:
         from ApplicationServices import (
             AXUIElementCopyAttributeValue,
             AXUIElementCopyParameterizedAttributeValue,
-            AXUIElementCreateSystemWide,
-            AXUIElementSetMessagingTimeout,
             AXValueGetValue,
-            kAXFocusedUIElementAttribute,
             kAXSelectedTextRangeAttribute,
         )
     except Exception:  # noqa: BLE001
@@ -472,10 +521,16 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
             cgrect_type = 3
 
     def _focused_frame(focused) -> tuple[float, float, float, float] | None:  # noqa: ANN001
-        """Fallback: rám (pozice+velikost) fokusovaného pole. Když appka neumí
+        """Fallback: rám (pozice+velikost) fokusovaného POLE. Když appka neumí
         přesnou pozici kurzoru (Electron/web), je HUD u pole pořád mnohem lepší
-        než u myši. Vracíme jen horní pruh pole (výška omezená), ať HUD sedí
-        nahoře nad polem, ne uprostřed velké textarey."""
+        než nikde. Vracíme jen horní pruh pole (výška omezená), ať HUD sedí
+        nahoře nad polem, ne uprostřed velké textarey.
+
+        Volá se jen pro prvky, které už prošly bránou „je to textový vstup" —
+        tedy je to prokazatelně pole a jen neumí spočítat pozici kurzoru. Na
+        cokoliv jiného se rám nepoužívá, jinak by okénko přistálo v rohu okna
+        nebo na ploše místo pod ikonou.
+        """
         try:
             from ApplicationServices import (
                 kAXPositionAttribute,
@@ -507,22 +562,26 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
             return None
 
     try:
-        system = AXUIElementCreateSystemWide()
-        # [hang] AX volání nemají default timeout — na hlavním vlákně (HUD) by
-        # nereagující cílová appka zmrazila celou aplikaci. Strop 1 s.
-        AXUIElementSetMessagingTimeout(system, 1.0)
-        err, focused = AXUIElementCopyAttributeValue(
-            system, kAXFocusedUIElementAttribute, None
-        )
-        if err or focused is None:
-            _dbg(f"žádný focused element (err={err})")
+        # Stejná brána jako u rozhodnutí „vložit vs. do schránky": co není
+        # textový vstup, u toho polohu kurzoru vůbec nehledáme. Jinak by okénko
+        # skončilo v levém horním rohu okna (Chromium tam hlásí začátek
+        # dokumentu jako „kurzor", i když žádné pole zaměřené není).
+        ax = _ax()
+        if ax is None:
             return None
-        AXUIElementSetMessagingTimeout(focused, 1.0)
+        focused = _focused_element(ax)
+        if focused is None:
+            _dbg("žádný focused element")
+            return None
+        role = _read_role(ax, focused)
+        if not is_text_input(_read_settable(ax, focused), role):
+            _dbg(f"fokus není textový vstup (role={role}) → HUD patří k ikoně")
+            return None
         err, rng_val = AXUIElementCopyAttributeValue(
             focused, kAXSelectedTextRangeAttribute, None
         )
         if err or rng_val is None:
-            _dbg(f"appka nevrací kAXSelectedTextRangeAttribute (err={err}) → zkouším rám pole")
+            _dbg(f"pole nehlásí výběr textu (err={err}) → zkouším rám pole")
             return _focused_frame(focused)
         err, bounds_val = AXUIElementCopyParameterizedAttributeValue(
             focused, bounds_attr, rng_val, None

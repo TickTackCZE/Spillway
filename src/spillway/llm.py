@@ -33,10 +33,10 @@ _PRICING_DEFAULT = (3.0, 15.0)  # neznámý model → sazba jako Sonnet
 
 
 def _price_for(model: str) -> tuple[float, float]:
-    best = None
-    for prefix, price in _PRICING.items():
-        if model.startswith(prefix) and (best is None or len(prefix) > len(best)):
-            best = prefix
+    # Nejdelší sedící prefix vyhrává — "claude-opus-4-8" musí přebít "claude-opus".
+    best = max(
+        (p for p in _PRICING if model.startswith(p)), key=len, default=None
+    )
     return _PRICING[best] if best else _PRICING_DEFAULT
 
 _PROFILE_GUIDANCE = {

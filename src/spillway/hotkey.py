@@ -42,10 +42,11 @@ from Quartz import (
     kCGSessionEventTap,
 )
 
-from .paste import SPILLWAY_EVENT_MARK
+# `V_KEYCODE` schválně z `paste.py` — tentýž fyzický kód slouží k odeslání
+# našeho ⌘V i k rozpoznání uživatelova, takže nesmí existovat dvakrát.
+from .paste import SPILLWAY_EVENT_MARK, V_KEYCODE
 
 F5_DICTATION_KEYCODE = 176
-_V_KEYCODE = 9  # ANSI „V" — pro rozpoznání ⌘V/Ctrl+V (vložení uživatelem)
 _CAPTURE_TIMEOUT_S = 6.0
 _MODIFIER_MASK = (
     kCGEventFlagMaskCommand
@@ -186,7 +187,7 @@ class HotkeyListener:
         if (
             self.on_paste_key is not None
             and type_ == kCGEventKeyDown
-            and keycode == _V_KEYCODE
+            and keycode == V_KEYCODE
             and CGEventGetFlags(event) & (kCGEventFlagMaskCommand | kCGEventFlagMaskControl)
             and CGEventGetIntegerValueField(event, kCGEventSourceUserData) != SPILLWAY_EVENT_MARK
         ):
