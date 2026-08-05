@@ -84,7 +84,12 @@ def enable() -> None:
 
 
 def disable() -> None:
-    subprocess.run(["launchctl", "unload", _PLIST], capture_output=True)
+    # Timeout: volá se z přepínače v Nastavení, tedy z hlavního vlákna —
+    # zatuhlý `launchctl` by zmrazil celé UI.
+    try:
+        subprocess.run(["launchctl", "unload", _PLIST], capture_output=True, timeout=5)
+    except Exception:  # noqa: BLE001 — plist stejně smažeme níž
+        pass
     try:
         os.remove(_PLIST)
     except FileNotFoundError:

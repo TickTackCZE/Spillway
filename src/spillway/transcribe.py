@@ -221,10 +221,20 @@ class Transcriber:
         self._mlx = _MlxWorker() if self.backend == "mlx" else None
         # V zabalené .app se mlx Metal shadery (mlx.metallib) můžou nezabalit —
         # ověř, že mlx reálně počítá na GPU, jinak spadni na CPU (žádná regrese).
-        if self.backend == "mlx" and not self._mlx_ok():
+        # Chybějící model NENÍ porucha mlx — fallback na CPU by tu nepomohl,
+        # naopak: `WhisperModel` si tiše stáhne JINÝ model (~1,5 GB) a to při
+        # startu na hlavním vlákně. Bez modelu se prostě nic nenačítá a čeká se,
+        # až si ho uživatel stáhne z UI.
+        self.model_missing = not models.is_ready()
+        # Kontrola proběhla? Bez modelu ji nelze udělat, tak se odloží na dobu,
+        # kdy model přibude — jinak by se na rozbité mlx přišlo až prvním
+        # diktátem po stažení.
+        self._mlx_checked = False
+        if self.backend == "mlx" and not self.model_missing and not self._mlx_ok():
             print("⚠️  mlx nefunguje (shadery?) → fallback na faster-whisper (CPU).")
             self.backend = "faster"
             self._mlx = None
+        self._mlx_checked = not self.model_missing
         print(f"🗣️  Whisper backend: {self.backend}"
               f"{' (' + models.REPO + ')' if self.backend == 'mlx' else ' (CPU large-v3-turbo)'}")
         self._load_model()
@@ -242,7 +252,12 @@ class Transcriber:
             return True
 
         try:
-            return bool(self._mlx.submit(_check))
+            # Timeout: `__init__` běží na hlavním vlákně, takže zatuhlé GPU
+            # vlákno by zabránilo startu celé aplikace.
+            return bool(self._mlx.submit(_check, timeout=60.0))
+        except TimeoutError:
+            print("⚠️  mlx health-check neodpověděl do 60 s → fallback na CPU.")
+            return False
         except models.ModelMissing:
             return False   # není co kontrolovat; stáhne ho uživatel z UI
         except Exception as exc:  # noqa: BLE001
@@ -252,6 +267,21 @@ class Transcriber:
     # --- životní cyklus modelu ------------------------------------------------
 
     def _load_model(self) -> None:
+        # Bez modelu nemá co načítat a hlavně: ani jeden backend ho nesmí začít
+        # stahovat sám. mlx by sáhl na HF hub, faster-whisper by stáhl dokonce
+        # JINÝ model — obojí tiše a na vlákně, které pak nereaguje.
+        if not models.is_ready():
+            self.model_missing = True
+            self._model = None
+            return
+        self.model_missing = False
+        if self.backend == "mlx" and not self._mlx_checked:
+            # Odložená kontrola: model mezitím přibyl.
+            self._mlx_checked = True
+            if not self._mlx_ok():
+                print("⚠️  mlx nefunguje (shadery?) → fallback na faster-whisper (CPU).")
+                self.backend = "faster"
+                self._mlx = None
         if self.backend == "mlx":
             # Načtení běží na mlx vlákně (přes worker) a plní ModelHolder — tam ho
             # hledá i mlx_whisper.transcribe, takže se model načte JEDNOU a přepis ho

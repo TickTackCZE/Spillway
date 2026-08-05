@@ -1879,3 +1879,49 @@ def test_download_progress_is_throttled(monkeypatch, tmp_path):
     # 100 bloků → nejvýš ~100 hlášení, ale díky škrcení jich má být výrazně míň
     # (mění se procento po každém 1 %, takže kolem 100/1 % … kontrolujeme strop).
     assert len(reports) <= 102, f"průběh se nehlásí škrceně: {len(reports)}×"
+
+
+def test_no_backend_downloads_a_model_on_its_own():
+    import pathlib
+    import re
+
+    src = pathlib.Path("src/spillway/transcribe.py").read_text(encoding="utf-8")
+
+    # REGRESE (dvakrát): bez modelu si ho oba backendy uměly tiše stáhnout —
+    # mlx z HF hubu, faster-whisper dokonce JINÝ model (~1,5 GB), a to při
+    # startu na hlavním vlákně. Načítání se proto bez modelu vůbec nespustí.
+    body = src[src.index("def _load_model(self) -> None:"):]
+    body = body[:body.index("\n    @property")]
+    guard = body[:body.index('if self.backend == "mlx"')]
+    assert "models.is_ready()" in guard and "return" in guard, (
+        "_load_model musí bez modelu skončit dřív, než sáhne na kterýkoli backend"
+    )
+
+    # A chybějící model nesmí vést k fallbacku na CPU — ten stahuje jiný model.
+    init = src[src.index("self.model_missing = not models.is_ready()"):]
+    init = init[:init.index("def _mlx_ok")]
+    assert re.search(r"not self\.model_missing and not self\._mlx_ok\(\)", init), (
+        "chybějící model se nesmí zaměnit za poruchu mlx"
+    )
+
+
+def test_startup_health_check_cannot_hang_the_app():
+    import pathlib
+
+    src = pathlib.Path("src/spillway/transcribe.py").read_text(encoding="utf-8")
+    body = src[src.index("def _mlx_ok"):]
+    body = body[:body.index("\n    def ")]
+    # `__init__` běží na hlavním vlákně — zatuhlé GPU vlákno by zabránilo startu.
+    assert "timeout=" in body and "TimeoutError" in body
+
+
+def test_blocking_subprocesses_have_timeouts():
+    import pathlib
+    import re
+
+    # Cokoli, co běží z UI (nastavení, kontext), musí mít strop — jinak zatuhlý
+    # podproces zmrazí hlavní vlákno.
+    for name in ("autostart.py", "context.py"):
+        src = pathlib.Path(f"src/spillway/{name}").read_text(encoding="utf-8")
+        for call in re.findall(r"subprocess\.run\((.*?)\)\n", src, re.S):
+            assert "timeout" in call, f"{name}: subprocess.run bez timeoutu"
