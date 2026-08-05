@@ -1726,3 +1726,79 @@ def test_help_shows_no_hardcoded_configurable_keys():
             )
     # ⌘V je systémová zkratka pro vložení, ta se nenastavuje — smí být natvrdo.
     assert "⌘V" in help_part
+
+
+def test_help_has_no_orphan_punctuation_or_inline_emphasis():
+    import re
+
+    from spillway import settings_window as sw
+
+    part = sw._HTML[sw._HTML.index('id="pageHelp"'):sw._HTML.index("/pageHelp")]
+
+    # Zvýraznění uprostřed věty láme řádek a interpunkce za ním padá na začátek
+    # dalšího — přesně tohle vypadalo v krabičce „Úprava" rozbitě.
+    assert not re.findall(r"<span>[^<]*<b>.*?</b>[^<]*</span>", part), (
+        "v krabičkách nesmí být zvýraznění uprostřed věty"
+    )
+
+    # Pomlčky, lomítka a čárky musí být svázané s předchozím slovem, jinak
+    # můžou skončit samy na začátku řádku.
+    text = re.sub(r"<[^>]+>", " ", part)
+    orphans = re.findall(r"(?<!&nbsp;)\s([—–+·×/,;])\s", text)
+    assert not orphans, f"volně stojící symboly: {orphans}"
+
+
+def test_settings_buttons_have_uniform_width():
+    from spillway import settings_window as sw
+
+    css = sw._HTML[:sw._HTML.index("</style>")]
+    # Popisky se za běhu mění („Změnit" → „5 s" → „Potvrdit"); bez pevné šířky
+    # by řádek poskakoval.
+    btn = css[css.index("  .btn{"):css.index("  .btn:disabled")]
+    assert "min-width:112px" in btn and "text-align:center" in btn
+
+    # Výzva „Stiskni klávesu…" patří k popisku, ne do tlačítka.
+    assert "'Stiskni klávesu…'" in sw._HTML
+    assert "Btn').textContent = 'Stiskni klávesu…'" not in sw._HTML
+
+
+def test_help_links_point_at_existing_cards():
+    import re
+
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    # Odkazy z nápovědy musí mířit na kartu, která v nastavení opravdu je —
+    # jinak uživatel skončí na začátku stránky a kartu hledá dole sám.
+    targets = set(re.findall(r"showPage\('settings','([^']+)'\)", html))
+    assert targets, "nápověda má odkazovat aspoň na jednu kartu"
+    for t in targets:
+        assert f'id="{t}"' in html, f"odkaz na neexistující kartu: {t}"
+
+
+def test_destructive_actions_all_require_confirmation():
+    import re
+
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    # Každá nevratná akce musí projít pětisekundovým potvrzením — smazání
+    # API klíče na to dřív jako jediné nečekalo a mazalo na první klik.
+    danger = re.findall(r'<button class="btn danger"[^>]*>', html)
+    assert danger, "očekáváme aspoň jedno destruktivní tlačítko"
+    for btn in danger:
+        assert "armReset(this," in btn, f"maže bez potvrzení: {btn}"
+        assert "data-label=" in btn, f"chybí popisek pro návrat do klidu: {btn}"
+
+    # Konkrétně tři: reset statistik, reset historie, smazání klíče.
+    for action in ("reset_stats", "reset_history", "delkey"):
+        assert f"armReset(this,'{action}')" in html, action
+
+
+def test_parent_row_has_no_divider_above_its_suboption():
+    from spillway import settings_window as sw
+
+    css = sw._HTML[:sw._HTML.index("</style>")]
+    # Čára mezi „Odesílání do AI modelu" a jeho podnastavením je vizuálně
+    # oddělovala, i když patří k sobě.
+    assert ".rowt:has(+ .rowt.sub){border-bottom:none;}" in css

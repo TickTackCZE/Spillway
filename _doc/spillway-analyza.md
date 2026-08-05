@@ -1,7 +1,7 @@
 # Spillway — analýza
 
 > Osobní diktovací nástroj pro macOS: lokální přepis (Whisper na Apple GPU) + AI úprava (Claude API) + univerzální vložení do libovolné aplikace.
-> Stav: **v1.0 — funkční, nasazeno.** · Aktualizováno: 24. 7. 2026
+> Stav: **v1.2 — funkční, nasazeno.** · Aktualizováno: 5. 8. 2026
 
 ---
 

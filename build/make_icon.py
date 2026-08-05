@@ -2,7 +2,7 @@
 (#818CF8) na tmavém pozadí (Domovoy Půlnoční) a waveform vlna uprostřed.
 
 Spuštění:  uv run python build/make_icon.py
-Výstup:    build/icon.icns
+Výstup:    build/spillway-icon-v12.icns
 """
 
 from __future__ import annotations
@@ -26,7 +26,10 @@ from spillway import design  # noqa: E402
 
 _HERE = os.path.dirname(__file__)
 _ICONSET = os.path.join(_HERE, "icon.iconset")
-_ICNS = os.path.join(_HERE, "icon.icns")
+# Jméno nese verzi schválně: macOS si ikony cachuje podle cesty a názvu
+# souboru, takže po změně kresby drží starou i po přeinstalaci. Nový
+# název ji donutí načíst znovu.
+_ICNS = os.path.join(_HERE, "spillway-icon-v12.icns")
 
 _BG = tuple(c / 255 for c in design.BG)          # #0F1117
 _ACCENT = tuple(c / 255 for c in design.ACCENT)  # #818CF8

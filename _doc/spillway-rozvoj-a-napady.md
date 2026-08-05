@@ -3,7 +3,7 @@
 > Kam dál. **Nic tady není hotové ani slíbené** — je to podklad k rozhodování, ne plán práce
 > (ten je v [spillway-plan-implementace.md](spillway-plan-implementace.md)).
 > Stav aplikace: **v1.2** · Aktualizováno: 5. 8. 2026
-> **Sekce 6 = odmítnuto / neaktuální. Ty nápady se do návrhů nevracejí.**
+> **Sekce 7 = odmítnuto / neaktuální. Ty nápady se do návrhů nevracejí.**
 
 ---
 
@@ -185,6 +185,7 @@ má být formální), a možnost přidat vlastní aplikaci nebo webovou doménu.
 - **Doladit okénko u kurzoru** na více monitorech.
 - **Notarizace u Apple** (Developer ID, ~$99/rok) — odstraní varování „nelze ověřit vývojáře"
   při prvním spuštění. Nutné, jestli to má používat někdo další.
+- **Světlý motiv** okna a nápovědy zatím nikdo neprošel okem — tmavý ano.
 
 ---
 
@@ -230,7 +231,25 @@ aby se termíny psaly všude stejně.
 
 ---
 
-## 6. ⛔ ODMÍTNUTO / NEAKTUÁLNÍ — už nenavrhovat
+## 6. Poznámky z provozu (ať se to neopakuje)
+
+- **Ikony si macOS cachuje podle cesty A NÁZVU souboru.** Po překreslení ikony nestačí
+  přeinstalovat ani vyčistit systémové cache — nejjistější je změnit název `.icns`.
+  Vlastní cache mají navíc nástroje třetích stran, které ikony zobrazují
+  (alternativní taskbary, launchery); ty je potřeba restartovat zvlášť.
+- **Accessibility nejde osahat zvenku.** Z odděleného procesu vrací `-25204`, takže
+  chování fokusu se dá ověřit jen v běžící aplikaci — na to je diagnostický režim.
+- **Podle role prvku se pole nepozná.** Plocha Finderu, rám okna i webový editor se
+  hlásí stejně (`AXGroup`/`AXScrollArea`). Chromium navíc hlásí `AXSelectedTextRange`
+  i pro stránku bez zaměřeného pole a jako kurzor vrací začátek dokumentu.
+  Rozhoduje **editovatelnost** (`AXValue` je settable).
+- **Stejné rozhodnutí na více místech se dřív nebo později rozejde.** Poloha okénka
+  a volba vložit/schránka se počítaly zvlášť — a okénko pak viselo jinde, než kam
+  text šel. Odvozovat vše z jednoho snímku.
+
+---
+
+## 7. ⛔ ODMÍTNUTO / NEAKTUÁLNÍ — už nenavrhovat
 
 **Tohle se nesmí vracet do návrhů.** Každý řádek je uzavřené rozhodnutí; když se objeví znovu, musí k tomu být nový důvod (nová data, změněné zadání), ne opakování.
 
@@ -247,15 +266,15 @@ aby se termíny psaly všude stejně.
 | **Vždy přepsat schránku posledním diktátem** (nevracet původní obsah) | ⛔ odmítnuto 4. 8. | **Změřeno na 154 diktátech:** 91 % se normálně vloží, jen 6 % skončí ve schránce — a ty už fallback řeší sám. Přeplácnutí by tedy poškodilo schránku v 91 % případů kvůli riziku v 6 %, které je navíc pojištěné dvakrát (lístek „Připraveno k vložení" + Historie, do které se zapisuje **každý** diktát bez ohledu na výsledek). Navíc by rozbilo běžný postup „zkopíruj odkaz → nadiktuj komentář → vlož odkaz" a vynutilo výjimku pro RDP. Rozhodnutí: schránka se po vložení **vrací** jako dosud. |
 | **„Přemluvit" (nahradit poslední vložení)** | ⛔ odmítnuto | Jednodušší je smazat a nadiktovat znovu. |
 | **Tichý režim / pauza** | ⛔ odmítnuto | Řeší se sám — bez řeči se nic nepřepisuje (je tam filtr ticha). |
-| **Slovník jako páry „špatně → správně"** | ⛔ odmítnuto | Ruční slovník stačí; automatické učení je slepá ulička (viz 7). |
+| **Slovník jako páry „špatně → správně"** | ⛔ odmítnuto | Ruční slovník stačí; automatické učení je slepá ulička (viz 8). |
 | **Restart GPU vlákna při zaseknutí** | 🕓 neaktuální | Zaseknutí se po opravách neděje. Otevřít až kdyby nastalo. |
 
 ### ✅ Hotovo — už to není nápad, ale funkce
-Streaming přepisu · oprava přeřeknutí („teda v 5") · prompt proti vymýšlení (věrohodnost nad cílem, mazání zkomolenin, chráněný slovník) · chytrý oddělovač (mezera vs. nový řádek) · HUD u ikony + lístek „Připraveno k vložení" · schránka při odchodu z pole · vkládání do RDP/AVD · statistiky, náklady, historie s kopírováním · **diktování bez zaklikaného pole** (není-li kam vložit, text jde do schránky s lístkem) · **animovaná ikona v liště** (živý ukazatel hlasitosti při nahrávání, běžící vlna při zpracování) · **nápověda v aplikaci** (schémata místo odstavců) · **nastavitelný práh uvolnění modelu**.
+Streaming přepisu · oprava přeřeknutí („teda v 5") · prompt proti vymýšlení (věrohodnost nad cílem, mazání zkomolenin, chráněný slovník) · chytrý oddělovač (mezera vs. nový řádek) · HUD u ikony + lístek „Připraveno k vložení" · schránka při odchodu z pole · vkládání do RDP/AVD · statistiky, náklady, historie s kopírováním · **diktování bez zaklikaného pole** (není-li kam vložit, text jde do schránky s lístkem) · **animovaná ikona v liště** (živý ukazatel hlasitosti při nahrávání, běžící vlna při zpracování) · **nápověda v aplikaci** (schémata místo odstavců) · **nastavitelný práh uvolnění modelu** · **diagnostický režim** (vypnutý, zapíná se v nastavení) · potvrzení u všech nevratných akcí · sjednocené zjišťování fokusu (jedno místo pro polohu okénka i volbu vložit/schránka).
 
 ---
 
-## 7. Proč nebude automatický slovník (analýza)
+## 8. Proč nebude automatický slovník (analýza)
 
 **Nápad byl:** ať se Spillway sám učí termíny, které špatně slyší, a přidává si je do slovníku.
 

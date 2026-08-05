@@ -112,15 +112,17 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .seg small{color:var(--muted);font-weight:500;}
   .metaline{font-size:11px;color:var(--muted);text-align:center;padding:6px 0 4px;display:flex;align-items:center;justify-content:center;gap:7px;}
   .metaline .gpu{color:var(--accent-text);font-weight:600;}
-  .foot{display:flex;flex-direction:column;gap:6px;padding:4px 2px 2px;}
+  .foot{display:flex;flex-direction:column;gap:5px;padding:4px 2px 0;}
   .foot .row{display:flex;gap:6px;}
   .foot button{flex:1;border:0.5px solid var(--border);background:transparent;color:var(--text);font:inherit;font-size:13px;font-weight:600;padding:9px;border-radius:9px;cursor:pointer;}
   .foot button.primary{background:var(--accent);color:var(--onaccent);border-color:transparent;}
   /* Konec je jediná nevratná akce v popoveru → barevně oddělený od zbytku. */
-  /* Konec nemá soupeřit velikostí s Nastavením — je to jediná nevratná akce,
-     ale ne ta, kterou uživatel hledá nejčastěji. */
-  .foot .quit{display:flex;justify-content:center;margin-top:2px;}
-  .foot button.danger{flex:0 0 auto;width:auto;min-width:110px;padding:7px 22px;font-size:12px;
+  /* Konec je užší než tlačítka nad ním (není to akce, kterou uživatel hledá
+     nejčastěji), ale STEJNĚ VYSOKÝ — svislé odsazení i velikost písma dědí
+     z `.foot button`, mění se jen vodorovné odsazení. Jinak by trojice
+     vypadala jako tři náhodná tlačítka místo jednoho setu. */
+  .foot .quit{display:flex;justify-content:center;}
+  .foot button.danger{flex:0 0 auto;min-width:140px;padding-left:24px;padding-right:24px;
     background:var(--danger);color:#fff;border-color:transparent;}
   #toast{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:var(--accent);color:var(--onaccent);
     font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;opacity:0;transition:opacity .18s;pointer-events:none;box-shadow:0 4px 14px var(--shadow);}
@@ -314,7 +316,7 @@ class _PopBridge(NSObject):
                 limit = int(screen.visibleFrame().size.height) - 24
         except Exception:  # noqa: BLE001
             pass
-        height = max(320, min(height + 12, limit))
+        height = max(320, min(height + 8, limit))
         self.popover.setContentSize_((320, height))
 
     @objc.python_method
