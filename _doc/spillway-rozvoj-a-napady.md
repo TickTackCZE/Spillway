@@ -3,7 +3,7 @@
 > Kam dál. **Nic tady není hotové ani slíbené** — je to podklad k rozhodování, ne plán práce
 > (ten je v [spillway-plan-implementace.md](spillway-plan-implementace.md)).
 > Stav aplikace: **v1.2** · Aktualizováno: 5. 8. 2026
-> **Sekce 7 = odmítnuto / neaktuální. Ty nápady se do návrhů nevracejí.**
+> **Sekce 6 = odmítnuto / neaktuální. Ty nápady se do návrhů nevracejí.**
 
 ---
 
@@ -90,7 +90,7 @@ Levná varianta = jen krok 4 (vloží se, když se vrátíš do pole).
 
 ## 2. Rychlost a chování modelu
 
-### 2.2 Automatické rozpoznání jazyka pro každý diktát
+### 2.1 Automatické rozpoznání jazyka pro každý diktát
 
 **Jak to je dnes:** jazyk je natvrdo nastavený (čeština). Když nadiktuješ něco anglicky,
 Whisper to stejně zkusí psát česky.
@@ -124,37 +124,10 @@ nepřeložil.
 
 ---
 
-## 3. Ovládání hlasem
 
-### 3.1 Hlasové editační příkazy
+## 3. Uživatelské rozhraní
 
-**Nápad:** říct „nový odstavec", „odrážka", „velké písmeno" a Spillway to promítne do
-**formátování**, místo aby ta slova napsal.
-
-**Dobrá zpráva:** máme na to už hotový mechanismus. Oprava přeřeknutí („teda v 5") funguje
-úplně stejně — Claude rozliší, co je **obsah** a co je **pokyn**. Takže je to hlavně otázka
-rozšíření zadání pro Claude, ne nová technika.
-
-**Kde je háček — rozeznat pokyn od obsahu.** Když nadiktuješ větu *„napiš mu, ať smaže tu
-větu o cenách"*, nesmí to Spillway pochopit jako povel a text smazat.
-
-**Proto navrhuji dělit příkazy na dvě skupiny:**
-
-| Skupina | Příklady | Riziko | Doporučení |
-|---|---|---|---|
-| **Formátovací** (jen přidávají) | „nový odstavec", „nový řádek", „odrážka", „číslovaný seznam" | Nízké — když se splete, jen jinak zalomí text | ✅ začít tady |
-| **Ničivé** (mažou obsah) | „smazat větu", „smazat poslední slovo", „začni znovu" | Vysoké — chyba znamená **ztracený text** | ⚠️ až později, opatrně |
-
-**Návrh postupu:** nejdřív jen formátovací příkazy, pevně daný seznam, sepsaný v nastavení,
-ať víš, co Spillway poslouchá. Ničivé příkazy až potom — a jen v jasně rozeznatelné podobě.
-
-**Náročnost:** malá (zadání pro Claude + testy). **Riziko:** nízké u formátovacích.
-
----
-
-## 4. Uživatelské rozhraní
-
-### 4.1 Průvodce oprávněními při prvním spuštění
+### 3.1 Průvodce oprávněními při prvním spuštění
 Spillway potřebuje tři povolení (mikrofon, sledování klávesnice, zpřístupnění). Dnes si je
 musíš najít sám a když jedno chybí, projeví se to jen tím, že „to nefunguje".
 
@@ -162,7 +135,7 @@ musíš najít sám a když jedno chybí, projeví se to jen tím, že „to nef
 tlačítkem otevře přesné místo v Nastavení systému, a na konci nabídne **zkušební diktát**
 s potvrzením „funguje".
 
-### 4.2 Úprava zadání pro AI (promptu) s resetem
+### 3.2 Úprava zadání pro AI (promptu) s resetem
 **Návrh:** v nastavení textové pole s tím, co se posílá Claudovi, plus tlačítko
 **„Vrátit na výchozí"**. Kdo chce, doladí si tón; kdo ne, nesahá na to.
 
@@ -175,12 +148,12 @@ zhoršit.
   „nepoužívej pomlčky") — připojí se k našemu promptu, nepřepíše ho.
 - **Expertní úroveň:** celý prompt k přepsání, schované za varováním, s resetem na výchozí.
 
-### 4.3 Úprava profilů aplikací
+### 3.3 Úprava profilů aplikací
 Dnes je pevně dané, že Mail = formální e-mail, Slack = neformální chat, editor = kód atd.
 **Návrh:** v nastavení tabulka „aplikace → profil", kde si to přepíšeš (třeba že Slack u tebe
 má být formální), a možnost přidat vlastní aplikaci nebo webovou doménu.
 
-### 4.4 Drobnosti
+### 3.4 Drobnosti
 - **Zabalit font Raleway** do aplikace (dnes padá na systémový, když ho nemáš).
 - **Doladit okénko u kurzoru** na více monitorech.
 - **Notarizace u Apple** (Developer ID, ~$99/rok) — odstraní varování „nelze ověřit vývojáře"
@@ -189,19 +162,19 @@ má být formální), a možnost přidat vlastní aplikaci nebo webovou doménu.
 
 ---
 
-## 5. Data a další platformy
+## 4. Data a další platformy
 
-### 5.1 Export historie a statistik
+### 4.1 Export historie a statistik
 Historie se od začátku ukládá strojově čitelně (`history.jsonl`), takže jde poslat jinam —
 na Raspberry Pi nebo do databáze — a dělat nad tím přehledy: kolik toho denně nadiktuji,
 kde nejvíc, jaké termíny se opakují, jestli se přepis v čase zlepšuje.
 
-### 5.2 Windows
+### 4.2 Windows
 Jádro (přepis, AI úprava, statistiky) je přenositelné — asi **třetina kódu**. Přepsat by se
 musela „platformní vrstva": odchytávání klávesy, vkládání textu, zjištění aktivní aplikace a UI.
 Princip držet stejný: **schránka + zkratka**, čtení kontextu jen pro informaci.
 
-### 5.3 iPhone
+### 4.3 iPhone
 Tady je to jinak — iOS **nedovolí** aplikaci běžet na pozadí a vkládat text do cizích aplikací.
 Existuje ale jedna dobrá cesta:
 
@@ -220,18 +193,18 @@ Existuje ale jedna dobrá cesta:
 
 Varianta 3 je zajímavá i proto, že hodnota Spillway není jen v přepisu, ale právě v té úpravě.
 
-### 5.4 Android
+### 4.4 Android
 Android je vstřícnější: aplikace může být **plnohodnotná klávesnice**, smí běžet na pozadí
 a nemá tak tvrdé limity paměti. Šel by tam i model přímo v telefonu (na slabších přístrojích
 menší varianta), nebo stejné rozdělení jako u iPhonu (systémový přepis + naše úprava).
 
-### 5.5 Sdílení nastavení mezi zařízeními
+### 4.5 Sdílení nastavení mezi zařízeními
 Kdyby vznikla mobilní verze, dávalo by smysl sdílet aspoň **slovník výrazů** a nastavení stylu,
 aby se termíny psaly všude stejně.
 
 ---
 
-## 6. Poznámky z provozu (ať se to neopakuje)
+## 5. Poznámky z provozu (ať se to neopakuje)
 
 - **Ikony si macOS cachuje podle cesty A NÁZVU souboru.** Po překreslení ikony nestačí
   přeinstalovat ani vyčistit systémové cache — nejjistější je změnit název `.icns`.
@@ -249,7 +222,7 @@ aby se termíny psaly všude stejně.
 
 ---
 
-## 7. ⛔ ODMÍTNUTO / NEAKTUÁLNÍ — už nenavrhovat
+## 6. ⛔ ODMÍTNUTO / NEAKTUÁLNÍ — už nenavrhovat
 
 **Tohle se nesmí vracet do návrhů.** Každý řádek je uzavřené rozhodnutí; když se objeví znovu, musí k tomu být nový důvod (nová data, změněné zadání), ne opakování.
 
@@ -266,7 +239,8 @@ aby se termíny psaly všude stejně.
 | **Vždy přepsat schránku posledním diktátem** (nevracet původní obsah) | ⛔ odmítnuto 4. 8. | **Změřeno na 154 diktátech:** 91 % se normálně vloží, jen 6 % skončí ve schránce — a ty už fallback řeší sám. Přeplácnutí by tedy poškodilo schránku v 91 % případů kvůli riziku v 6 %, které je navíc pojištěné dvakrát (lístek „Připraveno k vložení" + Historie, do které se zapisuje **každý** diktát bez ohledu na výsledek). Navíc by rozbilo běžný postup „zkopíruj odkaz → nadiktuj komentář → vlož odkaz" a vynutilo výjimku pro RDP. Rozhodnutí: schránka se po vložení **vrací** jako dosud. |
 | **„Přemluvit" (nahradit poslední vložení)** | ⛔ odmítnuto | Jednodušší je smazat a nadiktovat znovu. |
 | **Tichý režim / pauza** | ⛔ odmítnuto | Řeší se sám — bez řeči se nic nepřepisuje (je tam filtr ticha). |
-| **Slovník jako páry „špatně → správně"** | ⛔ odmítnuto | Ruční slovník stačí; automatické učení je slepá ulička (viz 8). |
+| **Slovník jako páry „špatně → správně"** | ⛔ odmítnuto | Ruční slovník stačí; automatické učení je slepá ulička (viz 7). |
+| **Hlasové editační a formátovací příkazy** | ⛔ odmítnuto 5. 8. | **Měřeno na 152 diktátech (9 112 slov):** editační fráze („přepiš", „odstraň") se 4× objevily jako běžný OBSAH — např. „jenom přepiš tu dvojku prosím". Rozpoznávání příkazů by tak ukusovalo kusy zadání, a navíc by otevřelo čtvrtá vrátka v pravidle NEZTRÁCEJ OBSAH, které stálo nejvíc práce. Formátovací příkazy (odrážka, nový řádek) jsou rizikově bezpečné (1 výskyt), ale uživatel je nechce — nemá pro ně use case. |
 | **Restart GPU vlákna při zaseknutí** | 🕓 neaktuální | Zaseknutí se po opravách neděje. Otevřít až kdyby nastalo. |
 
 ### ✅ Hotovo — už to není nápad, ale funkce
@@ -274,7 +248,7 @@ Streaming přepisu · oprava přeřeknutí („teda v 5") · prompt proti vymý�
 
 ---
 
-## 8. Proč nebude automatický slovník (analýza)
+## 7. Proč nebude automatický slovník (analýza)
 
 **Nápad byl:** ať se Spillway sám učí termíny, které špatně slyší, a přidává si je do slovníku.
 
