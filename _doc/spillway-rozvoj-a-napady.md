@@ -2,7 +2,7 @@
 
 > Kam dál. **Nic tady není hotové ani slíbené** — je to podklad k rozhodování, ne plán práce
 > (ten je v [spillway-plan-implementace.md](spillway-plan-implementace.md)).
-> Stav aplikace: **v1.1** · Aktualizováno: 30. 7. 2026
+> Stav aplikace: **v1.2** · Aktualizováno: 5. 8. 2026
 > **Sekce 6 = odmítnuto / neaktuální. Ty nápady se do návrhů nevracejí.**
 
 ---
@@ -29,10 +29,15 @@
 - Kamkoliv přes schránku + `⌘V`; do **vzdálené Windows plochy** (RDP/AVD) naťukáním znaků.
 - **Chytrý oddělovač** — nic / mezera / nový řádek: uprostřed věty mezera, za dokončenou větou ve víceřádkovém poli nový řádek (další záznam pod sebe).
 - Když **odejdeš z pole nebo z aplikace**, text se nevloží jinam — zůstane ve schránce.
+- Když **není kam vložit** (nemáš zaklikané žádné pole), text se rovnou nechá ve schránce s lístkem — nevkládá se naslepo.
+
+**Ikona v liště**
+- V klidu základní vlnovka; při **nahrávání se hýbe podle hlasitosti** mikrofonu (poznáš, že tě slyší), při **zpracování** jí běží vlna zleva doprava.
+- Kreslí se procedurálně jako „šablona", takže si ji macOS sám obarví podle světlého/tmavého motivu.
 
 **Okénko u kurzoru (HUD)**
 - Ukazuje `Nahrávám` / `Zpracovávám` / `Ruším` přímo u textu, kam píšeš.
-- Když odejdeš z cílové aplikace, **přeskočí nahoru k ikoně v liště** (se špičkou na ikonu).
+- Má jen **dvě polohy**: u kurzoru, nebo pod ikonou v liště (se špičkou na ikonu) — když pozice kurzoru není k dispozici nebo odejdeš z cílové aplikace. U myši se neukazuje nikdy.
 - Po dokončení tam zůstane lístek **„Připraveno k vložení ⌘V"** — zmizí klikem, po `⌘V`, nebo novým diktátem.
 
 **Menu v liště (popover)**
@@ -40,8 +45,11 @@
 - Graf aktivity za 7 dní, **historie diktátů** (klik = zkopírovat).
 - Přepínač modelu (Haiku / Sonnet), stav GPU.
 
-**Nastavení**
+**Nastavení a nápověda**
+- Okno má dvě záložky: **Nastavení** a **Nápověda** (schémata: jak to funguje, kam text půjde, co znamenají stavy ikony, kudy tečou data).
 - Klávesy, jazyk, autostart, chytrá mezera, slovník, API klíč (v Keychain), vzhled (Systém/Light/Dark).
+- **Práh uvolnění modelu** v sekundách (0 = držet stále, jinak 10–600 s).
+- **Diagnostika** — standardně vypnutá. Zapíná se klíčem `diagnostics` v `settings.json` nebo proměnnou `SPILLWAY_DIAG` (`all`, nebo výčet `focus,hud,audio,text`). Teprve pak se do logu píšou podrobnosti o fokusu, poloze okénka a mikrofonu. Pozor: oblast `text` zapisuje do logu **přepsaný text**, ne jen jeho délku.
 - Reset statistik a historie.
 
 ---
@@ -116,7 +124,7 @@ nepřeložil.
 
 ---
 
-## 3. Ovládání hlasem a stav v liště
+## 3. Ovládání hlasem
 
 ### 3.1 Hlasové editační příkazy
 
@@ -142,50 +150,6 @@ ať víš, co Spillway poslouchá. Ničivé příkazy až potom — a jen v jasn
 
 **Náročnost:** malá (zadání pro Claude + testy). **Riziko:** nízké u formátovacích.
 
-### 3.2 Malá ikona v liště, která ukazuje stav
-
-**Otázka:** jak do drobné jednobarevné ikony dostat stav (nahrávám / zpracovávám)?
-
-**Jak to je dnes:** ikona je vlnovka (logo) a je **statická** — je to „šablona", takže si ji
-macOS sám obarví podle světlého/tmavého motivu. Stav se ukazuje jen v okénku u kurzoru.
-
-**Ikona v liště je maličká (asi 18×18 bodů)**, takže se do ní nevejde detail — musí se
-pracovat s **tvarem a výplní**, ne s obrázky.
-
-| Způsob | Jak to vypadá | Poznámka |
-|---|---|---|
-| **Změna výplně** ⭐ | Klid = tenké obrysové čárky · Nahrávám = plné, silné čárky · Zpracovávám = čárky „poloviční" | Zůstane šablona → funguje v obou motivech. Nejčistší. |
-| **Animace** ⭐ | Vlnovka během nahrávání „dýchá" (2–3 obrázky se střídají) | Nejlíp viditelné koutkem oka. Trochu víc práce. |
-| **Barevný puntík** | Malá červená tečka v rohu vlnovky | Musí se vypnout režim šablony → ikona se přestane sama přizpůsobovat motivu |
-| **Změna symbolu** | Vlnovka → mikrofon → přesýpací hodiny | ❌ Ztratí se identita loga, mate |
-
-**Doporučení:** kombinace prvních dvou — **stejná vlnovka, jiná „hlasitost"**:
-- **Klid** — tenké nízké čárky
-- **Nahrávám** — vysoké plné čárky, jemně se vlní (animace)
-- **Zpracovávám** — čárky ustálené v půli, pomalé blikání
-- **Připraveno k vložení** — vlnovka s malou tečkou (nebo prostě lístek u ikony, který už máme)
-
-Tím zůstane ikona minimalistická a rozeznatelná i periferním viděním.
-
-**Náročnost:** střední — je potřeba nakreslit 3–4 varianty ikony a přepínat je podle stavu.
-
-### 3.3 Diktování bez zaklikaného pole
-
-**Nápad:** začnu diktovat, aniž bych někam klikl (nemám otevřené žádné textové pole).
-Spillway to pozná, okénko si drží nahoře u ikony a výsledek dá **rovnou do schránky**
-s lístkem „Připraveno k vložení".
-
-**Proč to dává smysl:** často chceš jen „rychle si něco nadiktovat" a teprve pak se rozhodnout,
-kam to dáš. Dnes by se Spillway pokusil vložit to do čehokoliv, co má zrovna fokus.
-
-**Jak by to poznal:** při startu diktování se podívá, jestli je zaměřené **editovatelné pole**.
-Když ne → rovnou režim „do schránky". Když si není jistý → chová se jako dnes (vloží).
-
-**Návaznost:** vizuálně už je to hotové — okénko se umí ukotvit k ikoně a lístek existuje.
-Chybí jen ta detekce „není kam psát".
-
-**Náročnost:** malá. **Riziko:** nízké (nejhorší případ = text ve schránce místo vložení).
-
 ---
 
 ## 4. Uživatelské rozhraní
@@ -198,17 +162,7 @@ musíš najít sám a když jedno chybí, projeví se to jen tím, že „to nef
 tlačítkem otevře přesné místo v Nastavení systému, a na konci nabídne **zkušební diktát**
 s potvrzením „funguje".
 
-### 4.2 Stránka „Co Spillway umí" přímo v aplikaci
-Dnes je veškerý popis jen v těchhle dokumentech. **Návrh:** v menu položka, která otevře
-přehlednou stránku:
-- co která funkce dělá, jednou větou,
-- **ukázky workflow** („diktuji e-mail", „diktuji prompt do AI", „diktuji do vzdálené plochy"),
-- seznam klávesových zkratek,
-- tipy (např. že přeřeknutí umí opravit, nebo že ⌘V schová lístek).
-
-Je to nejlevnější způsob, jak zpřístupnit funkce, o kterých uživatel neví že existují.
-
-### 4.3 Úprava zadání pro AI (promptu) s resetem
+### 4.2 Úprava zadání pro AI (promptu) s resetem
 **Návrh:** v nastavení textové pole s tím, co se posílá Claudovi, plus tlačítko
 **„Vrátit na výchozí"**. Kdo chce, doladí si tón; kdo ne, nesahá na to.
 
@@ -221,12 +175,12 @@ zhoršit.
   „nepoužívej pomlčky") — připojí se k našemu promptu, nepřepíše ho.
 - **Expertní úroveň:** celý prompt k přepsání, schované za varováním, s resetem na výchozí.
 
-### 4.4 Úprava profilů aplikací
+### 4.3 Úprava profilů aplikací
 Dnes je pevně dané, že Mail = formální e-mail, Slack = neformální chat, editor = kód atd.
 **Návrh:** v nastavení tabulka „aplikace → profil", kde si to přepíšeš (třeba že Slack u tebe
 má být formální), a možnost přidat vlastní aplikaci nebo webovou doménu.
 
-### 4.5 Drobnosti
+### 4.4 Drobnosti
 - **Zabalit font Raleway** do aplikace (dnes padá na systémový, když ho nemáš).
 - **Doladit okénko u kurzoru** na více monitorech.
 - **Notarizace u Apple** (Developer ID, ~$99/rok) — odstraní varování „nelze ověřit vývojáře"
@@ -289,14 +243,15 @@ aby se termíny psaly všude stejně.
 | **Průběžné zobrazování odpovědi Claude** | ⛔ odmítnuto | K ničemu — text se stejně vkládá až celý. |
 | **Vrácení posledního vložení (undo)** | ⛔ odmítnuto | Ve většině aplikací funguje běžné `⌘Z`. |
 | **Náhled a potvrzení před vložením** | ⛔ odmítnuto | Další okno navíc, které zdržuje; smysl diktování je, že text prostě naskočí. |
-| **„Kopírovat místo vložit" zvláštní zkratkou** | 🕓 nahrazeno | Nahrazeno lepším nápadem — diktování bez zaklikaného pole (viz 3.3). |
+| **„Kopírovat místo vložit" zvláštní zkratkou** | 🕓 nahrazeno | Nahrazeno diktováním bez zaklikaného pole — hotovo. |
+| **Vždy přepsat schránku posledním diktátem** (nevracet původní obsah) | ⛔ odmítnuto 4. 8. | **Změřeno na 154 diktátech:** 91 % se normálně vloží, jen 6 % skončí ve schránce — a ty už fallback řeší sám. Přeplácnutí by tedy poškodilo schránku v 91 % případů kvůli riziku v 6 %, které je navíc pojištěné dvakrát (lístek „Připraveno k vložení" + Historie, do které se zapisuje **každý** diktát bez ohledu na výsledek). Navíc by rozbilo běžný postup „zkopíruj odkaz → nadiktuj komentář → vlož odkaz" a vynutilo výjimku pro RDP. Rozhodnutí: schránka se po vložení **vrací** jako dosud. |
 | **„Přemluvit" (nahradit poslední vložení)** | ⛔ odmítnuto | Jednodušší je smazat a nadiktovat znovu. |
 | **Tichý režim / pauza** | ⛔ odmítnuto | Řeší se sám — bez řeči se nic nepřepisuje (je tam filtr ticha). |
 | **Slovník jako páry „špatně → správně"** | ⛔ odmítnuto | Ruční slovník stačí; automatické učení je slepá ulička (viz 7). |
 | **Restart GPU vlákna při zaseknutí** | 🕓 neaktuální | Zaseknutí se po opravách neděje. Otevřít až kdyby nastalo. |
 
 ### ✅ Hotovo — už to není nápad, ale funkce
-Streaming přepisu · oprava přeřeknutí („teda v 5") · prompt proti vymýšlení (věrohodnost nad cílem, mazání zkomolenin, chráněný slovník) · chytrý oddělovač (mezera vs. nový řádek) · HUD u ikony + lístek „Připraveno k vložení" · schránka při odchodu z pole · vkládání do RDP/AVD · statistiky, náklady, historie s kopírováním.
+Streaming přepisu · oprava přeřeknutí („teda v 5") · prompt proti vymýšlení (věrohodnost nad cílem, mazání zkomolenin, chráněný slovník) · chytrý oddělovač (mezera vs. nový řádek) · HUD u ikony + lístek „Připraveno k vložení" · schránka při odchodu z pole · vkládání do RDP/AVD · statistiky, náklady, historie s kopírováním · **diktování bez zaklikaného pole** (není-li kam vložit, text jde do schránky s lístkem) · **animovaná ikona v liště** (živý ukazatel hlasitosti při nahrávání, běžící vlna při zpracování) · **nápověda v aplikaci** (schémata místo odstavců) · **nastavitelný práh uvolnění modelu**.
 
 ---
 

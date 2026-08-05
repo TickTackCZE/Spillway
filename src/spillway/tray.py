@@ -1,11 +1,13 @@
 """Menu bar aplikace (F3) — ikona + okno nastavení.
 
-Ikona v liště je statická (Spillway logo, zatím emoji placeholder). Klik → menu
-s „Nastavení…" (otevře Domovoy okno) a „Konec". Veškeré nastavení je v okně
-(`settings_window.py`), ne v menu.
+Ikona v liště je Spillway logo (`baricon.py`), které odráží stav: v klidu stojí,
+při nahrávání se hýbe podle hlasitosti mikrofonu, při zpracování jí běží vlna
+zleva doprava.
+Klik → menu s „Nastavení" (otevře Domovoy okno) a „Konec". Veškeré nastavení je
+v okně (`settings_window.py`), ne v menu.
 
-Stav nahrávání/zpracování se ukazuje v plovoucím HUD u kurzoru (`hud.py`),
-řízeném přes `rumps.Timer` na hlavním vlákně.
+Stav se navíc ukazuje v plovoucím HUD u kurzoru (`hud.py`). Obojí řídí jeden
+`rumps.Timer` na hlavním vlákně, takže animace nepotřebuje vlastní časovač.
 """
 
 from __future__ import annotations
@@ -24,6 +26,11 @@ class SpillwayTray(rumps.App):
         self.controller = controller
 
         # Spillway logo (waveform) jako template ikona v liště; fallback = emoji.
+        # `_icon_ok` říká, jestli se smí ikona animovat — bez ní jedeme na emoji
+        # a přepínání snímků se přeskočí.
+        self._icon_ok = False
+        self._icon_key: tuple[str, int] | None = None
+        self._pulse = 0
         try:
             from . import baricon
 
@@ -32,6 +39,8 @@ class SpillwayTray(rumps.App):
                 self.template = True
                 self.icon = path
                 self.title = None
+                self._icon_ok = True
+                self._icon_key = ("idle", 0)
         except Exception:  # noqa: BLE001
             pass
 
@@ -59,7 +68,7 @@ class SpillwayTray(rumps.App):
             "⚠️ Klávesa nefunguje — povol oprávnění", callback=self._open_privacy
         )
         self.menu = [
-            rumps.MenuItem("Nastavení…", callback=self.open_settings),
+            rumps.MenuItem("Nastavení", callback=self.open_settings),
             None,
             rumps.MenuItem("Konec", callback=self.quit_app),
         ]
@@ -96,7 +105,7 @@ class SpillwayTray(rumps.App):
                 "Chybí Zpřístupnění / Monitorování vstupu. Klikni v menu na ⚠️.",
             )
             if self._warn_item.title not in self.menu:
-                self.menu.insert_before("Nastavení…", self._warn_item)
+                self.menu.insert_before("Nastavení", self._warn_item)
             try:
                 if not getattr(self, "template", False):
                     self.title = "🎙️⚠️"
@@ -120,9 +129,9 @@ class SpillwayTray(rumps.App):
         try:
             if getattr(self.controller, "state", "IDLE") != "IDLE":
                 return  # neuvolňovat uprostřed nahrávání/zpracování
-            idle_min = config.get_auto_unload_minutes()
-            if self.controller.transcriber.unload_if_idle(idle_min * 60):
-                print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_min * 60:.0f} s).")
+            idle_sec = config.get_auto_unload_seconds()
+            if self.controller.transcriber.unload_if_idle(idle_sec):
+                print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_sec} s).")
         except Exception:  # noqa: BLE001
             pass
 
@@ -224,6 +233,7 @@ class SpillwayTray(rumps.App):
             self._popover = PopoverController(
                 self.controller,
                 on_open_settings=lambda: self.open_settings(None),
+                on_open_help=lambda: self.open_settings(None, page="help"),
                 on_quit=lambda: self.quit_app(None),
             )
             self._popover.attach_to_button(button)
@@ -237,6 +247,34 @@ class SpillwayTray(rumps.App):
             print(f"(popover nedostupný: {exc}) — zůstává klasické menu.\n{traceback.format_exc()}")
         self._popover_ready = True
 
+    def _update_icon(self, state, cancelling: bool) -> None:  # noqa: ANN001
+        """Snímek ikony podle stavu — živý ukazatel hlasitosti při nahrávání.
+
+        Ikona se přepíše jen když se snímek opravdu změní; v klidu se tak na lištu
+        nesahá vůbec a animace nic nestojí.
+        """
+        if not self._icon_ok:
+            return
+        from . import baricon
+
+        if cancelling:
+            key = ("cancel", 0)
+        elif state == RECORDING:
+            key = ("rec", baricon.level_step(self.controller.mic_level()))
+        elif state == PROCESSING:
+            self._pulse = (self._pulse + 1) % baricon.PULSE_FRAMES
+            key = ("proc", self._pulse)
+        else:
+            # Klid i „připraveno k vložení" = základní logo. O čekající text se
+            # hlásí lístek u ikony, ikona sama nemá blikat.
+            key = ("idle", 0)
+        if key == self._icon_key:
+            return
+        path = baricon.frame_path(*key)
+        if path:
+            self.icon = path
+            self._icon_key = key
+
     def _tick(self, _sender) -> None:  # noqa: ANN001
         if not getattr(self, "_popover_ready", False):
             try:
@@ -247,19 +285,34 @@ class SpillwayTray(rumps.App):
             self._refresh_stats_when_done()
         except Exception:  # noqa: BLE001 — statistika nesmí rozbít HUD
             pass
+        # „Ruším" má přednost nad stavem — dokud rušení nedoběhne, nesmí se
+        # HUD ani ikona vrátit na „Zpracovávám" (Whisper/Claude nejdou přerušit hned).
+        try:
+            cancelling = self.controller.is_cancelling()
+            state = self.controller.state
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            self._update_icon(state, cancelling)
+        except Exception:  # noqa: BLE001 — animace ikony nesmí rozbít HUD
+            pass
         if self.hud is None:
             return
         try:
-            # „Ruším" má přednost nad stavem — dokud rušení nedoběhne, nesmí se
-            # HUD vrátit na „Zpracovávám" (Whisper/Claude nejdou přerušit hned).
-            if self.controller.is_cancelling():
+            if cancelling:
                 self.hud.show("cancel")
                 return
-            state = self.controller.state
+            # K ikoně patří okénko ve dvou případech, které mají mít stejný
+            # průběh: odešel jsi z cílové aplikace, nebo se diktuje bez
+            # zaklikaného pole. Obojí končí lístkem „Připraveno k vložení"
+            # na tomtéž místě pod ikonou.
+            at_icon = self._left_target_app() or getattr(
+                self.controller, "no_field", False
+            )
             if state == RECORDING:
-                self.hud.show("rec", at_icon=self._left_target_app())
+                self.hud.show("rec", at_icon=at_icon)
             elif state == PROCESSING:
-                self.hud.show("proc", at_icon=self._left_target_app())
+                self.hud.show("proc", at_icon=at_icon)
             elif getattr(self.controller, "awaiting_paste", False):
                 # Text čeká ve schránce → lístek u ikony. Zmizí klikem na něj
                 # nebo jakmile uživatel kdekoliv stiskne ⌘V (viz hotkey.py).
@@ -269,13 +322,13 @@ class SpillwayTray(rumps.App):
         except Exception:  # noqa: BLE001
             pass
 
-    def open_settings(self, _sender) -> None:  # noqa: ANN001
+    def open_settings(self, _sender, page: str = "settings") -> None:  # noqa: ANN001
         try:
             if self._settings is None:
                 from .settings_window import SettingsWindow
 
                 self._settings = SettingsWindow(self.controller)
-            self._settings.show()
+            self._settings.show(page)
         except Exception as exc:  # noqa: BLE001
             rumps.alert("Nastavení nelze otevřít", str(exc))
 

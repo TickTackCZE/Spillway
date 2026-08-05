@@ -144,17 +144,34 @@ def ai_edit() -> bool:
     return bool(settings.get("ai_edit", True))
 
 
-def get_auto_unload_minutes() -> float:
-    """[R5] Po kolika minutách nečinnosti uvolnit Whisper model z (unified) paměti
-    (~1,5–2 GB); znovu se lazy-loadne při dalším diktátu (~1,6 s). 0 = nikdy.
-    Env SPILLWAY_AUTO_UNLOAD_MIN přebíjí; výchozí 1 min — delší než dřívějších
-    15 s, aby model během aktivní práce nezůstával v cyklu uvolni/načti (churn =
-    zbytečná práce na GPU a teplo). Kratší pauzy mezi větami tak reload neplatí."""
-    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_MIN") or settings.get("auto_unload_min", 1.0)
+# Meze pro práh uvolnění modelu. Dolní hranice brání cyklu uvolni/načti mezi
+# větami, horní je tam proto, že delší držení modelu už nemá smysl — 1,5–2 GB
+# paměti navíc se nevyplatí kvůli reloadu za 1,6 s.
+AUTO_UNLOAD_MIN_SEC = 10
+AUTO_UNLOAD_MAX_SEC = 600
+
+
+def clamp_auto_unload(value) -> int | None:
+    """Ověří zadaný práh v sekundách. None = nesmysl (volající si nechá starý).
+
+    Vše ostatní se ořízne do rozsahu 10–600 s, ať z UI ani z proměnné prostředí
+    nemůže přijít hodnota, která appku rozhodí. Držet model načtený natrvalo
+    nejde schválně — zabírá ~2 GB a reload stojí jen ~1,6 s.
+    """
     try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return 0.25
+        sec = int(round(float(str(value).strip().replace(",", "."))))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return max(AUTO_UNLOAD_MIN_SEC, min(AUTO_UNLOAD_MAX_SEC, sec))
+
+
+def get_auto_unload_seconds() -> int:
+    """[R5] Po kolika sekundách nečinnosti uvolnit Whisper model z (unified)
+    paměti (~1,5–2 GB); znovu se lazy-loadne při dalším diktátu (~1,6 s).
+    Env SPILLWAY_AUTO_UNLOAD_SEC přebíjí uložené nastavení."""
+    raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_SEC") or settings.get("auto_unload_sec", 60)
+    sec = clamp_auto_unload(raw)
+    return 60 if sec is None else sec
 
 
 _UNSET = object()

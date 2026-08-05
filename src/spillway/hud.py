@@ -4,16 +4,17 @@ Vzhled je HTML/CSS (přesně dle Domovoy: ghost logo, tmavá karta, accent lem,
 pulzující tečka), takže ho lze ladit a náhledovat v prohlížeči. Okno je
 borderless, průhledné, neaktivní panel; obsah renderuje WKWebView.
 
-Poloha: nad textovým kurzorem (AX `kAXBoundsForRangeParameterizedAttribute`),
-fallback k myši. `SPILLWAY_DEBUG_HUD=1` vypisuje zjištěné souřadnice.
+Poloha má jen DVĚ možnosti, ať je chování jednotné: nad textovým kurzorem
+(AX `kAXBoundsForRangeParameterizedAttribute`), a když ten není k dispozici
+(web/Electron, odchod z cílové appky, čekající lístek), pod ikonou v liště se
+šipkou na ni. U myši se okénko neukazuje nikdy.
+Souřadnice okénka vypíše diagnostická oblast `hud` (viz `diag.py`).
 
 Vše běží na hlavním vlákně (voláno z rumps.Timer). Když se HUD nepodaří
 vytvořit, tray ho tiše přeskočí.
 """
 
 from __future__ import annotations
-
-import os
 
 import objc
 from AppKit import (
@@ -28,9 +29,8 @@ from AppKit import (
 )
 from WebKit import WKWebView, WKWebViewConfiguration
 
-from . import context, design
+from . import context, design, diag
 
-_DEBUG = os.environ.get("SPILLWAY_DEBUG_HUD", "0").lower() not in ("0", "false", "no")
 
 _BORDERLESS = 0
 _NONACTIVATING = 1 << 7
@@ -40,7 +40,7 @@ _STATIONARY = 1 << 4
 _FS_AUX = 1 << 8
 
 # Spillway logo (roztékající waveform) — světlé sloupce, bez kapek (malá velikost).
-_LOGO = design.logo_svg(color="#C7CCF7", width=17, height=17, drops=False)
+_LOGO = design.logo_svg(color="#C7CCF7", width=17, height=17)
 
 _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -212,8 +212,7 @@ class StatusHUD:
             y = caret_top + gap - 8.0
             if y + self.H > primary_h - 4.0:
                 y = caret_bottom - self.H - gap
-            if _DEBUG:
-                print(f"[hud] caret AX=({cx:.0f},{cy:.0f},{cw:.0f},{ch:.0f}) → panel=({x:.0f},{y:.0f})")
+            diag.log("hud", f"caret AX=({cx:.0f},{cy:.0f},{cw:.0f},{ch:.0f}) → panel=({x:.0f},{y:.0f})")
             self.panel.setFrameOrigin_(NSMakePoint(x, y))
         else:
             # Kurzor neznáme (odešel jsi z pole, web/Electron) — místo lítání za
@@ -246,15 +245,13 @@ class StatusHUD:
         if icon_center_x is None or top_y is None:
             icon_center_x = float(vf.origin.x) + float(vf.size.width) - 40.0
             top_y = float(vf.origin.y) + float(vf.size.height) - 24.0
-            if _DEBUG:
-                print("[hud] ikona v liště neznámá → pravý horní roh")
+            diag.log("hud", "ikona v liště neznámá → pravý horní roh")
 
         x = icon_center_x - self.W / 2.0
         x = max(float(vf.origin.x) + 4.0,
                 min(x, float(vf.origin.x) + float(vf.size.width) - self.W - 4.0))
         y = top_y - self.H
-        if _DEBUG:
-            print(f"[hud] ukotveno k ikoně: icon_x={icon_center_x:.0f} → panel=({x:.0f},{y:.0f})")
+        diag.log("hud", f"ukotveno k ikoně: icon_x={icon_center_x:.0f} → panel=({x:.0f},{y:.0f})")
         self.panel.setFrameOrigin_(NSMakePoint(x, y))
         self._set_anchor(icon_center_x - x)  # kam v okénku patří špička
 

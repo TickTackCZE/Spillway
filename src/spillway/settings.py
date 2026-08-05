@@ -28,15 +28,39 @@ _DEFAULTS: dict = {
     # Potlačí se JEN během zpracování — jinde klávesa funguje normálně.
     "cancel_keycode": 53,            # Escape
     "cancel_label": "Escape",
-    "auto_unload_min": 0.25,         # [R5] uvolnit Whisper model po N min nečinnosti (15s); reload je levný (~1,6s)
+    # [R5] Uvolnit Whisper model po N SEKUNDÁCH nečinnosti; reload je levný
+    # (~1,6 s). 60 s je vědomé rozhodnutí (změřeno na reálném provozu — viz
+    # _doc/spillway-rozvoj-a-napady.md): kratší práh sráží model uprostřed
+    # aktivní práce. Tenhle údaj je JEDINÝ zdroj pravdy — `config.py` z něj čte.
+    "auto_unload_sec": 60,
     "llm_min_seconds": 5.0,          # kratší diktát → jen lokální úprava, bez volání Clauda
+    # Diagnostika (viz `diag.py`) — standardně vypnutá, ať log nenaroste a
+    # nezapisuje se víc, než je potřeba. "all" nebo výčet: "focus,hud,audio,text".
+    # Pozor: "text" zapisuje do logu PŘEPSANÝ TEXT, ne jen jeho délku.
+    "diagnostics": "",
 }
+
+
+def _migrate(raw: dict) -> dict:
+    """Převod starších podob nastavení na aktuální.
+
+    Práh uvolnění modelu se dřív ukládal v minutách (`auto_unload_min`), teď je
+    v sekundách — uživatel ho zadává v sekundách, tak ať v nich i leží. Bez
+    převodu by se komukoliv s uloženou hodnotou tiše vrátil výchozí práh.
+    """
+    if "auto_unload_sec" not in raw and "auto_unload_min" in raw:
+        try:
+            raw["auto_unload_sec"] = int(round(float(raw["auto_unload_min"]) * 60))
+        except (TypeError, ValueError):
+            pass
+    raw.pop("auto_unload_min", None)
+    return raw
 
 
 def _load() -> dict:
     try:
         with open(_PATH, encoding="utf-8") as f:
-            return {**_DEFAULTS, **json.load(f)}
+            return {**_DEFAULTS, **_migrate(json.load(f))}
     except Exception:  # noqa: BLE001
         return dict(_DEFAULTS)
 
