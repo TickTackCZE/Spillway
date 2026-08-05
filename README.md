@@ -7,7 +7,7 @@ lokálně, upraví přes AI a vloží do libovolné aplikace.
 přepis) → **Claude** (úprava/formátování) → **univerzální vložení** (`⌘V`, nebo
 naťukání do RDP/AVD). Běží na pozadí jako **menu-bar app**.
 
-> Stav: **v1.0** — funkční, nasazeno. Data neopouštějí stroj kromě jednoho
+> Stav: **v1.2** — funkční, nasazeno. Data neopouštějí stroj kromě jednoho
 > textového API volání do Claude. API klíč jen v macOS Keychain.
 
 - 📄 [Analýza](_doc/spillway-analyza.md) · [Plán implementace](_doc/spillway-plan-implementace.md) · [Rozvoj a nápady](_doc/spillway-rozvoj-a-napady.md)
@@ -16,10 +16,26 @@ naťukání do RDP/AVD). Běží na pozadí jako **menu-bar app**.
 
 - **Vícejazyčnost** — čeština i anglické termíny (code-switching), `language="cs"` napevno.
 - **Znalost cílové aplikace** — profily formátování (e-mail / chat / kód / prompt pro AI / obecné).
+- **Streaming přepisu** — přepisuje se už během mluvení (řeže se v tichu), po puštění klávesy čekáš jen na poslední kousek.
+- **Nevymýšlí si** — věrohodnost je v zadání pro Claude nadřazená všemu; nesrozumitelné zkomoleniny se mažou místo hádání, termíny ze slovníku jsou chráněné. Pozná i přeřeknutí („ve 4, teda v 5" → „v 5").
+- **Animovaná ikona v liště** — v klidu logo, při nahrávání živý ukazatel hlasitosti z mikrofonu, při zpracování běžící vlna.
+- **Ví, kam vložit** — když nemáš zaklikané pole nebo během zpracování odejdeš jinam, text se nevloží naslepo: zůstane ve schránce a u ikony visí lístek „Připraveno k vložení".
 - **Popover v liště** — statistiky, ⌀ tempo řeči, náklady za měsíc, 7denní graf, historie diktátů (klik = zpět do schránky), přepínač modelu.
-- **Nastavení** — klávesy, jazyk, chování (autostart, chytrá mezera, odesílání do AI + čtení kontextu pole), uživatelský slovník, API klíč, vzhled (Systém / Light / Dark), reset statistik a historie.
+- **Nastavení a nápověda** — dvě záložky v jednom okně. Nastavení: klávesy, jazyk, autostart, chytrá mezera, odesílání do AI + čtení kontextu pole, slovník, API klíč, vzhled, práh uvolnění modelu z paměti (10–600 s), reset statistik a historie. Nápověda: schémata funkcí přímo v aplikaci.
 - **Zrušení diktátu** klávesou (Escape) před placeným voláním AI.
 - **Uživatelský slovník** — termíny, které má Claude psát přesně (opraví k nim i přeslechy).
+
+## Diagnostika
+
+Standardně se do logu (`~/Library/Logs/Spillway/spillway.log`) píše jen
+jednořádkový souhrn každého diktátu. Podrobnosti se zapnou na dobu ladění:
+
+```bash
+SPILLWAY_DIAG=all open -a Spillway     # nebo výčet: focus,hud,audio,text
+```
+
+Totéž jde trvale klíčem `diagnostics` v `~/Library/Application Support/Spillway/settings.json`.
+**Pozor:** oblast `text` zapisuje do logu přepsaný text, ne jen jeho délku.
 
 ## Instalace (.app)
 

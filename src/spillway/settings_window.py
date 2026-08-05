@@ -119,12 +119,19 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .tabs button{flex:1;border:0.5px solid transparent;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:600;padding:7px;border-radius:8px;cursor:pointer;}
   .tabs button.on{background:var(--surface);color:var(--text);border-color:var(--border);}
   .hidden{display:none;}
+  @keyframes flash{0%{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent);}
+    100%{border-color:var(--border);box-shadow:none;}}
+  .card.flash{animation:flash 1.4s ease-out;}
   /* --- Nápověda: schémata místo odstavců --- */
   .flow{display:flex;align-items:stretch;gap:6px;}
-  .step{flex:1;background:var(--surface);border:0.5px solid var(--border);border-radius:10px;padding:10px 8px;text-align:center;}
-  .step .big{font-size:20px;line-height:1.3;}
+  /* Všechny kroky mají stejně vysoké pásmo pro ikonu i pro popisek, jinak
+     se texty mezi bloky svisle rozjíždějí podle toho, kolik mají řádků. */
+  .step{flex:1;background:var(--surface);border:0.5px solid var(--border);border-radius:10px;
+    padding:10px 8px;text-align:center;display:flex;flex-direction:column;align-items:center;}
+  .step .big{font-size:20px;height:26px;display:flex;align-items:center;justify-content:center;}
   .step .t{font-size:11px;font-weight:600;margin-top:3px;}
-  .step .d{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.4;text-wrap:balance;}
+  .step .d{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.4;text-wrap:balance;
+    min-height:28px;}   /* rezerva na dva řádky, ať bloky nelítají */
   .arrow{align-self:center;color:var(--muted);font-size:13px;}
   .kbd{display:inline-block;background:var(--surface2);border:0.5px solid var(--border);border-bottom-width:2px;border-radius:5px;padding:1px 6px;font-size:11px;font-weight:700;}
   .branch{display:flex;gap:8px;}
@@ -195,7 +202,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="hint" id="unloadHint" style="display:none;"></div>
   </div>
 
-  <div class="card"><h3>Slovník výrazů</h3>
+  <div class="card" id="cardGloss"><h3>Slovník výrazů</h3>
     <textarea id="gloss" rows="4" placeholder="commit, pull request, repository, Trackio…" onchange="saveGloss()"></textarea>
     <div class="hint">Termíny oddělujte čárkou „,". Vstupuje až do AI modelu.</div>
   </div>
@@ -290,7 +297,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   </div>
 
   <div class="card"><h3>Slovník a náklady</h3>
-    <div class="rowt"><div class="l">Slovník výrazů<small>Vlastní jména a termíny, které se často komolí</small></div><button class="btn" onclick="showPage('settings')">Otevřít</button></div>
+    <div class="rowt"><div class="l">Slovník výrazů<small>Vlastní jména a termíny, které se často komolí</small></div><button class="btn" onclick="showPage('settings','cardGloss')">Otevřít</button></div>
     <div class="rowt"><div class="l">Cena<small>Platí se jen za úpravu textu, přepis je zdarma</small></div><div class="l" style="color:var(--accent);font-weight:600;">~$2&nbsp;/&nbsp;měsíc</div></div>
     <div class="hint">Krátké diktáty se AI modelu neposílají vůbec&nbsp;— upraví se lokálně.</div>
   </div>
@@ -301,14 +308,19 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
 <script>
   function send(m){ try{ window.webkit.messageHandlers.spillway.postMessage(m); }catch(e){} }
-  function showPage(name){
+  function showPage(name, anchor){
     var help = name === 'help';
     document.getElementById('pageSettings').classList.toggle('hidden', help);
     document.getElementById('pageHelp').classList.toggle('hidden', !help);
     document.getElementById('tabSet').classList.toggle('on', !help);
     document.getElementById('tabHelp').classList.toggle('on', help);
     document.getElementById('sub').textContent = help ? 'Nápověda' : 'Nastavení';
-    window.scrollTo(0, 0);
+    var el = anchor && document.getElementById(anchor);
+    if(!el){ window.scrollTo(0, 0); return; }
+    // Odkaz z nápovědy má přistát U KARTY, ne na začátku stránky — jinak
+    // uživatel neví, kam se dostal, a kartu hledá dole.
+    el.scrollIntoView({block:'center'});
+    el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
   }
   // Práh uvolnění modelu: pustíme dál jen celé sekundy v rozsahu. Nesmysl
   // (písmena, prázdno) se needituje na půl cesty — vrátíme poslední platnou

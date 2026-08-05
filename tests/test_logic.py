@@ -1760,3 +1760,17 @@ def test_settings_buttons_have_uniform_width():
     # Výzva „Stiskni klávesu…" patří k popisku, ne do tlačítka.
     assert "'Stiskni klávesu…'" in sw._HTML
     assert "Btn').textContent = 'Stiskni klávesu…'" not in sw._HTML
+
+
+def test_help_links_point_at_existing_cards():
+    import re
+
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    # Odkazy z nápovědy musí mířit na kartu, která v nastavení opravdu je —
+    # jinak uživatel skončí na začátku stránky a kartu hledá dole sám.
+    targets = set(re.findall(r"showPage\('settings','([^']+)'\)", html))
+    assert targets, "nápověda má odkazovat aspoň na jednu kartu"
+    for t in targets:
+        assert f'id="{t}"' in html, f"odkaz na neexistující kartu: {t}"

@@ -4,7 +4,8 @@
 #
 #   bash build/make_dmg.sh
 #
-# Pozn.: appka je jen ad-hoc podepsaná (ne notarizovaná) — Gatekeeper při
+# Pozn.: appka je podepsaná stabilním self-signed certem (ne notarizovaná) —
+# Gatekeeper při
 # prvním otevření ukáže "nelze ověřit vývojáře". Uživatel musí kliknout
 # pravým tlačítkem → Otevřít (nebo Nastavení systému → Soukromí → Otevřít i tak).
 
@@ -22,7 +23,9 @@ fi
 
 rm -rf "$STAGE" "$DMG"
 mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
+# `ditto` (ne cp -R) — zachová symlinky a rozšířené atributy bundlu, jinak
+# se podpis v DMG rozbije a Gatekeeper appku odmítne.
+ditto "$APP" "$STAGE/Spillway.app"
 ln -s /Applications "$STAGE/Applications"
 
 hdiutil create -volname "Spillway" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
