@@ -29,6 +29,28 @@ from WebKit import WKWebView, WKWebViewConfiguration
 from . import autostart, config, design, keymap, models, settings, stats
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 
+
+def _run_js(webview, js: str, what: str = "") -> None:
+    """Spustí JS v okně a **nahlásí chybu**.
+
+    Dřív se všude předával `None` jako completion handler, takže výjimka v JS
+    zmizela beze stopy — okno pak tiše ukazovalo zastaralý stav a nešlo poznat
+    proč. Chyba jde do logu vždy (ne jen v diagnostice): tichý nefunkční stav
+    je horší než řádek v logu.
+    """
+    if webview is None:
+        return
+
+    def done(_result, err) -> None:
+        if err is not None:
+            print(f"❌ JS selhal{' (' + what + ')' if what else ''}: {err}")
+
+    try:
+        webview.evaluateJavaScript_completionHandler_(js, done)
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ JS nešlo spustit{' (' + what + ')' if what else ''}: {exc}")
+
+
 _LOGO = design.logo_svg(color="#818CF8", width=30, height=30)
 
 # Ikony stavů do nápovědy — kreslí se ze STEJNÉ geometrie jako skutečná ikona
@@ -181,12 +203,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <button id="tabHelp" onclick="showPage('help')">Nápověda</button>
   </div>
 
-  <div id="notReady" class="banner hidden" onclick="showPage('settings','cardSetup')">
-    <span class="dot" style="background:var(--danger)"></span>
-    <span id="notReadyText">Chybí model pro přepis — bez něj nejde diktovat</span>
-    <span class="go">Nastavit →</span>
-  </div>
-
   <div id="pageSettings">
 
   <div class="card"><h3>Klávesy</h3>
@@ -252,7 +268,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="prog" id="modelProg" style="display:none;"><div id="modelBar"></div></div>
 
     <div class="rowt">
-      <div class="l">Úprava textu přes Claude<small id="keyHint">&nbsp;</small></div>
+      <div class="l">Claude API key<small id="keyHint">&nbsp;</small></div>
       <div class="field" style="width:auto;align-items:center;gap:10px;">
         <span class="l" id="keyState" style="font-weight:600;">Zjišťuji…</span>
         <button class="btn" id="keyBtn" data-label="Smazat" onclick="keyAction()">…</button>
@@ -356,9 +372,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   // Pruh nahoře. Závisí JEN na modelu pro přepis — bez něj se nedá diktovat
   // vůbec. API klíč je volitelný: bez něj jede syrový přepis, jen se text
   // neupraví. Dřív pruh čekal na dvě nezávislá hlášení a mohl uváznout.
-  function setReady(model){
-    document.getElementById('notReady').classList.toggle('hidden', !!model);
-  }
   // Bez klíče nemá smysl nabízet odesílání do AI — zašedne se to.
   function syncKey(has){
     var sw = document.querySelector('.sw[data-key="ai_edit"]');
@@ -395,7 +408,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
       btn.textContent = 'Stáhnout'; btn.dataset.label = 'Stáhnout';
       btn.dataset.mode = ''; btn.classList.remove('danger');
     }
-    setReady(m.ready);
   }
   function modelAction(){
     var btn = document.getElementById('modelBtn');
@@ -677,9 +689,7 @@ class _Bridge(NSObject):
         if keycode == other:
             def _reject() -> None:
                 if self.webview is not None:
-                    self.webview.evaluateJavaScript_completionHandler_(
-                        "rejectHotkey(" + json.dumps(which) + ")", None
-                    )
+                    _run_js(self.webview, "rejectHotkey(" + json.dumps(which) + ")")
             AppHelper.callAfter(_reject)
             return
 
@@ -698,7 +708,7 @@ class _Bridge(NSObject):
             if self.webview is not None:
                 payload = {"keycode": keycode, "label": label, "which": which}
                 js = "applyHotkey(" + json.dumps(payload, ensure_ascii=False) + ")"
-                self.webview.evaluateJavaScript_completionHandler_(js, None)
+                _run_js(self.webview, js)
 
         AppHelper.callAfter(_apply)
 
@@ -707,7 +717,7 @@ class _Bridge(NSObject):
         def _apply() -> None:
             if self.webview is not None:
                 js = "cancelHotkey(" + json.dumps(which) + ")"
-                self.webview.evaluateJavaScript_completionHandler_(js, None)
+                _run_js(self.webview, js)
 
         AppHelper.callAfter(_apply)
 
@@ -733,7 +743,7 @@ class _Bridge(NSObject):
         state.update(extra or {})
         js = "applyModel(" + json.dumps(state, ensure_ascii=False) + ")"
         if self.webview is not None:
-            self.webview.evaluateJavaScript_completionHandler_(js, None)
+            _run_js(self.webview, js)
 
     @objc.python_method
     def _start_model_download(self) -> None:
@@ -772,7 +782,7 @@ class _Bridge(NSObject):
             "first_run": not settings.get("seen_setup", False),
         }
         js = "applyState(" + json.dumps(state, ensure_ascii=False) + ")"
-        self.webview.evaluateJavaScript_completionHandler_(js, None)
+        _run_js(self.webview, js)
         self._push_model()
 
 
@@ -845,7 +855,7 @@ class SettingsWindow:
         popoveru otevře Nápovědu i tehdy, když okno zůstalo na Nastavení."""
         try:
             name = "help" if page == "help" else "settings"
-            self.web.evaluateJavaScript_completionHandler_(f"showPage('{name}')", None)
+            _run_js(self.web, f"showPage('{name}')")
         except Exception:  # noqa: BLE001
             pass
 

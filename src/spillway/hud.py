@@ -31,6 +31,28 @@ from WebKit import WKWebView, WKWebViewConfiguration
 
 from . import context, design, diag
 
+
+def _run_js(webview, js: str, what: str = "") -> None:
+    """Spustí JS v okně a **nahlásí chybu**.
+
+    Dřív se všude předával `None` jako completion handler, takže výjimka v JS
+    zmizela beze stopy — okno pak tiše ukazovalo zastaralý stav a nešlo poznat
+    proč. Chyba jde do logu vždy (ne jen v diagnostice): tichý nefunkční stav
+    je horší než řádek v logu.
+    """
+    if webview is None:
+        return
+
+    def done(_result, err) -> None:
+        if err is not None:
+            print(f"❌ JS selhal{' (' + what + ')' if what else ''}: {err}")
+
+    try:
+        webview.evaluateJavaScript_completionHandler_(js, done)
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ JS nešlo spustit{' (' + what + ')' if what else ''}: {exc}")
+
+
 _BORDERLESS = 0
 _NONACTIVATING = 1 << 7
 _STATUS_LEVEL = 25
@@ -191,9 +213,7 @@ class StatusHUD:
         if state != self._state:
             self._state = state
             try:
-                self.web.evaluateJavaScript_completionHandler_(
-                    f"setState('{state}')", None
-                )
+                _run_js(self.web, f"setState('{state}')")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -263,7 +283,7 @@ class StatusHUD:
         self._anchor_offset = offset
         js = "setAnchor(%s)" % ("null" if offset is None else f"{float(offset):.1f}")
         try:
-            self.web.evaluateJavaScript_completionHandler_(js, None)
+            _run_js(self.web, js)
         except Exception:  # noqa: BLE001
             pass
 

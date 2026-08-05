@@ -30,6 +30,28 @@ from WebKit import WKWebView, WKWebViewConfiguration
 from . import config, design, models, stats
 from .paste import copy_to_clipboard
 
+
+def _run_js(webview, js: str, what: str = "") -> None:
+    """Spustí JS v okně a **nahlásí chybu**.
+
+    Dřív se všude předával `None` jako completion handler, takže výjimka v JS
+    zmizela beze stopy — okno pak tiše ukazovalo zastaralý stav a nešlo poznat
+    proč. Chyba jde do logu vždy (ne jen v diagnostice): tichý nefunkční stav
+    je horší než řádek v logu.
+    """
+    if webview is None:
+        return
+
+    def done(_result, err) -> None:
+        if err is not None:
+            print(f"❌ JS selhal{' (' + what + ')' if what else ''}: {err}")
+
+    try:
+        webview.evaluateJavaScript_completionHandler_(js, done)
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ JS nešlo spustit{' (' + what + ')' if what else ''}: {exc}")
+
+
 _DBG_PATH = os.path.expanduser("~/Library/Logs/Spillway/popover-debug.log")
 
 
@@ -144,12 +166,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">Připraveno</span></span>
   </div>
 
-  <div id="noModel" class="warn" style="display:none;">
-    <div class="wtop"><span class="wdot"></span><b>Chybí model pro přepis</b></div>
-    <div class="wtext" id="noModelText">Bez něj nejde diktovat. Stáhne se jednou, 1,6 GB.</div>
-    <div class="wprog" id="noModelProg" style="display:none;"><div id="noModelBar"></div></div>
-    <button id="noModelBtn" onclick="getModel()">Stáhnout model</button>
-  </div>
   <div class="hero"><div class="line">Podrž <span class="kbd" id="hotkeyKbd">F5</span> a mluv</div></div>
 
   <div class="stats">
@@ -242,31 +258,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
         +'<span class="age">'+esc(it.age)+'</span><span class="cpy">Kopírovat</span></div>';
     }).join('');
   }
-  function getModel(){
-    var b=document.getElementById('noModelBtn');
-    b.disabled=true; b.textContent='Stahuji…';
-    send({action:'model_download'});
-  }
-  function applyModel(m){
-    var box=document.getElementById('noModel');
-    if(m.ready){ box.style.display='none'; return; }
-    box.style.display='block';
-    var prog=document.getElementById('noModelProg');
-    var b=document.getElementById('noModelBtn');
-    if(m.downloading){
-      prog.style.display='block';
-      document.getElementById('noModelBar').style.width=(m.percent||0)+'%';
-      document.getElementById('noModelText').textContent=m.progress_text||'Stahuji…';
-      b.disabled=true; b.textContent='Stahuji '+(m.percent||0)+' %';
-    } else {
-      prog.style.display='none';
-      document.getElementById('noModelText').textContent=
-        'Bez něj nejde diktovat. Stáhne se jednou, 1,6 GB.';
-      b.disabled=false; b.textContent='Stáhnout model';
-    }
-  }
   function applyState(s){
-    if(typeof s.model_ready === 'boolean') applyModel({ready:s.model_ready});
     applyTheme(s.theme||'system');
     document.getElementById('hotkeyKbd').textContent = s.hotkey_label || 'F5';
     var pill=document.getElementById('statusPill'), txt=document.getElementById('statusText');
@@ -374,7 +366,7 @@ class _PopBridge(NSObject):
             if text:
                 copy_to_clipboard(text)
                 if self.webview is not None:
-                    self.webview.evaluateJavaScript_completionHandler_("toast('Zkopírováno')", None)
+                    _run_js(self.webview, "toast('Zkopírováno')")
 
     @objc.python_method
     def _on_download(self, st: dict) -> None:
@@ -387,7 +379,7 @@ class _PopBridge(NSObject):
             payload = dict(st)
             payload["ready"] = models.is_ready()
             js = "applyModel(" + json.dumps(payload, ensure_ascii=False) + ")"
-            self.webview.evaluateJavaScript_completionHandler_(js, None)
+            _run_js(self.webview, js)
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
 
@@ -440,7 +432,7 @@ class _PopBridge(NSObject):
             ],
         }
         js = "applyState(" + json.dumps(state, ensure_ascii=False) + ")"
-        self.webview.evaluateJavaScript_completionHandler_(js, None)
+        _run_js(self.webview, js)
 
 
 def _human_count(n: int) -> str:

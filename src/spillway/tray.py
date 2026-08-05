@@ -55,6 +55,11 @@ class SpillwayTray(rumps.App):
         except Exception as exc:  # noqa: BLE001
             print(f"(HUD nedostupný: {exc})")
 
+        # Kartička s upozorněním vedle popoveru/nastavení (chybí model nebo klíč).
+        self._notice = None
+        self._notice_checked_at = 0.0
+        self._notice_state = (True, True)
+
         # Okno nastavení (Domovoy design) — vytvoří se líně při prvním otevření.
         self._settings = None
 
@@ -110,6 +115,56 @@ class SpillwayTray(rumps.App):
             settings.set("seen_setup", True)
         except Exception:  # noqa: BLE001 — uvítání nesmí shodit start
             pass
+
+    def _setup_state(self) -> tuple[bool, bool]:
+        """(je model, je klíč) — přepočítává se nejvýš jednou za 2 s.
+
+        Čte se z časovače 6,7×/s; bez tlumení by to zbytečně sahalo na disk
+        a do Klíčenky při každém tiku.
+        """
+        import time as _t
+
+        now = _t.monotonic()
+        if now - self._notice_checked_at < 2.0:
+            return self._notice_state
+        self._notice_checked_at = now
+        try:
+            self._notice_state = (models.is_ready(), bool(config.get_api_key()))
+        except Exception:  # noqa: BLE001
+            self._notice_state = (True, True)   # při chybě neotravovat
+        return self._notice_state
+
+    def _update_notice(self) -> None:
+        """Kartička visí vedle otevřeného popoveru nebo nastavení; jinak je pryč."""
+        model_ok, key_ok = self._setup_state()
+
+        frame = None
+        pop = getattr(self, "_popover", None)
+        if pop is not None and pop.is_shown():
+            try:
+                frame = pop.popover.contentViewController().view().window().frame()
+            except Exception:  # noqa: BLE001
+                frame = None
+        if frame is None:
+            win = self._settings
+            if win is not None and win.is_visible():
+                frame = win.window.frame()
+
+        if frame is None:
+            if self._notice is not None:
+                self._notice.hide()
+            return
+
+        if self._notice is None:
+            try:
+                from .notice import NoticePanel
+
+                self._notice = NoticePanel()
+            except Exception as exc:  # noqa: BLE001 — bez kartičky se dá žít
+                print(f"(upozornění nedostupné: {exc})")
+                self._notice_state = (True, True)
+                return
+        self._notice.show_beside(frame, model_ready=model_ok, has_key=key_ok)
 
     def _hud_clicked(self) -> None:
         """Klik na okénko: chybí-li model, otevře Nastavení u karty K provozu;
@@ -311,6 +366,10 @@ class SpillwayTray(rumps.App):
                 self._popover_ready = True  # nezkoušet donekonečna
         if not getattr(self, "_welcome_checked", True):
             self._maybe_welcome()
+        try:
+            self._update_notice()
+        except Exception:  # noqa: BLE001 — kartička nesmí rozbít zbytek tiku
+            pass
         try:
             self._refresh_stats_when_done()
         except Exception:  # noqa: BLE001 — statistika nesmí rozbít HUD

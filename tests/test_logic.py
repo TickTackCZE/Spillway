@@ -1714,3 +1714,27 @@ def test_download_listeners_get_state_and_can_unsubscribe(monkeypatch):
     models.remove_download_listener(seen.append)
     models._emit(downloading=False, percent=0)
     assert seen[-1]["percent"] == 42, "odhlášený posluchač už nic dostávat nemá"
+
+
+def test_objc_class_names_are_unique_across_modules():
+    import ast
+    import pathlib
+    import re
+
+    # Objective-C má GLOBÁLNÍ jmenný prostor tříd: dvě stejnojmenné v různých
+    # modulech shodí import („is overriding existing Objective-C class").
+    seen: dict[str, str] = {}
+    for f in sorted(pathlib.Path("src/spillway").glob("*.py")):
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            bases = " ".join(ast.unparse(b) for b in node.bases)
+            if not re.search(r"NSObject|NSView|NSPanel|NSWindow|lookUpClass", bases):
+                continue
+            assert node.name not in seen, (
+                f"třída {node.name} je v {f.name} i v {seen[node.name]} — "
+                "ObjC názvy musí být unikátní"
+            )
+            seen[node.name] = f.name
+    assert seen, "očekáváme aspoň jednu ObjC třídu"

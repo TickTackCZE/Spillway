@@ -306,18 +306,33 @@ def test_setup_card_groups_key_and_model_together():
     html = sw._HTML
     # API klíč a model jsou obojí podmínka funkčnosti → jedna karta.
     setup = html[html.index('id="cardSetup"'):html.index('Data a soukromí')]
-    assert "Model pro přepis" in setup and "Úprava textu přes Claude" in setup
+    assert "Model pro přepis" in setup and "Claude API key" in setup
     assert 'id="modelBtn"' in setup and 'id="keyBtn"' in setup and 'id="key"' in setup
 
 
-def test_not_ready_banner_links_to_setup_card():
+def test_notice_panel_states_the_two_conditions():
+    from spillway import notice
+
+    html = notice._HTML
+    # Upozornění visí VEDLE okna, ne uvnitř — proto má vlastní šipku.
+    assert 'class="arrow"' in html
+    # Dvě sdělení, každé s vlastní vahou: model je podmínka, klíč volitelný.
+    assert "Nefunguje, dokud nestáhneš model" in html
+    assert "Nemáš zadaný API klíč pro AI zpracování" in html
+    assert "var(--danger)" in html and "var(--warn)" in html
+    # A tlačítko, které model stáhne rovnou odtud.
+    assert "Stáhnout model" in html and "action:'download'" in html
+
+
+def test_windows_no_longer_carry_inline_warnings():
+    from spillway import popover
     from spillway import settings_window as sw
 
-    html = sw._HTML
-    assert 'id="notReady"' in html
-    # Klik na pruh musí vést na kartu, která opravdu existuje.
-    assert "showPage('settings','cardSetup')" in html
-    assert 'id="cardSetup"' in html
+    # Upozornění se přestěhovalo do samostatné kartičky; uvnitř oken po něm
+    # nesmí zůstat mrtvé zbytky, které by matoucně svítily.
+    for html in (sw._HTML, popover._HTML):
+        assert "notReady" not in html
+        assert "noModel" not in html
 
 
 def test_model_removal_goes_through_confirmation():
