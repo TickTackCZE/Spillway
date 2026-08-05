@@ -393,3 +393,53 @@ def test_popover_footer_buttons_share_one_style():
     # „Nastavení" a „Nápověda" jsou rovnocenné akce → stejná barva.
     row = popover._HTML[popover._HTML.index('<div class="row">'):popover._HTML.index('class="quit"')]
     assert row.count('class="primary"') == 2
+
+
+def test_settings_reads_download_state_instead_of_assuming_idle():
+    import inspect
+
+    from spillway import settings_window as sw
+
+    # REGRESE: `_push_model` měl „downloading": False natvrdo, takže okno
+    # otevřené během stahování spuštěného z kartičky ukazovalo „Chybí" bez
+    # ukazatele — a tray to 2×/s přetlačoval zpátky.
+    src = inspect.getsource(sw._Bridge._push_model)
+    assert "models.download_state()" in src
+    assert '"downloading": False' not in src
+
+
+def test_popover_pill_reports_missing_model():
+    import inspect
+
+    from spillway import popover
+
+    # Bez modelu se nedá diktovat vůbec — pilulka to nesmí mlčky přeskočit
+    # a hlásit „Připraveno".
+    src = inspect.getsource(popover._PopBridge.push_state)
+    assert "models.is_ready()" in src
+    assert src.index("models.is_ready()") < src.index("not has_key"), (
+        "chybějící model je závažnější než chybějící klíč → má mít přednost"
+    )
+
+
+def test_notice_actions_are_handled_by_its_bridge():
+    import pathlib
+    import re
+
+    from spillway import notice
+
+    # Testy dřív hlídaly jen řetězce v HTML — přejmenování akce na jedné straně
+    # mostu by prošlo. Tohle ověří, že most na každou akci z HTML reaguje.
+    # (`inspect.getsource` na PyObjC selektoru nefunguje, čteme soubor.)
+    html = notice._HTML
+    sent = set(re.findall(r"say\('(\w+)'\)", html))
+    m = re.search(r"say\(_dl \? '(\w+)' : '(\w+)'\)", html)
+    if m:
+        sent |= {m.group(1), m.group(2)}
+    assert sent, "v HTML musí být aspoň jedna akce"
+
+    src = pathlib.Path("src/spillway/notice.py").read_text(encoding="utf-8")
+    handler = src[src.index("def userContentController_didReceiveScriptMessage_"):]
+    handler = handler[:handler.index("\nclass ")]
+    for action in sorted(sent):
+        assert f'"{action}"' in handler, f"most neobsluhuje akci {action}"

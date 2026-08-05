@@ -147,69 +147,94 @@ def remove() -> bool:
     return removed
 
 
-def _expected_bytes() -> int:
-    """Celková velikost ke stažení; při chybě odhad, ať ukazatel nezamrzne."""
+class Cancelled(Exception):
+    """Stahování přerušil uživatel."""
+
+
+def _remote_files() -> list[tuple[str, int]]:
+    """[(jméno souboru, velikost)] v repozitáři. Prázdné = nepodařilo se zjistit."""
     try:
         from huggingface_hub import HfApi
 
         info = HfApi().model_info(REPO, files_metadata=True)
-        total = sum(s.size or 0 for s in (info.siblings or []))
-        return total or _ESTIMATE_BYTES
-    except Exception:  # noqa: BLE001 — bez sítě/API jedeme na odhad
-        return _ESTIMATE_BYTES
+        return [(sib.rfilename, int(sib.size or 0)) for sib in (info.siblings or [])]
+    except Exception:  # noqa: BLE001 — bez sítě/API se to pozná až při stahování
+        return []
+
+
+def _fetch(url: str, dest: str, cancel, on_bytes) -> None:
+    """Stáhne jeden soubor proudem, s kontrolou zrušení po každém megabajtu.
+
+    Píše se do `.part` a přejmenovává až po dokončení — nedokončený soubor se
+    tak nikdy netváří jako hotový model.
+    """
+    import urllib.request
+
+    tmp = dest + ".part"
+    req = urllib.request.Request(url, headers={"User-Agent": "Spillway"})
+    with urllib.request.urlopen(req, timeout=30) as resp, open(tmp, "wb") as f:
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled
+            chunk = resp.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            on_bytes(len(chunk))
+    os.replace(tmp, dest)
 
 
 def download(on_progress=None, cancel: threading.Event | None = None) -> str:
     """Stáhne model do `model_dir()` a vrátí cestu k němu.
 
-    `on_progress(hotovo_bytes, celkem_bytes)` se volá ~2× za sekundu z pomocného
-    vlákna. Průběh se odvozuje z velikosti složky, ne z vnitřností stahovací
-    knihovny — je to odolnější vůči tomu, že si mění chování mezi verzemi.
+    Stahuje se **po souborech vlastním proudem**, ne přes `snapshot_download`.
+    Důvod: ten nemá jak přerušit, takže „Zrušit" by 1,6 GB stáhlo celé a teprve
+    pak smazalo — tedy nezrušilo vůbec nic. Takhle se zrušení projeví do vteřiny.
 
-    Vyhazuje výjimku, když stažení selže (nejčastěji chybějící síť).
+    `on_progress(hotovo_bytes, celkem_bytes)` se volá průběžně.
+    Vyhazuje `Cancelled` při zrušení, jinou výjimku při chybě (typicky síť).
     """
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import hf_hub_url
 
     target = model_dir()
     os.makedirs(target, exist_ok=True)
-    total = _expected_bytes()
 
-    done = threading.Event()
+    files = _remote_files()
+    if not files:
+        raise RuntimeError("nepodařilo se zjistit obsah modelu (síť?)")
+    total = sum(sz for _n, sz in files) or _ESTIMATE_BYTES
 
-    def _watch() -> None:
-        while not done.wait(0.5):
-            if cancel is not None and cancel.is_set():
-                return   # dál to nemá smysl hlásit; úklid dělá volající
+    done_bytes = 0
 
-            if on_progress is not None:
-                try:
-                    # `_dir_size(target)`, ne `size_bytes()` — to hledá
-                    # existující kopii kdekoliv a ukazovalo by cizí velikost.
-                    on_progress(_dir_size(target), total)
-                except Exception:  # noqa: BLE001 — ukazatel nesmí shodit stahování
-                    pass
+    def bump(n: int) -> None:
+        nonlocal done_bytes
+        done_bytes += n
+        if on_progress is not None:
+            try:
+                on_progress(done_bytes, total)
+            except Exception:  # noqa: BLE001 — ukazatel nesmí shodit stahování
+                pass
 
-    watcher = threading.Thread(target=_watch, daemon=True)
-    watcher.start()
     try:
-        snapshot_download(
-            repo_id=REPO,
-            local_dir=target,
-            # Bez symlinků do sdílené cache — chceme soběstačnou složku, kterou
-            # jde celou smazat jedním tlačítkem.
-            max_workers=4,
-        )
-    finally:
-        done.set()
-
-    if cancel is not None and cancel.is_set():
+        for name, size in files:
+            dest = os.path.join(target, name)
+            os.makedirs(os.path.dirname(dest) or target, exist_ok=True)
+            # Hotový soubor přeskočit — po zrušení a novém spuštění se nestahuje znovu.
+            if os.path.exists(dest) and (size == 0 or os.path.getsize(dest) == size):
+                bump(size)
+                continue
+            _fetch(hf_hub_url(REPO, name), dest, cancel, bump)
+    except Cancelled:
         remove()
-        raise RuntimeError("stahování zrušeno")
+        raise
+    except Exception:
+        raise
+
     if not _complete(target):
         raise RuntimeError("model se nestáhl kompletně")
     if on_progress is not None:
         try:
-            on_progress(_dir_size(target), total)
+            on_progress(total, total)
         except Exception:  # noqa: BLE001
             pass
     return target
@@ -276,7 +301,11 @@ def _emit(**state) -> None:
 
 def cancel_download() -> None:
     """Požádá běžící stahování o ukončení. Nedokončená složka se uklidí."""
+    if _dl_thread is None or not _dl_thread.is_alive():
+        return
     _dl_cancel.set()
+    # Ohlásit hned — jinak by UI drželo „Stahuji X %", než vlákno doběhne.
+    _emit(downloading=True, percent=0, progress_text="ruším…")
 
 
 def download_async() -> bool:
@@ -297,7 +326,7 @@ def download_async() -> bool:
                 download(on_progress=progress, cancel=_dl_cancel)
                 print(f"⬇️  model stažen ({human_size(size_bytes())})")
             except Exception as exc:  # noqa: BLE001 — chyba sítě nesmí shodit UI
-                if _dl_cancel.is_set():
+                if isinstance(exc, Cancelled) or _dl_cancel.is_set():
                     print("⏹️  stahování modelu zrušeno")
                 else:
                     print(f"❌ stažení modelu selhalo: {exc}")

@@ -148,16 +148,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .welcome b{font-size:13px;}
   .welcome p{margin-top:7px;color:var(--muted);}
   .welcome p b{font-size:12px;color:var(--text);}
-  /* Stavový pruh nahoře — dokud něco chybí, aplikace nediktuje. Klik vede
-     rovnou na kartu, kde se to doplní. */
-  .banner{display:flex;align-items:center;gap:9px;margin-top:12px;padding:11px 14px;
-    border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;
-    background:color-mix(in srgb,var(--danger) 14%,transparent);
-    border:0.5px solid color-mix(in srgb,var(--danger) 45%,transparent);color:var(--text);}
-  .banner:hover{background:color-mix(in srgb,var(--danger) 22%,transparent);}
-  .banner .go{margin-left:auto;color:var(--accent);font-size:12px;}
-  .banner .dot{width:8px;height:8px;border-radius:50%;flex:none;}
-  .sub-h{font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;}
   .prog{height:6px;background:var(--bg);border-radius:3px;overflow:hidden;margin-top:10px;}
   .prog>div{height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .3s;}
   @keyframes flash{0%{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent);}
@@ -757,8 +747,10 @@ class _Bridge(NSObject):
             "where": found[1] if found else "",
             "repo": models.REPO,
             "has_key": bool(config.get_api_key()),
-            "downloading": False,
         }
+        # Stav stahování se čte ze sdílené orchestrace, ne natvrdo — stahovat
+        # jde i z kartičky vedle okna a okno o tom musí vědět.
+        state.update(models.download_state())
         state.update(extra or {})
         js = "applyModel(" + json.dumps(state, ensure_ascii=False) + ")"
         if self.webview is not None:

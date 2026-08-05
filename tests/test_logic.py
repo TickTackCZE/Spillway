@@ -1738,3 +1738,80 @@ def test_objc_class_names_are_unique_across_modules():
             )
             seen[node.name] = f.name
     assert seen, "očekáváme aspoň jednu ObjC třídu"
+
+
+# --- Rušení stahování (nález z ověření) --------------------------------------
+def test_cancel_actually_interrupts_the_transfer(monkeypatch, tmp_path):
+    import threading
+
+    from spillway import models
+
+    # REGRESE: `snapshot_download` nešlo přerušit, takže „Zrušit" stáhlo celých
+    # 1,6 GB a teprve pak to smazalo — tedy nezrušilo vůbec nic. Teď se kontrola
+    # dělá po každém bloku, takže se zrušení projeví do vteřiny.
+    monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path / "m"))
+    monkeypatch.setattr(models, "_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(models, "_remote_files", lambda: [("weights.safetensors", 10_000_000)])
+
+    cancel = threading.Event()
+    written = []
+
+    def fake_fetch(url, dest, cancel_ev, on_bytes):
+        for _ in range(1000):
+            if cancel_ev is not None and cancel_ev.is_set():
+                raise models.Cancelled
+            written.append(1)
+            on_bytes(10_000)
+
+    monkeypatch.setattr(models, "_fetch", fake_fetch)
+    monkeypatch.setattr(models, "hf_hub_url", lambda *a, **k: "http://x", raising=False)
+
+    def prog(done, _total):
+        if done > 200_000:      # po chvíli zruš
+            cancel.set()
+
+    try:
+        models.download(on_progress=prog, cancel=cancel)
+        raise AssertionError("mělo skončit zrušením")
+    except models.Cancelled:
+        pass
+    assert len(written) < 1000, "přenos měl skončit dřív, ne doběhnout celý"
+    assert not (tmp_path / "m").exists(), "nedokončené stažení se má uklidit"
+
+
+def test_finished_files_are_not_downloaded_again(monkeypatch, tmp_path):
+    from spillway import models
+
+    # Po zrušení a novém spuštění se hotové soubory jen započtou.
+    d = tmp_path / "m"
+    d.mkdir()
+    (d / "config.json").write_bytes(b"xx")
+    monkeypatch.setattr(models, "model_dir", lambda: str(d))
+    monkeypatch.setattr(models, "_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(models, "_remote_files",
+                        lambda: [("config.json", 2), ("weights.npz", 5)])
+    fetched = []
+
+    def fake_fetch(url, dest, cancel_ev, on_bytes):
+        fetched.append(pathlib_name(dest))
+        with open(dest, "wb") as f:
+            f.write(b"xxxxx")
+        on_bytes(5)
+
+    def pathlib_name(p):
+        import os
+
+        return os.path.basename(p)
+
+    monkeypatch.setattr(models, "_fetch", fake_fetch)
+    monkeypatch.setattr(models, "hf_hub_url", lambda *a, **k: "http://x", raising=False)
+    models.download()
+    assert fetched == ["weights.npz"], f"stahovalo se zbytečně: {fetched}"
+
+
+def test_cancel_when_nothing_runs_is_harmless(monkeypatch):
+    from spillway import models
+
+    monkeypatch.setattr(models, "_dl_thread", None)
+    models.cancel_download()   # nesmí spadnout ani nic rozhodit
+    assert models.download_state()["downloading"] is False

@@ -145,18 +145,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .foot .quit{display:flex;justify-content:center;}
   .foot button.danger{flex:0 0 auto;min-width:140px;padding-left:24px;padding-right:24px;
     background:var(--danger);color:#fff;border-color:transparent;}
-  /* Upozornění je nad vším ostatním — dokud model chybí, nic jiného nemá smysl. */
-  .warn{background:color-mix(in srgb,var(--danger) 14%,transparent);
-    border:0.5px solid color-mix(in srgb,var(--danger) 45%,transparent);
-    border-radius:11px;padding:12px;margin-bottom:8px;}
-  .warn .wtop{display:flex;align-items:center;gap:7px;font-size:13px;}
-  .warn .wdot{width:8px;height:8px;border-radius:50%;background:var(--danger);flex:none;}
-  .warn .wtext{font-size:11px;color:var(--muted);margin:5px 0 9px;line-height:1.45;}
-  .warn button{width:100%;border:0;border-radius:8px;background:var(--danger);color:#fff;
-    font:inherit;font-size:12px;font-weight:600;padding:8px;cursor:pointer;}
-  .warn button:disabled{opacity:.6;cursor:default;}
-  .wprog{height:5px;background:var(--surface);border-radius:3px;overflow:hidden;margin-bottom:9px;}
-  .wprog>div{height:100%;width:0;background:var(--danger);border-radius:3px;transition:width .3s;}
   #toast{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:var(--accent);color:var(--onaccent);
     font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;opacity:0;transition:opacity .18s;pointer-events:none;box-shadow:0 4px 14px var(--shadow);}
   #toast.show{opacity:1;}
@@ -321,9 +309,6 @@ class _PopBridge(NSObject):
                 self.popover.close()
                 if self.on_open_settings is not None:
                     self.on_open_settings()
-            elif action == "model_download":
-                models.add_download_listener(self._on_download)
-                models.download_async()
             elif action == "open_help":
                 if self.on_open_help is not None:
                     self.on_open_help()
@@ -368,21 +353,6 @@ class _PopBridge(NSObject):
                 if self.webview is not None:
                     _run_js(self.webview, "toast('Zkopírováno')")
 
-    @objc.python_method
-    def _on_download(self, st: dict) -> None:
-        """Postup stahování → popover. Volá se z cizího vlákna, proto přes hlavní."""
-        from Foundation import NSOperationQueue
-
-        def apply() -> None:
-            if self.webview is None:
-                return
-            payload = dict(st)
-            payload["ready"] = models.is_ready()
-            js = "applyModel(" + json.dumps(payload, ensure_ascii=False) + ")"
-            _run_js(self.webview, js)
-
-        NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
-
     def push_state(self) -> None:
         if self.webview is None:
             return
@@ -397,8 +367,13 @@ class _PopBridge(NSObject):
         has_key = bool(config.get_api_key())
         listener = getattr(self.controller, "hotkey_listener", None)
         tap_ok = getattr(listener, "tap_ok", None) if listener is not None else None
+        # Pořadí podle závažnosti: bez modelu se NEDÁ diktovat vůbec, kdežto
+        # bez klíče se text jen neupraví. Dřív chybějící model pilulka mlčky
+        # přeskočila a hlásila „Připraveno", i když nešlo nic.
         if tap_ok is False:
             status_text, status_warn = "Klávesa nefunguje", True
+        elif not models.is_ready():
+            status_text, status_warn = "Chybí model", True
         elif not has_key:
             status_text, status_warn = "Bez API klíče", True
         else:
@@ -412,7 +387,6 @@ class _PopBridge(NSObject):
             "status_text": status_text,
             "status_warn": status_warn,
             "model": config.get_model(),
-            "model_ready": models.is_ready(),
             "gpu_loaded": loaded,
             "stats": {
                 "count": summary["count"],
