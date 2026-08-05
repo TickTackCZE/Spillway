@@ -1925,3 +1925,60 @@ def test_blocking_subprocesses_have_timeouts():
         src = pathlib.Path(f"src/spillway/{name}").read_text(encoding="utf-8")
         for call in re.findall(r"subprocess\.run\((.*?)\)\n", src, re.S):
             assert "timeout" in call, f"{name}: subprocess.run bez timeoutu"
+
+
+# --- Rozhodnutí „vložit vs. schránka" (vytaženo z pipeline) -------------------
+def _delivery(monkeypatch, *, now_bundle="app.A", same=True, has_field=True):
+    from spillway import context
+
+    monkeypatch.setattr(context, "frontmost_app", lambda: ("A", now_bundle))
+    monkeypatch.setattr(context, "same_field", lambda a, b, tol=8: same)
+    monkeypatch.setattr(context, "focus_snapshot", lambda **k: context.Focus(
+        True, True, "AXTextArea", ("AXTextArea", 1, 2, 3, 4), None, None, None))
+    monkeypatch.setattr(context, "has_focused_text_field", lambda: has_field)
+    return context
+
+
+def test_delivery_pastes_when_everything_matches(monkeypatch):
+    ctx = _delivery(monkeypatch)
+    ok, why = ctx.decide_delivery(target_bundle="app.A", field_sig=("x",), win_target=False)
+    assert ok is True and why == ""
+
+
+def test_delivery_keeps_clipboard_when_user_switched_app(monkeypatch):
+    ctx = _delivery(monkeypatch, now_bundle="app.B")
+    ok, why = ctx.decide_delivery(target_bundle="app.A", field_sig=("x",), win_target=False)
+    assert ok is False and "jinde" in why
+
+
+def test_delivery_keeps_clipboard_on_different_field(monkeypatch):
+    ctx = _delivery(monkeypatch, same=False)
+    ok, why = ctx.decide_delivery(target_bundle="app.A", field_sig=("x",), win_target=False)
+    assert ok is False and "jiném poli" in why
+
+
+def test_delivery_keeps_clipboard_when_no_field_at_all(monkeypatch):
+    ctx = _delivery(monkeypatch, has_field=False)
+    ok, why = ctx.decide_delivery(target_bundle="app.A", field_sig=("x",), win_target=False)
+    assert ok is False and "textové pole" in why
+
+
+def test_delivery_does_not_ask_about_field_on_remote_desktop(monkeypatch):
+    from spillway import context
+
+    ctx = _delivery(monkeypatch, has_field=False)
+    asked = []
+    monkeypatch.setattr(context, "has_focused_text_field",
+                        lambda: asked.append(1) or False)
+    # U RDP/AVD je pole uvnitř vzdálené plochy — macOS do ní nevidí, takže by
+    # odpověď stejně nic neznamenala a jen by blokovala vkládání.
+    ok, _why = ctx.decide_delivery(target_bundle="app.A", field_sig=("x",), win_target=True)
+    assert ok is True and not asked
+
+
+def test_delivery_pastes_when_field_check_is_inconclusive(monkeypatch):
+    ctx = _delivery(monkeypatch, same=None, has_field=None)
+    # Při pochybnosti se vkládá: text ve schránce s lístkem je drobná otrava,
+    # kdežto nevložení bez varování vypadá, jako by se diktát ztratil.
+    ok, _why = ctx.decide_delivery(target_bundle="app.A", field_sig=None, win_target=False)
+    assert ok is True

@@ -609,3 +609,35 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
     except Exception as exc:  # noqa: BLE001
         _dbg(f"výjimka: {type(exc).__name__}: {exc}")
         return None
+
+
+def decide_delivery(*, target_bundle: str | None, field_sig: tuple | None,
+                    win_target: bool) -> tuple[bool, str]:
+    """Vložit text rovnou, nebo ho nechat ve schránce? → (vložit?, důvod)
+
+    Tři situace, kdy se NEVKLÁDÁ, protože by text spadl někam, kam nepatří.
+    Jsou pohromadě schválně: dřív to byly tři samostatné bloky v pipeline
+    a bylo snadné jeden z nich přehlédnout nebo upravit jinak než ostatní.
+
+    Rozhoduje se konzervativně — při pochybnosti se vkládá, protože text ve
+    schránce s lístkem je drobná otrava, kdežto nevložení bez varování vypadá
+    jako by se diktát ztratil.
+    """
+    # 1) Přepnul uživatel do jiné aplikace? Text by spadl do cizího pole.
+    _name, now_bundle = frontmost_app()
+    if target_bundle and now_bundle and now_bundle != target_bundle:
+        return (False, f"fokus je jinde ({now_bundle})")
+
+    # 2) Stejná aplikace, ale jiné pole (klik jinam, zavřené okno).
+    #    `same_field` vrací None, když otisk nejde získat (web/Electron) —
+    #    tam se vkládá jako dřív, jinak by to hlásilo pořád.
+    if same_field(field_sig, focus_snapshot(want_sig=True).sig) is False:
+        return (False, "jsi v jiném poli")
+
+    # 3) Není kam vložit vůbec (fokus na okně, seznamu, tlačítku).
+    #    U RDP/AVD se neptáme: pole je uvnitř vzdálené plochy a macOS do ní
+    #    nevidí, takže by odpověď stejně nic neznamenala.
+    if not win_target and has_focused_text_field() is False:
+        return (False, "není zaměřené textové pole")
+
+    return (True, "")

@@ -97,8 +97,8 @@ def _dir_size(d: str) -> int:
     for root, _dirs, files in os.walk(d):
         for f in files:
             try:
-                # `os.stat` bez follow_symlinks: cache huggingface je samé
-                # symlinky do blobs a přes ně by se soubory počítaly dvakrát.
+                # follow_symlinks: cache huggingface drží soubory jako symlinky
+                # do blobs, takže bez následování by velikost vyšla nula.
                 st = os.stat(os.path.join(root, f), follow_symlinks=True)
                 total += st.st_size
             except OSError:

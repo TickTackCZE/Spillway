@@ -666,38 +666,18 @@ class Controller:
                     return
                 self._pasting = True
 
-            # Přepnul uživatel mezitím jinam? Pak text NEVKLÁDAT — spadl by do
-            # cizího pole (chat, terminál). Nechat ho ve schránce a říct o tom.
-            _, now_bundle = context.frontmost_app()
-            if bundle and now_bundle and now_bundle != bundle:
+            # Vložit, nebo nechat ve schránce? Všechny tři důvody, proč
+            # nevkládat, drží pohromadě `context.decide_delivery`.
+            deliver, why = context.decide_delivery(
+                target_bundle=bundle,
+                field_sig=ctx.get("field_sig"),
+                win_target=win_target,
+            )
+            if not deliver:
                 copy_to_clipboard(text)
-                print(f"📋 fokus je jinde ({now_bundle}) → text ve schránce, nevkládám.")
+                print(f"📋 {why} → text ve schránce, nevkládám.")
                 # Lístek u ikony („Připraveno k vložení") to řekne líp než
                 # systémová notifikace — visí, dokud text nevložíš nebo neklikneš.
-                self.awaiting_paste = True
-                outcome = "clipboard"
-                return
-
-            # Zůstal jsi ve stejné APLIKACI, ale odešel z POLE (klik jinam, zavřené
-            # okno)? Taky nevkládat — jinak text spadne do cizího pole ve stejné
-            # appce. `same_field` vrací None, když otisk nejde získat (web/Electron)
-            # — tam se chováme jako dřív a vložíme (jinak by to hlásilo pořád).
-            now_sig = context.focus_snapshot(want_sig=True).sig
-            if context.same_field(ctx.get("field_sig"), now_sig) is False:
-                copy_to_clipboard(text)
-                print("📋 jsi v jiném poli → text ve schránce, nevkládám.")
-                self.awaiting_paste = True
-                outcome = "clipboard"
-                return
-
-            # Není vůbec kam vložit (fokus na okně, seznamu, tlačítku)? Text by
-            # spadl do prázdna — nebo by ho appka vzala jako klávesové zkratky.
-            # Jen prokazatelné „ne"; `None` (web/Electron) vkládáme jako dosud.
-            # U RDP/AVD se neptáme vůbec: pole je uvnitř vzdálené plochy a macOS
-            # do ní nevidí, takže by odpověď stejně nic neznamenala.
-            if not win_target and context.has_focused_text_field() is False:
-                copy_to_clipboard(text)
-                print("📋 není zaměřené textové pole → text ve schránce, nevkládám.")
                 self.awaiting_paste = True
                 outcome = "clipboard"
                 return
