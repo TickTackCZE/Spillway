@@ -22,6 +22,8 @@ import time
 
 import numpy as np
 
+from . import models
+
 # Známé halucinace na tichu/krátkém audiu (R10). [B8] filtr smí zahodit jen
 # KRÁTKÝ výstup (jinak zahodí legitimní diktát začínající „Titulky…"/„Překlad…").
 _HALLUCINATION_MARKERS = (
@@ -33,7 +35,10 @@ _HALLUCINATION_MARKERS = (
 )
 _HALLUCINATION_MAX_LEN = 45
 
-_MLX_MODEL = os.environ.get("SPILLWAY_MLX_MODEL") or "mlx-community/whisper-large-v3-turbo"
+# Odkud brát váhy. `models.path_for_transcribe()` vrátí lokální složku, když je
+# model stažený u nás (viz `models.py`), jinak jméno repozitáře jako záchranu.
+# Čte se při každém použití, ne jednou při importu — jinak by se po stažení
+# modelu za běhu pořád sahalo do staré cache.
 SAMPLE_RATE = 16000  # Whisper i Recorder jedou na 16 kHz mono
 
 
@@ -221,7 +226,7 @@ class Transcriber:
             self.backend = "faster"
             self._mlx = None
         print(f"🗣️  Whisper backend: {self.backend}"
-              f"{' (' + _MLX_MODEL + ')' if self.backend == 'mlx' else ' (CPU large-v3-turbo)'}")
+              f"{' (' + models.REPO + ')' if self.backend == 'mlx' else ' (CPU large-v3-turbo)'}")
         self._load_model()
 
     def _mlx_ok(self) -> bool:
@@ -232,7 +237,7 @@ class Transcriber:
 
             mlx_whisper.transcribe(
                 np.full(4800, 0.02, dtype="float32"),
-                path_or_hf_repo=_MLX_MODEL, language="cs",
+                path_or_hf_repo=models.path_for_transcribe(), language="cs",
             )
             return True
 
@@ -256,11 +261,14 @@ class Transcriber:
                 import mlx_whisper
                 from mlx_whisper.transcribe import ModelHolder
 
-                if ModelHolder.model is None or ModelHolder.model_path != _MLX_MODEL:
+                # Zjistit cestu JEDNOU — kdyby se model mezi voláními dostáhl,
+                # načetlo by se z jednoho místa a do holderu zapsalo jiné.
+                path = models.path_for_transcribe()
+                if ModelHolder.model is None or ModelHolder.model_path != path:
                     ModelHolder.model = mlx_whisper.load_models.load_model(
-                        _MLX_MODEL, dtype=mx.float16
+                        path, dtype=mx.float16
                     )
-                    ModelHolder.model_path = _MLX_MODEL
+                    ModelHolder.model_path = path
 
             self._mlx.submit(_load)
             self._model = True
@@ -352,7 +360,7 @@ class Transcriber:
 
             res = mlx_whisper.transcribe(
                 audio,
-                path_or_hf_repo=_MLX_MODEL,
+                path_or_hf_repo=models.path_for_transcribe(),
                 language=lang,
                 condition_on_previous_text=False,  # bez přenosu halucinací mezi okny
             )

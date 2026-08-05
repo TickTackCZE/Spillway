@@ -1,11 +1,10 @@
-"""Testy čisté logiky Spillway (bez GUI / mikrofonu / API).
+"""Testy čisté logiky Spillway — bez GUI, mikrofonu a API.
 
-Kryjí hlavně regrese z code review (B8, B14, B15, B17) a mapování profilů.
+Zpracování přepisu, sestavení zadání pro Claude, rozhodování „vložit vs. schránka",
+konfigurace, diagnostika. Vzhled (ikona, okna, nápověda) je v `test_ui.py`.
 """
 
-
 import pytest
-
 
 # --- B8: filtr halucinací ---------------------------------------------------
 def test_hallucination_drops_short_marker():
@@ -1295,77 +1294,6 @@ def test_recorder_level_ignores_old_loud_audio():
 
 
 # --- Snímky animované ikony -------------------------------------------------
-def test_level_step_maps_into_frame_range():
-    from spillway import baricon
-
-    assert baricon.level_step(0.0) == 0
-    assert baricon.level_step(1.0) == baricon.LEVEL_STEPS - 1
-    assert baricon.level_step(2.5) == baricon.LEVEL_STEPS - 1, "musí ořezat"
-    assert baricon.level_step(-1.0) == 0
-    assert baricon.level_step(float("nan")) == 0
-
-
-def test_bars_scaled_keeps_centers_and_shrinks_height():
-    from spillway import design
-
-    full = design.scaled_bars(1.0)
-    assert full == design._WAVE_BARS, "k=1 musí dát přesně původní logo"
-
-    half = design.scaled_bars(0.5)
-    for (x0, t0, b0), (x1, t1, b1) in zip(design._WAVE_BARS, half, strict=True):
-        assert x1 == x0, "sloupce se nesmí posouvat do stran"
-        assert (t1 + b1) / 2 == pytest.approx((t0 + b0) / 2), "střed zůstává"
-        assert (b1 - t1) == pytest.approx((b0 - t0) / 2)
-
-
-def test_frame_scales_distinguish_states():
-    from spillway import baricon
-
-    rec = [baricon._scale_for("rec", i) for i in range(baricon.LEVEL_STEPS)]
-    assert rec == sorted(rec), "hlasitěji = vyšší sloupce"
-    assert rec[-1] == 1.0 and rec[0] > 0, "v tichu zbyde aspoň řádka teček"
-
-    assert baricon._scale_for("idle", 0) == 1.0, "klid = základní logo"
-    assert baricon._scale_for("cancel", 0) < 0.5
-
-
-def _tallest_bar(bars) -> int:
-    heights = [b - t for _, t, b in bars]
-    return heights.index(max(heights))
-
-
-def test_processing_wave_travels_left_to_right():
-    from spillway import baricon, design
-
-    peaks = [_tallest_bar(design.wave_bars(i, baricon.PULSE_FRAMES)) for i in range(baricon.PULSE_FRAMES)]
-    # Hřeben musí obejít celou vlnovku — jinak to není běžící vlna, ale blikání.
-    assert len(set(peaks)) == baricon.PULSE_FRAMES, f"hřeben stojí: {peaks}"
-
-    # …a postupovat doprava (s přetečením na začátek, protože se to zacyklí).
-    n = len(design.wave_bars(0, baricon.PULSE_FRAMES))
-    steps = [(b - a) % n for a, b in zip(peaks, peaks[1:], strict=False)]
-    assert all(s == steps[0] for s in steps), f"vlna nejde rovnoměrně: {peaks}"
-    assert steps[0] == 1, f"hřeben se má posouvat o sloupec doprava, jde o {steps[0]}"
-
-
-def test_processing_wave_loops_seamlessly_and_stays_calm():
-    from spillway import baricon, design
-
-    assert design.wave_bars(0, baricon.PULSE_FRAMES) == design.wave_bars(baricon.PULSE_FRAMES, baricon.PULSE_FRAMES), (
-        "poslední snímek musí navázat na první, jinak animace cukne"
-    )
-
-    full = {b - t for _, t, b in design.scaled_bars(1.0)}
-    wave = [
-        b - t
-        for i in range(baricon.PULSE_FRAMES)
-        for _, t, b in design.wave_bars(i, baricon.PULSE_FRAMES)
-    ]
-    # Zpracování nesmí vypadat jako plná výchylka ukazatele hlasitosti.
-    assert max(wave) < max(full), "vlna nesmí dosáhnout výšky základního loga"
-    assert min(wave) > 0, "sloupce nesmí zmizet úplně"
-
-
 # --- „Není kam vložit" (třetí větev) ----------------------------------------
 def test_text_input_decided_by_editability_not_by_role_or_selection():
     from spillway.context import is_text_input
@@ -1403,23 +1331,6 @@ def test_has_focused_text_field_returns_none_when_ax_unavailable(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", blocked)
     # Bez Accessibility se nesmí tvrdit „není pole" — to by zablokovalo vkládání.
     assert context.has_focused_text_field() is None
-
-
-def test_no_field_dictation_keeps_hud_at_icon_for_whole_flow():
-    from spillway.app import Controller
-
-    # Rozhodnutí „diktuje se bez pole" padne jednou na začátku a drží celý
-    # diktát — jinak by okénko během zpracování poskakovalo podle toho, co má
-    # zrovna fokus, místo aby zůstalo pod ikonou až po „Připraveno k vložení".
-    c = Controller.__new__(Controller)
-    assert getattr(c, "no_field", False) is False, "výchozí stav = diktuje se do pole"
-
-    c.no_field = True
-    c.target_bundle = "com.apple.finder"
-
-    # Tohle je přesně podmínka, kterou tray počítá pro polohu okénka.
-    left_app = False
-    assert left_app or c.no_field, "bez pole musí okénko k ikoně i bez odchodu z appky"
 
 
 # --- Sjednocené zjišťování fokusu (code review) ------------------------------
@@ -1647,158 +1558,69 @@ def test_price_picks_longest_matching_prefix():
 
 
 # --- Logo a schémata (jedna geometrie pro lištu i nápovědu) -------------------
-def test_logo_has_no_drops():
-    from spillway import design
-
-    # Kapky pod vlnou se v malých velikostech slily a do loga nepatří.
-    svg = design.logo_svg()
-    assert "<circle" not in svg, "logo nesmí obsahovat kapky"
-    assert svg.count("<rect") == len(design._WAVE_BARS)
-
-
-def test_bars_svg_is_wellformed_and_uses_shared_geometry():
-    from spillway import baricon, design
-
-    svg = design.bars_svg(design.scaled_bars(0.5), "#FF0000", 24, 24)
-    assert svg.startswith("<svg") and svg.endswith("</svg>")
-    assert 'viewBox="0 0 100 100"' in svg and 'fill="#FF0000"' in svg
-
-    # Ikona v liště i schémata v nápovědě musí kreslit z týchž funkcí, jinak
-    # se rozejdou a nápověda přestane odpovídat tomu, co uživatel vidí.
-    assert baricon._bars_for("idle", 0) == design.scaled_bars(1.0)
-    assert baricon._bars_for("proc", 3) == design.wave_bars(
-        3, baricon.PULSE_FRAMES, baricon._WAVE_LO, baricon._WAVE_HI
-    )
-
-
 # --- Okno nastavení: dvě stránky --------------------------------------------
-def test_settings_window_has_both_pages_and_no_leftover_placeholders():
-    from spillway import settings_window as sw
-
-    html = sw._HTML
-    for marker in ("pageSettings", "pageHelp", "showPage(", "saveUnload("):
-        assert marker in html, marker
-    # Placeholdery se musí všechny vyřešit, jinak by v okně svítilo „__IC_REC__".
-    assert "__" not in html.replace("__", "", 0) or not any(
-        t in html for t in ("__LOGO__", "__LANGS__", "__IC_IDLE__", "__IC_REC__",
-                            "__IC_PROC__", "__IC_CANCEL__")
-    )
-
-
-def test_settings_window_offers_unload_field_within_allowed_range():
-    from spillway import config
-    from spillway import settings_window as sw
-
-    html = sw._HTML
-    assert 'id="unload"' in html
-    # Meze v nápovědě musí odpovídat tomu, co skutečně vynucuje config.
-    assert f"{config.AUTO_UNLOAD_MIN_SEC}–{config.AUTO_UNLOAD_MAX_SEC}" in html
-
-
 # --- Popover -----------------------------------------------------------------
-def test_popover_footer_actions():
-    from spillway import popover
-
-    html = popover._HTML if hasattr(popover, "_HTML") else popover.HTML
-    assert "Nastavení…" not in html, "tři tečky pryč"
-    assert ">Nastavení<" in html and ">Nápověda<" in html
-    # Konec je jediná nevratná akce → musí být barevně oddělený.
-    assert 'class="danger"' in html and "open_help" in html
-    assert "--danger:#E11D48" in html, "červená z Domovoy palety"
 
 
-def test_help_shows_no_hardcoded_configurable_keys():
-    from spillway import settings_window as sw
+# --- Model pro přepis: kde leží a jak se stahuje ------------------------------
+def test_model_lives_outside_the_app_bundle(monkeypatch, tmp_path):
+    from spillway import models
 
-    html = sw._HTML
-    # Nastavitelné klávesy se v nápovědě nesmí psát natvrdo — po změně v
-    # Nastavení by v nápovědě zůstala stará hodnota.
-    help_part = html[html.index('id="pageHelp"'):html.index("/pageHelp")]
-    for token in (">F5<", ">Escape<"):
-        for occurrence in range(help_part.count(token)):
-            idx = -1
-            for _ in range(occurrence + 1):
-                idx = help_part.index(token, idx + 1)
-            snippet = help_part[max(0, idx - 90):idx]
-            assert ('class="kbd hk"' in snippet or 'class="kbd ck"' in snippet
-                    or 'id="helpHotkey"' in snippet or 'id="helpCancel"' in snippet), (
-                f"natvrdo napsaná klávesa {token} v nápovědě: …{snippet[-70:]}"
-            )
-    # ⌘V je systémová zkratka pro vložení, ta se nenastavuje — smí být natvrdo.
-    assert "⌘V" in help_part
+    # Model NENÍ v .app — jinak by bundle měl ~2 GB a každá aktualizace by
+    # znamenala stáhnout váhy znovu.
+    d = models.model_dir()
+    assert "Application Support/Spillway/models" in d
+    assert ".app/" not in d, "model nesmí být uvnitř aplikace"
+    assert d.endswith(models.REPO.split("/")[-1])
 
 
-def test_help_has_no_orphan_punctuation_or_inline_emphasis():
-    import re
+def test_model_readiness_needs_both_config_and_weights(monkeypatch, tmp_path):
+    from spillway import models
 
-    from spillway import settings_window as sw
+    monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path))
+    assert models.is_ready() is False
 
-    part = sw._HTML[sw._HTML.index('id="pageHelp"'):sw._HTML.index("/pageHelp")]
+    # Samotný config nestačí — nedokončené stažení se nesmí tvářit jako hotové.
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    assert models.is_ready() is False
 
-    # Zvýraznění uprostřed věty láme řádek a interpunkce za ním padá na začátek
-    # dalšího — přesně tohle vypadalo v krabičce „Úprava" rozbitě.
-    assert not re.findall(r"<span>[^<]*<b>.*?</b>[^<]*</span>", part), (
-        "v krabičkách nesmí být zvýraznění uprostřed věty"
-    )
-
-    # Pomlčky, lomítka a čárky musí být svázané s předchozím slovem, jinak
-    # můžou skončit samy na začátku řádku.
-    text = re.sub(r"<[^>]+>", " ", part)
-    orphans = re.findall(r"(?<!&nbsp;)\s([—–+·×/,;])\s", text)
-    assert not orphans, f"volně stojící symboly: {orphans}"
+    (tmp_path / "weights.safetensors").write_bytes(b"x" * 10)
+    assert models.is_ready() is True
 
 
-def test_settings_buttons_have_uniform_width():
-    from spillway import settings_window as sw
+def test_model_path_falls_back_to_repo_when_missing(monkeypatch, tmp_path):
+    from spillway import models
 
-    css = sw._HTML[:sw._HTML.index("</style>")]
-    # Popisky se za běhu mění („Změnit" → „5 s" → „Potvrdit"); bez pevné šířky
-    # by řádek poskakoval.
-    btn = css[css.index("  .btn{"):css.index("  .btn:disabled")]
-    assert "min-width:112px" in btn and "text-align:center" in btn
+    monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path))
+    # Bez staženého modelu se předá jméno repozitáře — mlx si poradí sám.
+    assert models.path_for_transcribe() == models.REPO
 
-    # Výzva „Stiskni klávesu…" patří k popisku, ne do tlačítka.
-    assert "'Stiskni klávesu…'" in sw._HTML
-    assert "Btn').textContent = 'Stiskni klávesu…'" not in sw._HTML
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "weights.npz").write_bytes(b"x")
+    assert models.path_for_transcribe() == str(tmp_path)
 
 
-def test_help_links_point_at_existing_cards():
-    import re
+def test_model_size_and_removal(monkeypatch, tmp_path):
+    from spillway import models
 
-    from spillway import settings_window as sw
+    monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path / "m"))
+    (tmp_path / "m").mkdir()
+    (tmp_path / "m" / "weights.npz").write_bytes(b"x" * 2_000_000)
+    assert models.size_bytes() == 2_000_000
+    assert models.human_size(models.size_bytes()) == "2 MB"
+    assert models.human_size(1_600_000_000) == "1.6 GB"
+    assert models.human_size(0) == "0 MB"
 
-    html = sw._HTML
-    # Odkazy z nápovědy musí mířit na kartu, která v nastavení opravdu je —
-    # jinak uživatel skončí na začátku stránky a kartu hledá dole sám.
-    targets = set(re.findall(r"showPage\('settings','([^']+)'\)", html))
-    assert targets, "nápověda má odkazovat aspoň na jednu kartu"
-    for t in targets:
-        assert f'id="{t}"' in html, f"odkaz na neexistující kartu: {t}"
-
-
-def test_destructive_actions_all_require_confirmation():
-    import re
-
-    from spillway import settings_window as sw
-
-    html = sw._HTML
-    # Každá nevratná akce musí projít pětisekundovým potvrzením — smazání
-    # API klíče na to dřív jako jediné nečekalo a mazalo na první klik.
-    danger = re.findall(r'<button class="btn danger"[^>]*>', html)
-    assert danger, "očekáváme aspoň jedno destruktivní tlačítko"
-    for btn in danger:
-        assert "armReset(this," in btn, f"maže bez potvrzení: {btn}"
-        assert "data-label=" in btn, f"chybí popisek pro návrat do klidu: {btn}"
-
-    # Konkrétně tři: reset statistik, reset historie, smazání klíče.
-    for action in ("reset_stats", "reset_history", "delkey"):
-        assert f"armReset(this,'{action}')" in html, action
+    assert models.remove() is True
+    assert models.size_bytes() == 0
+    assert models.remove() is False, "druhé mazání už nemá co smazat"
 
 
-def test_parent_row_has_no_divider_above_its_suboption():
-    from spillway import settings_window as sw
+def test_transcribe_reads_model_path_lazily():
+    import pathlib
 
-    css = sw._HTML[:sw._HTML.index("</style>")]
-    # Čára mezi „Odesílání do AI modelu" a jeho podnastavením je vizuálně
-    # oddělovala, i když patří k sobě.
-    assert ".rowt:has(+ .rowt.sub){border-bottom:none;}" in css
+    # Cesta se nesmí zapamatovat při importu — po stažení modelu za běhu by se
+    # pořád sahalo do staré cache.
+    src = pathlib.Path("src/spillway/transcribe.py").read_text(encoding="utf-8")
+    assert "_MLX_MODEL =" not in src, "cesta k modelu se nesmí zmrazit do konstanty"
+    assert "models.path_for_transcribe()" in src

@@ -27,7 +27,7 @@ from WebKit import WKWebView, WKWebViewConfiguration
 
 from PyObjCTools import AppHelper
 
-from . import autostart, config, design, keymap, settings, stats
+from . import autostart, config, design, keymap, models, settings, stats
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 
 _LOGO = design.logo_svg(color="#818CF8", width=30, height=30)
@@ -122,6 +122,8 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .tabs button{flex:1;border:0.5px solid transparent;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:600;padding:7px;border-radius:8px;cursor:pointer;}
   .tabs button.on{background:var(--surface);color:var(--text);border-color:var(--border);}
   .hidden{display:none;}
+  .prog{height:6px;background:var(--bg);border-radius:3px;overflow:hidden;margin-top:10px;}
+  .prog>div{height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .3s;}
   @keyframes flash{0%{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent);}
     100%{border-color:var(--border);box-shadow:none;}}
   .card.flash{animation:flash 1.4s ease-out;}
@@ -203,6 +205,17 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
       </div>
     </div>
     <div class="hint" id="unloadHint" style="display:none;"></div>
+  </div>
+
+  <div class="card" id="cardModel"><h3>Model pro přepis</h3>
+    <div class="rowt">
+      <!-- Stav a popisek musí být SOUROZENCI: `textContent` na rodiči by dítě smazal. -->
+      <div class="l"><span id="modelState">Zjišťuji…</span><small id="modelHint">&nbsp;</small></div>
+      <button class="btn" id="modelBtn" onclick="modelAction()">…</button>
+    </div>
+    <div class="prog" id="modelProg" style="display:none;"><div id="modelBar"></div></div>
+    <div class="hint">Přepis běží na tomhle Macu. Model se stáhne jednou a zůstane
+      i po aktualizaci aplikace.</div>
   </div>
 
   <div class="card" id="cardGloss"><h3>Slovník výrazů</h3>
@@ -311,6 +324,37 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
 <script>
   function send(m){ try{ window.webkit.messageHandlers.spillway.postMessage(m); }catch(e){} }
+  // --- model pro přepis ---
+  function applyModel(m){
+    var st = document.getElementById('modelState');
+    var hint = document.getElementById('modelHint');
+    var btn = document.getElementById('modelBtn');
+    var prog = document.getElementById('modelProg');
+    if(m.downloading){
+      st.textContent = 'Stahuji model…';
+      hint.textContent = m.progress_text || '';
+      btn.disabled = true; btn.textContent = 'Stahuji';
+      prog.style.display = 'block';
+      document.getElementById('modelBar').style.width = (m.percent || 0) + '%';
+      return;
+    }
+    prog.style.display = 'none';
+    btn.disabled = false;
+    if(m.ready){
+      st.textContent = 'Připraven';
+      hint.textContent = m.size + ' · ' + m.repo;
+      btn.textContent = 'Smazat'; btn.classList.add('danger');
+    } else {
+      st.textContent = 'Není stažený';
+      hint.textContent = 'Bez něj nejde přepisovat · ' + m.repo;
+      btn.textContent = 'Stáhnout'; btn.classList.remove('danger');
+    }
+  }
+  function modelAction(){
+    var btn = document.getElementById('modelBtn');
+    send({action: btn.textContent === 'Smazat' ? 'model_remove' : 'model_download'});
+    btn.disabled = true;
+  }
   function showPage(name, anchor){
     var help = name === 'help';
     document.getElementById('pageSettings').classList.toggle('hidden', help);
@@ -488,6 +532,11 @@ class _Bridge(NSObject):
                 self.controller.set_language(lang)
             elif action == "theme":
                 settings.set("theme", str(body.get("value", "system")))
+            elif action == "model_download":
+                self._start_model_download()
+            elif action == "model_remove":
+                models.remove()
+                self._push_model()
             elif action == "reset_stats":
                 stats.reset_stats()
             elif action == "reset_history":
@@ -586,6 +635,58 @@ class _Bridge(NSObject):
 
         AppHelper.callAfter(_apply)
 
+
+    @objc.python_method
+    def _on_main(self, fn) -> None:
+        """Spustí `fn` na hlavním vlákně — WKWebView se odjinud volat nesmí."""
+        from Foundation import NSOperationQueue
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(fn)
+
+    @objc.python_method
+    def _push_model(self, extra: dict | None = None) -> None:
+        state = {
+            "ready": models.is_ready(),
+            "size": models.human_size(models.size_bytes()),
+            "repo": models.REPO,
+            "downloading": False,
+        }
+        state.update(extra or {})
+        js = "applyModel(" + json.dumps(state, ensure_ascii=False) + ")"
+        if self.webview is not None:
+            self.webview.evaluateJavaScript_completionHandler_(js, None)
+
+    @objc.python_method
+    def _start_model_download(self) -> None:
+        """Stáhne model na pozadí a průběžně hlásí postup do okna.
+
+        Běží na vlastním vlákně, protože stahování 1,5 GB by jinak zmrazilo UI.
+        Hlášení postupu se musí vrátit na hlavní vlákno (`_on_main`).
+        """
+        import threading
+
+        if getattr(self, "_dl_thread", None) is not None and self._dl_thread.is_alive():
+            return  # už běží
+
+        def progress(done_b: int, total_b: int) -> None:
+            pct = int(done_b / total_b * 100) if total_b else 0
+            text = f"{models.human_size(done_b)} z {models.human_size(total_b)}"
+            self._on_main(lambda: self._push_model(
+                {"downloading": True, "percent": min(99, pct), "progress_text": text}
+            ))
+
+        def run() -> None:
+            try:
+                models.download(on_progress=progress)
+                print(f"⬇️  model stažen ({models.human_size(models.size_bytes())})")
+            except Exception as exc:  # noqa: BLE001 — chyba sítě nesmí shodit okno
+                print(f"❌ stažení modelu selhalo: {exc}")
+            self._on_main(self._push_model)
+
+        self._dl_thread = threading.Thread(target=run, daemon=True)
+        self._dl_thread.start()
+        self._push_model({"downloading": True, "percent": 0, "progress_text": "začínám…"})
+
     def _push_state(self) -> None:
         if self.webview is None:
             return
@@ -608,6 +709,7 @@ class _Bridge(NSObject):
         }
         js = "applyState(" + json.dumps(state, ensure_ascii=False) + ")"
         self.webview.evaluateJavaScript_completionHandler_(js, None)
+        self._push_model()
 
 
 class _WinDelegate(NSObject):
