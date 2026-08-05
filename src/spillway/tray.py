@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import rumps
 
-from . import config
+from . import config, models, settings
 from .app import IDLE, PROCESSING, RECORDING
 
 _BAR_ICON = "🎙️"  # placeholder; Spillway logo přijde s .app bundlem (ikonové assety)
@@ -78,6 +78,9 @@ class SpillwayTray(rumps.App):
 
         # [B23] Jednorázová kontrola stavu event tapu AŽ po startu run loopu —
         # dřív se notifikace o mrtvém tapu posílala moc brzy a tiše mizela.
+        # Po instalaci ukázat jednou nastavení — bez modelu appka nediktuje
+        # a uživatel by to jinak zjistil až prvním nefunkčním stiskem klávesy.
+        self._welcome_checked = False
         self._tap_checked = False
         self._tapcheck_timer = rumps.Timer(self._check_tap, 1.0)
         self._tapcheck_timer.start()
@@ -91,6 +94,22 @@ class SpillwayTray(rumps.App):
         # odsekne, ať appka nezůstane viset na „Zpracovávám" a nemusí se vypínat.
         self._stuck_timer = rumps.Timer(self._check_stuck, 5)
         self._stuck_timer.start()
+
+    def _maybe_welcome(self) -> None:
+        """Jednorázově po instalaci: když chybí model nebo klíč, otevřít nastavení."""
+        self._welcome_checked = True
+        try:
+            if settings.get("seen_setup", False):
+                return
+            from . import config as _cfg
+
+            if models.is_ready() and _cfg.get_api_key():
+                settings.set("seen_setup", True)   # vše je nastavené, neotravovat
+                return
+            self.open_settings(None, page="settings")
+            settings.set("seen_setup", True)
+        except Exception:  # noqa: BLE001 — uvítání nesmí shodit start
+            pass
 
     def _hud_clicked(self) -> None:
         """Klik na okénko: chybí-li model, otevře Nastavení u karty K provozu;
@@ -290,6 +309,8 @@ class SpillwayTray(rumps.App):
                 self._setup_popover()
             except Exception:  # noqa: BLE001
                 self._popover_ready = True  # nezkoušet donekonečna
+        if not getattr(self, "_welcome_checked", True):
+            self._maybe_welcome()
         try:
             self._refresh_stats_when_done()
         except Exception:  # noqa: BLE001 — statistika nesmí rozbít HUD

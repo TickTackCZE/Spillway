@@ -31,7 +31,6 @@ from WebKit import WKWebView, WKWebViewConfiguration
 
 from . import context, design, diag
 
-
 _BORDERLESS = 0
 _NONACTIVATING = 1 << 7
 _STATUS_LEVEL = 25

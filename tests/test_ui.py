@@ -8,6 +8,7 @@ souřadnice, takže běží i bez GUI.
 
 import pytest
 
+
 def test_level_step_maps_into_frame_range():
     from spillway import baricon
 
@@ -224,22 +225,15 @@ def test_help_links_point_at_existing_cards():
 
 
 def test_destructive_actions_all_require_confirmation():
-    import re
-
     from spillway import settings_window as sw
 
     html = sw._HTML
-    # Každá nevratná akce musí projít pětisekundovým potvrzením — smazání
-    # API klíče na to dřív jako jediné nečekalo a mazalo na první klik.
-    danger = re.findall(r'<button class="btn danger"[^>]*>', html)
-    assert danger, "očekáváme aspoň jedno destruktivní tlačítko"
-    for btn in danger:
-        assert "armReset(this," in btn, f"maže bez potvrzení: {btn}"
-        assert "data-label=" in btn, f"chybí popisek pro návrat do klidu: {btn}"
-
-    # Konkrétně tři: reset statistik, reset historie, smazání klíče.
-    for action in ("reset_stats", "reset_history", "delkey"):
-        assert f"armReset(this,'{action}')" in html, action
+    # Každá nevratná akce musí projít pětisekundovým potvrzením — ať už je
+    # tlačítko napojené přímo, nebo přes rozcestník (`keyAction`/`modelAction`).
+    for action in ("reset_stats", "reset_history", "delkey", "model_remove"):
+        assert f"armReset(this,'{action}')" in html or f"armReset(btn, '{action}')" in html, (
+            f"{action} maže bez potvrzení"
+        )
 
 
 def test_parent_row_has_no_divider_above_its_suboption():
@@ -312,8 +306,8 @@ def test_setup_card_groups_key_and_model_together():
     html = sw._HTML
     # API klíč a model jsou obojí podmínka funkčnosti → jedna karta.
     setup = html[html.index('id="cardSetup"'):html.index('Data a soukromí')]
-    assert "Anthropic API klíč" in setup and "Model pro přepis" in setup
-    assert 'id="modelBtn"' in setup and 'id="key"' in setup
+    assert "Model pro přepis" in setup and "Úprava textu přes Claude" in setup
+    assert 'id="modelBtn"' in setup and 'id="keyBtn"' in setup and 'id="key"' in setup
 
 
 def test_not_ready_banner_links_to_setup_card():
@@ -333,3 +327,27 @@ def test_model_removal_goes_through_confirmation():
     # Mazání 1,5 GB je nevratné → stejné pětisekundové potvrzení jako u resetů.
     assert "armReset(btn, 'model_remove')" in html
     assert "btn.dataset.mode === 'remove'" in html
+
+
+def test_welcome_explains_both_prerequisites():
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    w = html[html.index('id="welcome"'):html.index("</div>", html.index('id="welcome"') + 200)]
+    # Po instalaci musí být jasné, co je povinné a co ne.
+    assert "Model pro přepis" in w and "nepojede" in w, "model = podmínka diktování"
+    assert "API klíč" in w and "volitelný" in w, "klíč = volitelný, jen kvůli úpravě"
+    # Ukáže se jen napoprvé.
+    assert 'if(s.first_run) document.getElementById(\'welcome\').classList.remove' in html
+
+
+def test_ai_options_are_locked_without_key():
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    # Bez klíče nemá smysl nabízet odesílání do AI — musí zašednout a nejít zapnout.
+    assert "function syncKey(has)" in html
+    assert "classList.toggle('disabled', !has)" in html
+    assert "classList.toggle('locked', !has)" in html
+    # A dítě „Číst kontext pole" se řídí zamčeným rodičem.
+    assert "!master.classList.contains('locked')" in html

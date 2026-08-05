@@ -24,11 +24,10 @@ from AppKit import (
     NSPopoverBehaviorTransient,
     NSViewController,
 )
+from PyObjCTools import AppHelper
 from WebKit import WKWebView, WKWebViewConfiguration
 
-from PyObjCTools import AppHelper
-
-from . import config, design, stats
+from . import config, design, models, stats
 from .paste import copy_to_clipboard
 
 _DBG_PATH = os.path.expanduser("~/Library/Logs/Spillway/popover-debug.log")
@@ -124,6 +123,18 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .foot .quit{display:flex;justify-content:center;}
   .foot button.danger{flex:0 0 auto;min-width:140px;padding-left:24px;padding-right:24px;
     background:var(--danger);color:#fff;border-color:transparent;}
+  /* Upozornění je nad vším ostatním — dokud model chybí, nic jiného nemá smysl. */
+  .warn{background:color-mix(in srgb,var(--danger) 14%,transparent);
+    border:0.5px solid color-mix(in srgb,var(--danger) 45%,transparent);
+    border-radius:11px;padding:12px;margin-bottom:8px;}
+  .warn .wtop{display:flex;align-items:center;gap:7px;font-size:13px;}
+  .warn .wdot{width:8px;height:8px;border-radius:50%;background:var(--danger);flex:none;}
+  .warn .wtext{font-size:11px;color:var(--muted);margin:5px 0 9px;line-height:1.45;}
+  .warn button{width:100%;border:0;border-radius:8px;background:var(--danger);color:#fff;
+    font:inherit;font-size:12px;font-weight:600;padding:8px;cursor:pointer;}
+  .warn button:disabled{opacity:.6;cursor:default;}
+  .wprog{height:5px;background:var(--surface);border-radius:3px;overflow:hidden;margin-bottom:9px;}
+  .wprog>div{height:100%;width:0;background:var(--danger);border-radius:3px;transition:width .3s;}
   #toast{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:var(--accent);color:var(--onaccent);
     font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;opacity:0;transition:opacity .18s;pointer-events:none;box-shadow:0 4px 14px var(--shadow);}
   #toast.show{opacity:1;}
@@ -133,6 +144,12 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <span class="pill" id="statusPill"><span class="dot"></span><span id="statusText">Připraveno</span></span>
   </div>
 
+  <div id="noModel" class="warn" style="display:none;">
+    <div class="wtop"><span class="wdot"></span><b>Chybí model pro přepis</b></div>
+    <div class="wtext" id="noModelText">Bez něj nejde diktovat. Stáhne se jednou, 1,6 GB.</div>
+    <div class="wprog" id="noModelProg" style="display:none;"><div id="noModelBar"></div></div>
+    <button id="noModelBtn" onclick="getModel()">Stáhnout model</button>
+  </div>
   <div class="hero"><div class="line">Podrž <span class="kbd" id="hotkeyKbd">F5</span> a mluv</div></div>
 
   <div class="stats">
@@ -225,7 +242,31 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
         +'<span class="age">'+esc(it.age)+'</span><span class="cpy">Kopírovat</span></div>';
     }).join('');
   }
+  function getModel(){
+    var b=document.getElementById('noModelBtn');
+    b.disabled=true; b.textContent='Stahuji…';
+    send({action:'model_download'});
+  }
+  function applyModel(m){
+    var box=document.getElementById('noModel');
+    if(m.ready){ box.style.display='none'; return; }
+    box.style.display='block';
+    var prog=document.getElementById('noModelProg');
+    var b=document.getElementById('noModelBtn');
+    if(m.downloading){
+      prog.style.display='block';
+      document.getElementById('noModelBar').style.width=(m.percent||0)+'%';
+      document.getElementById('noModelText').textContent=m.progress_text||'Stahuji…';
+      b.disabled=true; b.textContent='Stahuji '+(m.percent||0)+' %';
+    } else {
+      prog.style.display='none';
+      document.getElementById('noModelText').textContent=
+        'Bez něj nejde diktovat. Stáhne se jednou, 1,6 GB.';
+      b.disabled=false; b.textContent='Stáhnout model';
+    }
+  }
   function applyState(s){
+    if(typeof s.model_ready === 'boolean') applyModel({ready:s.model_ready});
     applyTheme(s.theme||'system');
     document.getElementById('hotkeyKbd').textContent = s.hotkey_label || 'F5';
     var pill=document.getElementById('statusPill'), txt=document.getElementById('statusText');
@@ -288,6 +329,9 @@ class _PopBridge(NSObject):
                 self.popover.close()
                 if self.on_open_settings is not None:
                     self.on_open_settings()
+            elif action == "model_download":
+                models.add_download_listener(self._on_download)
+                models.download_async()
             elif action == "open_help":
                 if self.on_open_help is not None:
                     self.on_open_help()
@@ -332,6 +376,21 @@ class _PopBridge(NSObject):
                 if self.webview is not None:
                     self.webview.evaluateJavaScript_completionHandler_("toast('Zkopírováno')", None)
 
+    @objc.python_method
+    def _on_download(self, st: dict) -> None:
+        """Postup stahování → popover. Volá se z cizího vlákna, proto přes hlavní."""
+        from Foundation import NSOperationQueue
+
+        def apply() -> None:
+            if self.webview is None:
+                return
+            payload = dict(st)
+            payload["ready"] = models.is_ready()
+            js = "applyModel(" + json.dumps(payload, ensure_ascii=False) + ")"
+            self.webview.evaluateJavaScript_completionHandler_(js, None)
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
+
     def push_state(self) -> None:
         if self.webview is None:
             return
@@ -361,6 +420,7 @@ class _PopBridge(NSObject):
             "status_text": status_text,
             "status_warn": status_warn,
             "model": config.get_model(),
+            "model_ready": models.is_ready(),
             "gpu_loaded": loaded,
             "stats": {
                 "count": summary["count"],

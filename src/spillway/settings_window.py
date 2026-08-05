@@ -23,9 +23,8 @@ from AppKit import (
     NSWindowStyleMaskMiniaturizable,
     NSWindowStyleMaskTitled,
 )
-from WebKit import WKWebView, WKWebViewConfiguration
-
 from PyObjCTools import AppHelper
+from WebKit import WKWebView, WKWebViewConfiguration
 
 from . import autostart, config, design, keymap, models, settings, stats
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
@@ -122,6 +121,11 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .tabs button{flex:1;border:0.5px solid transparent;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:600;padding:7px;border-radius:8px;cursor:pointer;}
   .tabs button.on{background:var(--surface);color:var(--text);border-color:var(--border);}
   .hidden{display:none;}
+  .welcome{background:var(--surface);border:0.5px solid var(--border);border-radius:10px;
+    padding:13px;margin-bottom:14px;font-size:12px;line-height:1.55;}
+  .welcome b{font-size:13px;}
+  .welcome p{margin-top:7px;color:var(--muted);}
+  .welcome p b{font-size:12px;color:var(--text);}
   /* Stavový pruh nahoře — dokud něco chybí, aplikace nediktuje. Klik vede
      rovnou na kartu, kde se to doplní. */
   .banner{display:flex;align-items:center;gap:9px;margin-top:12px;padding:11px 14px;
@@ -179,7 +183,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
   <div id="notReady" class="banner hidden" onclick="showPage('settings','cardSetup')">
     <span class="dot" style="background:var(--danger)"></span>
-    <span id="notReadyText">Aplikace není připravená</span>
+    <span id="notReadyText">Chybí model pro přepis — bez něj nejde diktovat</span>
     <span class="go">Nastavit →</span>
   </div>
 
@@ -229,26 +233,36 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   </div>
 
   <div class="card" id="cardSetup"><h3>K provozu</h3>
-    <div class="sub-h">Anthropic API klíč</div>
-    <div id="keyset" style="display:none">
-      <div class="rowt" style="border-bottom:none;padding:0;">
-        <div class="l"><span style="color:var(--success)">●</span> Klíč je nastavený<small>uložený v macOS Keychain</small></div>
-        <button class="btn danger" data-label="Smazat" onclick="armReset(this,'delkey')">Smazat</button>
+    <div id="welcome" class="welcome hidden">
+      <b>Vítej ve Spillway 👋</b>
+      <p><b>Model pro přepis</b> je potřeba stáhnout — bez něj diktování nepojede.
+         Stáhne se jednou (1,6&nbsp;GB) a zůstane i po aktualizaci.</p>
+      <p><b>API klíč</b> je volitelný. Bez něj se řeč jen přepíše; s ním ji Claude
+         navíc upraví — doplní interpunkci, opraví přeřeknutí a naformátuje
+         text podle aplikace, do které píšeš.</p>
+    </div>
+
+    <div class="rowt">
+      <div class="l">Model pro přepis<small id="modelHint">&nbsp;</small></div>
+      <div class="field" style="width:auto;align-items:center;gap:10px;">
+        <span class="l" id="modelState" style="font-weight:600;">Zjišťuji…</span>
+        <button class="btn" id="modelBtn" onclick="modelAction()">…</button>
       </div>
     </div>
-    <div id="keyunset" style="display:none">
-      <div class="field"><input id="key" type="password" placeholder="sk-ant-…"><button class="btn" onclick="saveKey()">Uložit</button></div>
-      <div class="hint">Klíč se uloží do macOS Keychain, ne do souboru.</div>
-    </div>
-    <div class="sub-h" style="margin-top:16px;">Model pro přepis</div>
-    <div class="rowt">
-      <!-- Stav a popisek musí být SOUROZENCI: `textContent` na rodiči by dítě smazal. -->
-      <div class="l"><span id="modelState">Zjišťuji…</span><small id="modelHint">&nbsp;</small></div>
-      <button class="btn" id="modelBtn" onclick="modelAction()">…</button>
-    </div>
     <div class="prog" id="modelProg" style="display:none;"><div id="modelBar"></div></div>
-    <div class="hint">Přepis běží na tomhle Macu. Model se stáhne jednou a zůstane
-      i po aktualizaci aplikace.</div>
+
+    <div class="rowt">
+      <div class="l">Úprava textu přes Claude<small id="keyHint">&nbsp;</small></div>
+      <div class="field" style="width:auto;align-items:center;gap:10px;">
+        <span class="l" id="keyState" style="font-weight:600;">Zjišťuji…</span>
+        <button class="btn" id="keyBtn" data-label="Smazat" onclick="keyAction()">…</button>
+      </div>
+    </div>
+    <div id="keyunset" style="display:none;margin-top:10px;">
+      <div class="field"><input id="key" type="password" placeholder="sk-ant-…"><button class="btn" onclick="saveKey()">Uložit</button></div>
+      <div class="hint">Klíč se uloží do systémové Klíčenky, ne do souboru. Získáš ho na
+        <b>console.anthropic.com</b>.</div>
+    </div>
   </div>
 
   <div class="card"><h3>Data a soukromí</h3>
@@ -339,15 +353,30 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
 <script>
   function send(m){ try{ window.webkit.messageHandlers.spillway.postMessage(m); }catch(e){} }
-  // --- model pro přepis ---
+  // Pruh nahoře. Závisí JEN na modelu pro přepis — bez něj se nedá diktovat
+  // vůbec. API klíč je volitelný: bez něj jede syrový přepis, jen se text
+  // neupraví. Dřív pruh čekal na dvě nezávislá hlášení a mohl uváznout.
+  function setReady(model){
+    document.getElementById('notReady').classList.toggle('hidden', !!model);
+  }
+  // Bez klíče nemá smysl nabízet odesílání do AI — zašedne se to.
+  function syncKey(has){
+    var sw = document.querySelector('.sw[data-key="ai_edit"]');
+    sw.closest('.rowt').classList.toggle('disabled', !has);
+    sw.classList.toggle('locked', !has);
+    if(!has) sw.classList.remove('on');
+    syncAiEdit();
+  }
+  // --- karta „K provozu" ---
+  // Obě řádky mají stejnou stavbu: co to je · v jakém je to stavu · tlačítko.
   function applyModel(m){
     var st = document.getElementById('modelState');
     var hint = document.getElementById('modelHint');
     var btn = document.getElementById('modelBtn');
     var prog = document.getElementById('modelProg');
     if(m.downloading){
-      st.textContent = 'Stahuji model…';
-      hint.textContent = m.progress_text || '';
+      st.textContent = (m.percent || 0) + ' %';
+      hint.textContent = 'Stahuji · ' + (m.progress_text || '');
       btn.disabled = true; btn.textContent = 'Stahuji'; btn.dataset.mode = '';
       prog.style.display = 'block';
       document.getElementById('modelBar').style.width = (m.percent || 0) + '%';
@@ -356,18 +385,17 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     prog.style.display = 'none';
     btn.disabled = false;
     if(m.ready){
-      st.textContent = 'Připraven';
-      // Kde model leží — ať je vidět, že se nestahuje podruhé, když už někde je.
-      hint.textContent = m.size + ' · ' + (m.where || '');
+      st.textContent = 'Připraven'; st.style.color = 'var(--success)';
+      hint.textContent = 'Běží na tomhle Macu · ' + m.size;
       btn.textContent = 'Smazat'; btn.dataset.label = 'Smazat';
       btn.dataset.mode = 'remove'; btn.classList.add('danger');
     } else {
-      st.textContent = 'Není stažený';
-      hint.textContent = 'Bez něj nejde přepisovat · ~1,6 GB ke stažení';
+      st.textContent = 'Chybí'; st.style.color = 'var(--danger)';
+      hint.textContent = 'Bez něj nejde diktovat · ke stažení 1,6 GB';
       btn.textContent = 'Stáhnout'; btn.dataset.label = 'Stáhnout';
       btn.dataset.mode = ''; btn.classList.remove('danger');
     }
-    setReady(m.ready, m.has_key);
+    setReady(m.ready);
   }
   function modelAction(){
     var btn = document.getElementById('modelBtn');
@@ -376,21 +404,30 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     send({action:'model_download'});
     btn.disabled = true;
   }
-  // Pruh nahoře: dokud něco chybí, aplikace nediktuje. Klik vede na kartu.
-  var _ready = {model:null, key:null};
-  function setReady(model, key){
-    if(model !== undefined && model !== null) _ready.model = model;
-    if(key !== undefined && key !== null) _ready.key = key;
-    if(_ready.model === null || _ready.key === null) return;   // ještě nevíme obojí
-    var miss = [];
-    if(!_ready.model) miss.push('model pro přepis');
-    if(!_ready.key) miss.push('API klíč');
-    var el = document.getElementById('notReady');
-    el.classList.toggle('hidden', miss.length === 0);
-    if(miss.length){
-      document.getElementById('notReadyText').textContent =
-        'Chybí ' + miss.join(' a ') + ' — diktování zatím nepojede';
+  function applyKey(has){
+    var st = document.getElementById('keyState');
+    var hint = document.getElementById('keyHint');
+    var btn = document.getElementById('keyBtn');
+    if(has){
+      st.textContent = 'Nastaven'; st.style.color = 'var(--success)';
+      hint.textContent = 'Uložený v Klíčence';
+      btn.textContent = 'Smazat'; btn.dataset.label = 'Smazat';
+      btn.dataset.mode = 'remove'; btn.classList.add('danger');
+      document.getElementById('keyunset').style.display = 'none';
+    } else {
+      st.textContent = 'Nenastaven'; st.style.color = 'var(--muted)';
+      hint.textContent = 'Volitelné · bez něj se text jen přepíše, neupraví';
+      btn.textContent = 'Zadat'; btn.dataset.label = 'Zadat';
+      btn.dataset.mode = ''; btn.classList.remove('danger');
+      document.getElementById('keyunset').style.display = 'block';
     }
+    syncKey(has);
+  }
+  function keyAction(){
+    var btn = document.getElementById('keyBtn');
+    if(btn.dataset.mode === 'remove'){ armReset(btn, 'delkey'); return; }
+    document.getElementById('keyunset').style.display = 'block';
+    document.getElementById('key').focus();
   }
   function showPage(name, anchor){
     var help = name === 'help';
@@ -492,7 +529,9 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   // rodiče (rodič vypnutý → dítě vypnuté a zašedlé/zamčené), master ho zapíná i vypíná.
   function syncAiEdit(){
     var master=document.querySelector('.sw[data-key="ai_edit"]');
-    var on=master.classList.contains('on');
+    // Bez klíče je master zamčený → dítě taky, ať se nedá zapnout něco,
+    // co stejně nepojede.
+    var on=master.classList.contains('on') && !master.classList.contains('locked');
     var child=document.querySelector('.sw[data-key="field_context"]');
     document.getElementById('fieldCtxRow').classList.toggle('disabled', !on);
     child.classList.toggle('locked', !on);
@@ -530,9 +569,8 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     }
     applyTheme(s.theme||'system');
     document.getElementById('lang').value = s.language || 'cs';
-    setReady(null, !!s.has_key);
-    document.getElementById('keyset').style.display = s.has_key ? 'block' : 'none';
-    document.getElementById('keyunset').style.display = s.has_key ? 'none' : 'block';
+    applyKey(!!s.has_key);
+    if(s.first_run) document.getElementById('welcome').classList.remove('hidden');
     document.getElementById('gloss').value = s.glossary || '';
     [['autostart',s.autostart],['ai_edit',s.ai_edit],['field_context',s.field_context],['auto_space',s.auto_space]].forEach(function(kv){
       var el=document.querySelector('.sw[data-key="'+kv[0]+'"]'); if(el) el.classList.toggle('on', !!kv[1]);
@@ -699,34 +737,18 @@ class _Bridge(NSObject):
 
     @objc.python_method
     def _start_model_download(self) -> None:
-        """Stáhne model na pozadí a průběžně hlásí postup do okna.
+        """Spustí stahování přes sdílenou orchestraci v `models`.
 
-        Běží na vlastním vlákně, protože stahování 1,5 GB by jinak zmrazilo UI.
-        Hlášení postupu se musí vrátit na hlavní vlákno (`_on_main`).
+        Tlačítko je i v popoveru — orchestrace je proto jedna a společná, ať
+        dvojí klik nespustí dvě stahování téhož modelu.
         """
-        import threading
+        models.add_download_listener(self._on_download)
+        models.download_async()
 
-        if getattr(self, "_dl_thread", None) is not None and self._dl_thread.is_alive():
-            return  # už běží
-
-        def progress(done_b: int, total_b: int) -> None:
-            pct = int(done_b / total_b * 100) if total_b else 0
-            text = f"{models.human_size(done_b)} z {models.human_size(total_b)}"
-            self._on_main(lambda: self._push_model(
-                {"downloading": True, "percent": min(99, pct), "progress_text": text}
-            ))
-
-        def run() -> None:
-            try:
-                models.download(on_progress=progress)
-                print(f"⬇️  model stažen ({models.human_size(models.size_bytes())})")
-            except Exception as exc:  # noqa: BLE001 — chyba sítě nesmí shodit okno
-                print(f"❌ stažení modelu selhalo: {exc}")
-            self._on_main(self._push_model)
-
-        self._dl_thread = threading.Thread(target=run, daemon=True)
-        self._dl_thread.start()
-        self._push_model({"downloading": True, "percent": 0, "progress_text": "začínám…"})
+    @objc.python_method
+    def _on_download(self, st: dict) -> None:
+        """Postup stahování → okno. Volá se z cizího vlákna, proto přes hlavní."""
+        self._on_main(lambda: self._push_model(st if st.get("downloading") else None))
 
     def _push_state(self) -> None:
         if self.webview is None:
@@ -747,6 +769,7 @@ class _Bridge(NSObject):
             "field_context": bool(settings.get("field_context", True)),
             "auto_space": config.auto_space(),
             "auto_unload_sec": config.get_auto_unload_seconds(),
+            "first_run": not settings.get("seen_setup", False),
         }
         js = "applyState(" + json.dumps(state, ensure_ascii=False) + ")"
         self.webview.evaluateJavaScript_completionHandler_(js, None)

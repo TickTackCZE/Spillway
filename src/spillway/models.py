@@ -222,3 +222,75 @@ def path_for_transcribe() -> str:
     """
     found = find_local()
     return found[0] if found else REPO
+
+
+# --- Sdílené stahování ------------------------------------------------------
+# Tlačítko „Stáhnout" je na dvou místech (Nastavení i popover). Orchestrace
+# je proto tady, ne v UI: běží nejvýš JEDNO stahování a oba posluchači dostávají
+# stejný postup. Bez toho by dvojí klik spustil dvě stahování téhož modelu.
+
+_dl_lock = threading.Lock()
+_dl_thread: threading.Thread | None = None
+_dl_listeners: list = []
+_dl_state: dict = {"downloading": False, "percent": 0, "progress_text": ""}
+
+
+def download_state() -> dict:
+    """Aktuální stav stahování (kopie, ať do něj volající nesahá)."""
+    with _dl_lock:
+        return dict(_dl_state)
+
+
+def add_download_listener(fn) -> None:
+    """Přihlásí se k odběru postupu. Volá se i hned s aktuálním stavem."""
+    with _dl_lock:
+        if fn not in _dl_listeners:
+            _dl_listeners.append(fn)
+        snapshot = dict(_dl_state)
+    try:
+        fn(snapshot)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def remove_download_listener(fn) -> None:
+    with _dl_lock:
+        if fn in _dl_listeners:
+            _dl_listeners.remove(fn)
+
+
+def _emit(**state) -> None:
+    with _dl_lock:
+        _dl_state.update(state)
+        snapshot, listeners = dict(_dl_state), list(_dl_listeners)
+    for fn in listeners:
+        try:
+            fn(snapshot)
+        except Exception:  # noqa: BLE001 — posluchač nesmí shodit stahování
+            pass
+
+
+def download_async() -> bool:
+    """Spustí stahování na pozadí. False = už běží, druhé se nespouští."""
+    global _dl_thread
+    with _dl_lock:
+        if _dl_thread is not None and _dl_thread.is_alive():
+            return False
+
+        def run() -> None:
+            def progress(done_b: int, total_b: int) -> None:
+                pct = int(done_b / total_b * 100) if total_b else 0
+                _emit(downloading=True, percent=min(99, pct),
+                      progress_text=f"{human_size(done_b)} z {human_size(total_b)}")
+
+            try:
+                download(on_progress=progress)
+                print(f"⬇️  model stažen ({human_size(size_bytes())})")
+            except Exception as exc:  # noqa: BLE001 — chyba sítě nesmí shodit UI
+                print(f"❌ stažení modelu selhalo: {exc}")
+            _emit(downloading=False, percent=0, progress_text="")
+
+        _dl_thread = threading.Thread(target=run, daemon=True)
+        _dl_thread.start()
+    _emit(downloading=True, percent=0, progress_text="začínám…")
+    return True

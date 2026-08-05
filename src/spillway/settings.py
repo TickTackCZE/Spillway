@@ -38,6 +38,8 @@ _DEFAULTS: dict = {
     # nezapisuje se víc, než je potřeba. "all" nebo výčet: "focus,hud,audio,text".
     # Pozor: "text" zapisuje do logu PŘEPSANÝ TEXT, ne jen jeho délku.
     "diagnostics": "",
+    # Uvítání po instalaci se ukáže jednou; pak se klíč přepne na True.
+    "seen_setup": False,
 }
 
 

@@ -6,6 +6,7 @@ konfigurace, diagnostika. Vzhled (ikona, okna, nápověda) je v `test_ui.py`.
 
 import pytest
 
+
 # --- B8: filtr halucinací ---------------------------------------------------
 def test_hallucination_drops_short_marker():
     from spillway.transcribe import _drop_hallucination
@@ -1665,3 +1666,51 @@ def test_our_folder_wins_over_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(models, "_hf_cache_dir", lambda: str(cache))
     # Naše složka má přednost — je pod naší kontrolou a jde ji smazat tlačítkem.
     assert models.find_local() == (str(ours), "složka Spillway")
+
+
+def test_only_one_download_runs_at_a_time(monkeypatch):
+    import threading
+    import time
+
+    from spillway import models
+
+    # Tlačítko „Stáhnout" je v Nastavení i v popoveru — dvojí klik nesmí spustit
+    # dvě stahování téhož modelu.
+    started = []
+    gate = threading.Event()
+
+    def fake_download(on_progress=None, cancel=None):
+        started.append(1)
+        gate.wait(2.0)
+        return "/tmp/x"
+
+    monkeypatch.setattr(models, "download", fake_download)
+    monkeypatch.setattr(models, "_dl_thread", None)
+
+    assert models.download_async() is True
+    for _ in range(50):
+        if started:
+            break
+        time.sleep(0.01)
+    assert models.download_async() is False, "druhé stahování se nesmí spustit"
+    gate.set()
+    if models._dl_thread is not None:
+        models._dl_thread.join(timeout=2.0)
+    assert len(started) == 1
+
+
+def test_download_listeners_get_state_and_can_unsubscribe(monkeypatch):
+    from spillway import models
+
+    monkeypatch.setattr(models, "_dl_listeners", [])
+    seen = []
+    models.add_download_listener(seen.append)
+    # Přihlášení dostane rovnou aktuální stav, ať UI nečeká na první změnu.
+    assert len(seen) == 1 and "downloading" in seen[0]
+
+    models._emit(downloading=True, percent=42)
+    assert seen[-1]["percent"] == 42
+
+    models.remove_download_listener(seen.append)
+    models._emit(downloading=False, percent=0)
+    assert seen[-1]["percent"] == 42, "odhlášený posluchač už nic dostávat nemá"
