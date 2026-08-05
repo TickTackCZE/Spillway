@@ -153,7 +153,9 @@ class _NoticeBridge(objc.lookUpClass("NSObject")):
             body = dict(message.body()) if hasattr(message.body(), "keys") else {}
             action = str(body.get("action", ""))
             if action == "download":
-                models.add_download_listener(self._owner.on_download_state)
+                # Odběr postupu tu NEREGISTRUJEME — tray ho zapisuje natrvalo
+                # při vytvoření kartičky (stahování se dá spustit i z Nastavení,
+                # takže se o něm musí dozvědět tak jako tak).
                 models.download_async()
             elif action == "cancel":
                 models.cancel_download()
@@ -193,6 +195,9 @@ class NoticePanel:
 
         self._visible = False
         self._last: dict | None = None
+        # Poslední známý stav klíče. Výchozí True: dokud se `show_beside`
+        # neozve, nemá se o klíč otravovat (radši nic než falešné varování).
+        self._has_key = True
         self.on_key = None       # doplní tray: 'key_open' | 'key_snooze'
         self._parent = None      # okno, ke kterému je kartička připnutá
         self._pos = None         # poslední poloha, ať se nepřesazuje zbytečně
@@ -207,18 +212,41 @@ class NoticePanel:
         return True
 
     @objc.python_method
-    def on_download_state(self, st: dict) -> None:
-        """Postup stahování z `models` — musí zpátky na hlavní vlákno."""
+    def _compose(self, *, model_ready: bool, has_key: bool) -> dict:
+        """Jediné místo, kde se skládá stav kartičky.
+
+        Dřív ho skládaly dvě cesty zvlášť a ta z odběru stahování posílala jen
+        tři klíče navrch toho, co zbylo z minula. Při úplně prvním volání tam
+        `key` vůbec nebyl (`undefined` v JS), takže se ukázala hláška o
+        chybějícím API klíči i tomu, kdo ho zadaný má.
+        """
+        return {"model": model_ready, "key": has_key, **models.download_state()}
+
+    @objc.python_method
+    def _apply(self, state: dict) -> None:
+        """Překreslí, JEN když se stav změnil.
+
+        Volá se z časovače 6,7×/s a každé `evaluateJavaScript` je práce navíc
+        na hlavním vlákně — bez téhle podmínky se UI během stahování znatelně
+        seká. `_last` se zapamatuje jen po úspěšném vykreslení, jinak by se
+        stav u nenačtené stránky označil za hotový a už nikdy nepřekreslil.
+        """
+        if state != self._last and self._render(state):
+            self._last = state
+
+    @objc.python_method
+    def on_download_state(self, _st: dict) -> None:
+        """Postup stahování z `models` — musí zpátky na hlavní vlákno.
+
+        Stav se skládá znovu z `models.download_state()`, ne z předaného `_st`:
+        je to týž údaj a takhle vede do kartičky jediná cesta.
+        """
         from Foundation import NSOperationQueue
 
         def apply() -> None:
-            base = dict(self._last or {})
-            base.update({"model": models.is_ready(),
-                         "downloading": st.get("downloading", False),
-                         "percent": st.get("percent", 0)})
-            if self._render(base):
-                self._last = base
-            if base["model"]:
+            state = self._compose(model_ready=models.is_ready(), has_key=self._has_key)
+            self._apply(state)
+            if state["model"]:
                 self.hide()
 
         NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
@@ -250,14 +278,8 @@ class NoticePanel:
             self.hide()
             return
 
-        state = {"model": model_ready, "key": has_key, **models.download_state()}
-        # Překreslovat JEN při změně. Volá se z časovače 6,7×/s a každé
-        # `evaluateJavaScript` je práce navíc na hlavním vlákně — bez téhle
-        # podmínky se UI během stahování znatelně seká.
-        # `_last` se zapamatuje JEN když se opravdu vykreslilo — jinak by se
-        # stav u nenačtené stránky označil za hotový a už se nikdy nepřekreslil.
-        if state != self._last and self._render(state):
-            self._last = state
+        self._has_key = has_key   # ať to ví i odběr postupu stahování
+        self._apply(self._compose(model_ready=model_ready, has_key=has_key))
 
         pf = parent.frame()
         gap = 8.0

@@ -229,6 +229,30 @@ def _ax():
         return None
 
 
+_caret_names: tuple | None = None
+
+
+def _caret_ax_names() -> tuple | None:
+    """(jméno atributu bounds, konstanta typu CGRect) — nebo None bez AX.
+
+    Jména se mezi verzemi PyObjC liší, takže se hledají přes fallbacky. Zjistí
+    se JEDNOU: dřív se ta sedmerá `try/except ImportError` vyhodnocovala uvnitř
+    `caret_screen_rect`, kterou volá časovač lišty 6,7×/s. Výsledek se mezi
+    verzemi PyObjC za běhu procesu nemění, takže není co přepočítávat.
+    """
+    global _caret_names
+    if _caret_names is not None:
+        return _caret_names
+    ax = _ax()
+    if ax is None:
+        return None
+    bounds = getattr(ax, "kAXBoundsForRangeParameterizedAttribute", "AXBoundsForRange")
+    cgrect = (getattr(ax, "kAXValueCGRectType", None)
+              or getattr(ax, "kAXValueTypeCGRect", None) or 3)
+    _caret_names = (bounds, cgrect)
+    return _caret_names
+
+
 def _cfrange_type(ax) -> int:  # noqa: ANN001
     """Konstanta typu CFRange — jméno se mezi verzemi PyObjC liší."""
     return getattr(ax, "kAXValueCFRangeType", None) or getattr(
@@ -415,22 +439,6 @@ def focus_snapshot(*, want_text: bool = False, want_line: bool = False,
     return Focus(True, is_input, role, sig, text, caret, at_line_start)
 
 
-def has_focused_text_field() -> bool | None:
-    """Je teď zaměřené něco, do čeho se dá psát?
-
-    True = ano, False = ne, None = nelze zjistit vůbec (chybí Accessibility
-    nebo appka nehlásí žádný fokus).
-
-    Accessibility je kooperativní — appka nemusí odpovědět nebo může lhát —
-    takže absolutní jistota z principu neexistuje. Když se prvek za textový
-    vstup neoznačí, chováme se, jako by pole nebylo: text zůstane ve schránce
-    s lístkem „Připraveno k vložení". Nejhorší případ je tedy `⌘V` navíc, ne
-    ztracený diktát.
-    """
-    snap = focus_snapshot()
-    return snap.is_input if snap.ok else None
-
-
 def needs_leading_space(field_text: str | None, caret: int | None) -> bool:
     """Má se před vkládaný text doplnit mezera, ať slova nesplynou?
 
@@ -497,28 +505,13 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
     def _dbg(msg: str) -> None:
         diag.log("hud", f"caret: {msg}")
 
-    try:
-        from ApplicationServices import (
-            AXUIElementCopyAttributeValue,
-            AXUIElementCopyParameterizedAttributeValue,
-            AXValueGetValue,
-            kAXSelectedTextRangeAttribute,
-        )
-    except Exception:  # noqa: BLE001
+    names = _caret_ax_names()
+    if names is None:
         return None
-    try:
-        from ApplicationServices import (
-            kAXBoundsForRangeParameterizedAttribute as bounds_attr,
-        )
-    except Exception:  # noqa: BLE001
-        bounds_attr = "AXBoundsForRange"
-    try:
-        from ApplicationServices import kAXValueCGRectType as cgrect_type
-    except Exception:  # noqa: BLE001
-        try:
-            from ApplicationServices import kAXValueTypeCGRect as cgrect_type
-        except Exception:  # noqa: BLE001
-            cgrect_type = 3
+    bounds_attr, cgrect_type = names
+    ax = _ax()
+    if ax is None:
+        return None
 
     def _focused_frame(focused) -> tuple[float, float, float, float] | None:  # noqa: ANN001
         """Fallback: rám (pozice+velikost) fokusovaného POLE. Když appka neumí
@@ -530,45 +523,29 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
         tedy je to prokazatelně pole a jen neumí spočítat pozici kurzoru. Na
         cokoliv jiného se rám nepoužívá, jinak by okénko přistálo v rohu okna
         nebo na ploše místo pod ikonou.
+
+        Pozici a velikost čte `_read_sig`, tedy TÁŽ funkce jako otisk pole pro
+        rozhodnutí o vložení. Dřív to byla druhá, řádek po řádku stejná kopie —
+        a rozejít se dvě čtení téhož je přesně ta třída chyby, na které tenhle
+        projekt už několikrát sedl.
         """
-        try:
-            from ApplicationServices import (
-                kAXPositionAttribute,
-                kAXSizeAttribute,
-                kAXValueCGPointType,
-                kAXValueCGSizeType,
-            )
-        except Exception:  # noqa: BLE001
+        sig = _read_sig(ax, focused, None)
+        if sig is None:
+            _dbg("fallback: pole nevrací pozici/velikost")
             return None
-        try:
-            err1, pos_val = AXUIElementCopyAttributeValue(focused, kAXPositionAttribute, None)
-            err2, size_val = AXUIElementCopyAttributeValue(focused, kAXSizeAttribute, None)
-            if err1 or err2 or pos_val is None or size_val is None:
-                _dbg("fallback: pole nevrací pozici/velikost")
-                return None
-            okp, pt = AXValueGetValue(pos_val, kAXValueCGPointType, None)
-            oks, sz = AXValueGetValue(size_val, kAXValueCGSizeType, None)
-            if not (okp and oks):
-                return None
-            fx, fy = float(pt.x), float(pt.y)
-            fh = float(sz.height)
-            if fh <= 1.0:
-                return None
-            _dbg(f"fallback rám pole=({fx:.0f},{fy:.0f}, h={fh:.0f}) → HUD nad pole")
-            # Předstíráme „kurzor" s malou výškou na horní hraně pole.
-            return (fx, fy, 1.0, min(fh, 22.0))
-        except Exception as exc:  # noqa: BLE001
-            _dbg(f"fallback výjimka: {type(exc).__name__}: {exc}")
+        _role, fx, fy, _fw, fh = sig
+        # Nulová výška = pole to jen předstírá; okénko by skočilo do rohu okna.
+        if fh <= 1.0:
             return None
+        _dbg(f"fallback rám pole=({fx},{fy}, h={fh}) → HUD nad pole")
+        # Předstíráme „kurzor" s malou výškou na horní hraně pole.
+        return (float(fx), float(fy), 1.0, min(float(fh), 22.0))
 
     try:
         # Stejná brána jako u rozhodnutí „vložit vs. do schránky": co není
         # textový vstup, u toho polohu kurzoru vůbec nehledáme. Jinak by okénko
         # skončilo v levém horním rohu okna (Chromium tam hlásí začátek
         # dokumentu jako „kurzor", i když žádné pole zaměřené není).
-        ax = _ax()
-        if ax is None:
-            return None
         focused = _focused_element(ax)
         if focused is None:
             _dbg("žádný focused element")
@@ -577,19 +554,19 @@ def caret_screen_rect() -> tuple[float, float, float, float] | None:
         if not is_text_input(_read_settable(ax, focused), role):
             _dbg(f"fokus není textový vstup (role={role}) → HUD patří k ikoně")
             return None
-        err, rng_val = AXUIElementCopyAttributeValue(
-            focused, kAXSelectedTextRangeAttribute, None
+        err, rng_val = ax.AXUIElementCopyAttributeValue(
+            focused, ax.kAXSelectedTextRangeAttribute, None
         )
         if err or rng_val is None:
             _dbg(f"pole nehlásí výběr textu (err={err}) → zkouším rám pole")
             return _focused_frame(focused)
-        err, bounds_val = AXUIElementCopyParameterizedAttributeValue(
+        err, bounds_val = ax.AXUIElementCopyParameterizedAttributeValue(
             focused, bounds_attr, rng_val, None
         )
         if err or bounds_val is None:
             _dbg(f"appka nepodporuje {bounds_attr} (err={err}) → zkouším rám pole")
             return _focused_frame(focused)
-        ok, rect = AXValueGetValue(bounds_val, cgrect_type, None)
+        ok, rect = ax.AXValueGetValue(bounds_val, cgrect_type, None)
         if not ok:
             _dbg("AXValueGetValue selhalo → zkouším rám pole")
             return _focused_frame(focused)
@@ -628,16 +605,27 @@ def decide_delivery(*, target_bundle: str | None, field_sig: tuple | None,
     if target_bundle and now_bundle and now_bundle != target_bundle:
         return (False, f"fokus je jinde ({now_bundle})")
 
+    # JEDEN snímek fokusu pro obě zbylé otázky. Dřív se tu volalo dvakrát
+    # (`focus_snapshot` + `has_focused_text_field`) a bylo to dvakrát špatně:
+    # dvě kola Accessibility se sekundovým stropem přímo v cestě vložení, a
+    # hlavně se mezi nimi mohl fokus změnit — pak se důvod v logu rozešel
+    # s tím, co se opravdu stalo.
+    snap = focus_snapshot(want_sig=True)
+
     # 2) Stejná aplikace, ale jiné pole (klik jinam, zavřené okno).
     #    `same_field` vrací None, když otisk nejde získat (web/Electron) —
     #    tam se vkládá jako dřív, jinak by to hlásilo pořád.
-    if same_field(field_sig, focus_snapshot(want_sig=True).sig) is False:
+    if same_field(field_sig, snap.sig) is False:
         return (False, "jsi v jiném poli")
 
     # 3) Není kam vložit vůbec (fokus na okně, seznamu, tlačítku).
     #    U RDP/AVD se neptáme: pole je uvnitř vzdálené plochy a macOS do ní
     #    nevidí, takže by odpověď stejně nic neznamenala.
-    if not win_target and has_focused_text_field() is False:
+    #    `snap.ok` odlišuje „vím, že to není pole" od „nepodařilo se zjistit":
+    #    Accessibility je kooperativní, appka nemusí odpovědět nebo může lhát,
+    #    takže absolutní jistota z principu neexistuje. Bez odpovědi se vkládá —
+    #    nejhorší případ je ⌘V navíc, kdežto nevložení vypadá jako ztracený diktát.
+    if not win_target and snap.ok and not snap.is_input:
         return (False, "není zaměřené textové pole")
 
     return (True, "")

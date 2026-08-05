@@ -35,10 +35,12 @@ _HALLUCINATION_MARKERS = (
 )
 _HALLUCINATION_MAX_LEN = 45
 
-# Odkud brát váhy. `models.path_for_transcribe()` vrátí lokální složku, když je
-# model stažený u nás (viz `models.py`), jinak jméno repozitáře jako záchranu.
-# Čte se při každém použití, ne jednou při importu — jinak by se po stažení
-# modelu za běhu pořád sahalo do staré cache.
+# Odkud brát váhy: `models.path_for_transcribe()` vrátí LOKÁLNÍ složku, a když
+# model stažený není, vyhodí `ModelMissing`. Žádná „záchrana" jménem
+# repozitáře — to byla přesně ta past, kvůli které si mlx začal na pozadí tiše
+# stahovat 1,6 GB a aplikace na minutu zamrzla. Model stahuje jedině uživatel
+# z UI. Čte se při každém použití, ne jednou při importu — jinak by se po
+# stažení modelu za běhu pořád sahalo do staré cache.
 SAMPLE_RATE = 16000  # Whisper i Recorder jedou na 16 kHz mono
 
 
@@ -159,19 +161,25 @@ class _MlxWorker:
 
     def __init__(self) -> None:
         self._q: queue.Queue = queue.Queue()
+        # Počet právě běžících prací. Sama fronta to neví: jakmile si vlákno
+        # položku vyzvedne, `qsize()` je 0, i když se na GPU pořád počítá.
+        self._running = 0
+        self._n_lock = threading.Lock()
         self._t = threading.Thread(target=self._run, name="mlx-gpu", daemon=True)
         self._t.start()
 
     def _run(self) -> None:
         while True:
             fn, box, ev = self._q.get()
-            if fn is None:
-                return
+            with self._n_lock:
+                self._running += 1
             try:
                 box["r"] = fn()
             except BaseException as exc:  # noqa: BLE001 — přenést na volajícího
                 box["e"] = exc
             finally:
+                with self._n_lock:
+                    self._running -= 1
                 ev.set()
 
     def submit(self, fn, timeout: float | None = None):
@@ -196,8 +204,14 @@ class _MlxWorker:
         self._q.put((fn, {}, threading.Event()))
 
     def pending(self) -> int:
-        """Kolik práce čeká ve frontě (streaming se podle toho brzdí)."""
-        return self._q.qsize()
+        """Kolik práce je rozdělané — ve frontě I právě běžící.
+
+        Běžící položku je nutné počítat: `qsize()` je nula od chvíle, kdy si ji
+        vlákno vyzvedne, takže sám o sobě by tvrdil „nic se neděje" i uprostřed
+        dlouhého přepisu — a streaming by dál sypal segmenty do fronty za ním.
+        """
+        with self._n_lock:
+            return self._q.qsize() + self._running
 
 
 class Transcriber:
@@ -225,16 +239,16 @@ class Transcriber:
         # naopak: `WhisperModel` si tiše stáhne JINÝ model (~1,5 GB) a to při
         # startu na hlavním vlákně. Bez modelu se prostě nic nenačítá a čeká se,
         # až si ho uživatel stáhne z UI.
-        self.model_missing = not models.is_ready()
+        self._weights_absent = not models.is_ready()
         # Kontrola proběhla? Bez modelu ji nelze udělat, tak se odloží na dobu,
         # kdy model přibude — jinak by se na rozbité mlx přišlo až prvním
         # diktátem po stažení.
         self._mlx_checked = False
-        if self.backend == "mlx" and not self.model_missing and not self._mlx_ok():
+        if self.backend == "mlx" and not self._weights_absent and not self._mlx_ok():
             print("⚠️  mlx nefunguje (shadery?) → fallback na faster-whisper (CPU).")
             self.backend = "faster"
             self._mlx = None
-        self._mlx_checked = not self.model_missing
+        self._mlx_checked = not self._weights_absent
         print(f"🗣️  Whisper backend: {self.backend}"
               f"{' (' + models.REPO + ')' if self.backend == 'mlx' else ' (CPU large-v3-turbo)'}")
         self._load_model()
@@ -271,10 +285,10 @@ class Transcriber:
         # stahovat sám. mlx by sáhl na HF hub, faster-whisper by stáhl dokonce
         # JINÝ model — obojí tiše a na vlákně, které pak nereaguje.
         if not models.is_ready():
-            self.model_missing = True
+            self._weights_absent = True
             self._model = None
             return
-        self.model_missing = False
+        self._weights_absent = False
         if self.backend == "mlx" and not self._mlx_checked:
             # Odložená kontrola: model mezitím přibyl.
             self._mlx_checked = True
@@ -322,14 +336,25 @@ class Transcriber:
                 self._load_model()
 
     def unload_if_idle(self, idle_seconds: float) -> bool:
+        """Uvolní model po nečinnosti. Volá se z UI časovače na HLAVNÍM vlákně."""
         if idle_seconds <= 0:
             return False
-        with self._lock:
+        # Zámek se bere BEZ ČEKÁNÍ. Tentýž zámek drží `preload()` po celou dobu
+        # načítání modelu, a to je synchronní čekání na GPU vlákno — změřeno
+        # 1,45 s. Když se tik časovače (á 5 s) trefí do načítání po stisku
+        # klávesy, zamrzne na tu dobu celé UI: ikona přestane animovat, okénko
+        # se nepřekreslí. A není proč čekat: model se zrovna načítá, takže se
+        # stejně nemá co uvolňovat — příští tik to zkusí znovu.
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
             if self._model is None:
                 return False
             if time.monotonic() - self._last_used < idle_seconds:
                 return False
             self._model = None
+        finally:
+            self._lock.release()
         # Uvolnění GPU paměti taky na mlx vlákně (tam, kde byl model načten), ale
         # BEZ ČEKÁNÍ: tohle volá UI timer na hlavním vlákně a čekání na vytížené
         # GPU vlákno by zmrazilo celou appku (bug „appka se sekne, nutno vypnout").

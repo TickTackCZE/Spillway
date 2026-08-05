@@ -39,15 +39,29 @@ _ENV = "SPILLWAY_DIAG"
 _ALL = "all"
 
 
+_parsed: dict[str, frozenset[str]] = {}
+
+
 def _parse(raw: str | None) -> frozenset[str]:
-    """„all" / „focus,hud" / „" → množina zapnutých oblastí."""
+    """„all" / „focus,hud" / „" → množina zapnutých oblastí.
+
+    Výsledek se pamatuje podle vstupního řetězce: `log()` se volá několikrát na
+    každý tik časovače lišty a rozebírat pokaždé znovu tentýž text nemá smysl.
+    Klíčů může být jen tolik, kolik různých hodnot uživatel zadá.
+    """
     if not raw:
         return frozenset()
+    cached = _parsed.get(raw)
+    if cached is not None:
+        return cached
     parts = {p.strip().lower() for p in str(raw).replace(";", ",").split(",")}
     parts.discard("")
     if _ALL in parts or "1" in parts or "true" in parts:
-        return frozenset(AREAS)
-    return frozenset(p for p in parts if p in AREAS)
+        out = frozenset(AREAS)
+    else:
+        out = frozenset(p for p in parts if p in AREAS)
+    _parsed[raw] = out
+    return out
 
 
 def active() -> frozenset[str]:

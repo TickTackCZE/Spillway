@@ -34,6 +34,32 @@ CANCEL_MIN_VISIBLE_S = 0.6
 
 _CANCELLED = object()  # sentinel: běh přerušen Escapem uprostřed
 
+
+class _Abort(Exception):
+    """Řízené ukončení pipeline se známým výsledkem — ne chyba.
+
+    Kroky pipeline jsou samostatné metody, takže „tady skonči a zapiš tenhle
+    `outcome`" už nejde udělat prostým `return`. Výjimka to nese až do jediného
+    `try/except/finally` v `_process`, kde se zapisuje statistika. Odlišení od
+    `Exception` je podstatné: zrušený ani prázdný diktát nesmí uživateli
+    vyhodit notifikaci „Chyba při vkládání".
+    """
+
+    def __init__(self, outcome: str) -> None:
+        super().__init__(outcome)
+        self.outcome = outcome
+
+
+def _call_safely(fn) -> None:
+    """Zavolá `fn` (když není None) a nenechá jeho chybu uniknout do pipeline."""
+    if fn is None:
+        return
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001 — vedlejší úklid nesmí nic shodit
+        print(f"⚠️  vedlejší volání selhalo: {exc}")
+
+
 def _preview(text: str) -> str:
     """Bezpečný náhled pro log: buď délka (default), nebo plný text při ladění.
 
@@ -150,12 +176,43 @@ class Controller:
 
         # [F2/F3] AI úprava přes Claude — konfigurovatelná za běhu z menu.
         self.raw_mode = raw_mode
-        self.api_key = None if raw_mode else config.get_api_key()
+        self.api_key = None
         self.model = config.get_model()
         self.glossary = config.glossary()
         self.language = config.get_language()
         self.cleaner: Cleaner | None = None
+        # Klíč z Klíčenky se NEČTE na hlavním vlákně. `SecItemCopyMatching` umí
+        # čekat libovolně dlouho — typicky když macOS po přeinstalování .app
+        # ukáže dialog „Spillway chce použít Klíčenku". Tohle běží dřív, než
+        # vznikne ikona v liště, takže dokud uživatel dialog neodklepne, nemá
+        # aplikace ŽÁDNÉ UI: vypadá to, že se vůbec nespustila. (Změřeno na
+        # zaseknutém startu: hlavní vlákno stálo v `SecItemCopyMatching`.)
+        self._key_thread: threading.Thread | None = None
+        if raw_mode:
+            self._build_cleaner()
+        else:
+            self._key_thread = threading.Thread(target=self._load_api_key, daemon=True)
+            self._key_thread.start()
+
+    def _load_api_key(self) -> None:
+        """Přečte klíč z Klíčenky a postaví cleaner. Běží na vlákně od startu."""
+        try:
+            self.api_key = config.get_api_key()
+        except Exception as exc:  # noqa: BLE001 — bez klíče se dá diktovat dál
+            print(f"⚠️  klíč z Klíčenky se nepodařilo přečíst: {exc}")
+            self.api_key = None
         self._build_cleaner()
+
+    def _await_api_key(self, timeout: float = 5.0) -> None:
+        """Počká, až doběhne čtení klíče (jen na worker vlákně, ne z UI!).
+
+        Za normálních okolností je hotové dávno před prvním diktátem — čeká se
+        jen v tom nepravděpodobném případě, kdy uživatel stihne diktovat dřív,
+        než odklikne dialog Klíčenky.
+        """
+        th = self._key_thread
+        if th is not None and th.is_alive():
+            th.join(timeout)
 
     def _build_cleaner(self) -> None:
         if self.api_key:
@@ -261,6 +318,21 @@ class Controller:
         self._cancel.clear()  # nový diktát → zahodit staré zrušení
         self._cancel_min_until = 0.0  # ať „Ruším" nepřebíjí nové „Nahrávám"
         self.awaiting_paste = False   # starý lístek pryč, jede nový diktát
+        # Popisy cíle z MINULÉHO diktátu musí zmizet hned, ne až je přepíše
+        # `_start_recording` na svém vlákně: lišta je čte každý tik (6,7×/s) a
+        # do té doby by okénko kotvila podle starého pole a mohla bliknout
+        # „Chybí model", i když ho uživatel mezitím stáhl.
+        self.target_bundle = None
+        self.no_field = False
+        self._focus_field = "?"
+        # `is_ready()` je jen `os.path.exists` — levné i tady, a díky tomu je
+        # příznak platný od první chvíle nahrávání (viz `_process`).
+        try:
+            self.model_missing = not models.is_ready()
+        except Exception:  # noqa: BLE001
+            self.model_missing = False
+        if self.model_missing:
+            print("⚠️  model pro přepis chybí — okénko nabídne stažení")
         print("🔴 nahrávám… (drž F5)")
         # [F2] `recorder.start()` otevírá vstupní zařízení — u Bluetooth mikrofonu
         # (přepnutí do HFP) i stovky ms až sekundu. Na vlákně tapu by to hrozilo
@@ -291,9 +363,15 @@ class Controller:
         self._arm_watchdog()
 
     def _start_recording(self) -> None:
-        """[F2] Otevření mikrofonu na worker vlákně (ne na tapu). Když uživatel
-        stihne pustit klávesu dřív, než se stream otevře, `stop()` v `_process`
-        stejně proběhne až po nás — pořadí drží zámek uvnitř Recorderu."""
+        """[F2] Otevření mikrofonu na worker vlákně (ne na tapu).
+
+        Když uživatel stihne pustit klávesu dřív, než se stream otevře, drží
+        pořadí DVĚ nezávislé věci: `Recorder._open_lock` zaručí, že `stop()`
+        nesáhne na rozdělaný `start()`, a `_await_recorder_start()` v pipeline
+        počká, ať se vůbec stihne něco nahrát. Ani jedno samo nestačí — bez
+        zámku by `stop()` po vypršení pětisekundového čekání zavřel „nic" a
+        mikrofon by zůstal otevřený do restartu (B2).
+        """
         try:
             # Zapamatovat cílovou aplikaci — HUD podle ní pozná odchod jinam.
             # (Tady, ne v `on_press`: to běží na vlákně tapu a musí být triviální.)
@@ -312,14 +390,6 @@ class Controller:
                 self._focus_field = "?"
                 why = "chyba zjišťování fokusu"
             diag.log("focus", f"{why} → okénko {'u ikony' if self.no_field else 'u pole'}")
-            # Bez modelu nemá smysl mlčky nahrávat — přepis by spustil tiché
-            # stahování 1,5 GB a vypadalo by to jako zamrznutí.
-            try:
-                self.model_missing = not models.is_ready()
-            except Exception:  # noqa: BLE001
-                self.model_missing = False
-            if self.model_missing:
-                print("⚠️  model pro přepis chybí — okénko nabídne stažení")
             self.recorder.start()
         except Exception as exc:  # noqa: BLE001 — [O6] viditelná chyba, ne tichý pád
             print(f"❌ mikrofon se nepodařilo spustit: {exc}")
@@ -414,284 +484,408 @@ class Controller:
         # ho celý na worker vlákno; on_release tak zůstane triviální.
         threading.Thread(target=self._process, daemon=True).start()
 
-    def _run_cancellable(self, fn):
+    def _run_cancellable(self, fn, on_late=None):
         """Spustí `fn` na vlákně a čeká — ale když během běhu přijde Escape,
         přestane čekat a vrátí `_CANCELLED` (vlákno dobíhá na pozadí, výsledek
         se zahodí). Díky tomu je zrušení okamžité i uprostřed přepisu / volání
-        Clauda, místo aby se čekalo, až blokující volání doběhne."""
+        Clauda, místo aby se čekalo, až blokující volání doběhne.
+
+        `on_late` se zavolá právě jednou, a JEN když se výsledek zahodil kvůli
+        zrušení. U volání, které něco stálo (provolané tokeny u Clauda), je to
+        jediná příležitost náklad zaúčtovat — v hlavním toku už je řádek diktátu
+        dávno zapsaný. Zámek `guard` řeší souběh, kdy `fn` doběhne přesně ve
+        chvíli zrušení: bez něj by se `on_late` podle toho, kdo byl rychlejší,
+        buď nezavolalo vůbec, nebo dvakrát.
+        """
         box: dict = {}
+        guard = threading.Lock()
+        gave_up = [False]
+        finished = [False]
 
         def _run() -> None:
             try:
                 box["r"] = fn()
             except BaseException as exc:  # noqa: BLE001 — přenést na hlavní tok
                 box["e"] = exc
+            with guard:
+                finished[0] = True
+                orphaned = gave_up[0]
+            if orphaned:
+                _call_safely(on_late)
 
         th = threading.Thread(target=_run, daemon=True)
         th.start()
         while th.is_alive():
             if self._cancel.is_set():
+                with guard:
+                    gave_up[0] = True
+                    already_done = finished[0]
+                if already_done:
+                    # Doběhlo přesně teď — vlákno kolem `on_late` prošlo dřív,
+                    # než jsme stihli nastavit příznak. Zaúčtuj to tady.
+                    _call_safely(on_late)
                 return _CANCELLED
             th.join(0.03)
         if "e" in box:
             raise box["e"]
         return box.get("r")
 
-    def _process(self) -> None:
-        # Bez modelu nemá smysl pouštět pipeline: mlx by si ho začal TIŠE
-        # stahovat (1,6 GB na GPU vlákně) a aplikace by na minutu zamrzla.
-        # Nahrávku zahodíme a necháme svítit výzvu ke stažení.
-        if getattr(self, "model_missing", False):
-            print("⛔ diktát zahozen — chybí model pro přepis")
+    # ---- pipeline po puštění klávesy ------------------------------------
+    # `_process` drží jen orchestraci; každý krok má vlastní metodu. Kroky na
+    # sobě závisí POŘADÍM (audio → kontext → přepis → AI → oddělovač → vložení)
+    # a nejde je přeskládat — proč, je vždy u té které metody.
+
+    def _abort_without_model(self) -> None:
+        """Zahodí nahrávku, když chybí model. Bez toho by si ho mlx začal TIŠE
+        stahovat (1,6 GB na GPU vlákně) a aplikace by na minutu zamrzla."""
+        print("⛔ diktát zahozen — chybí model pro přepis")
+        self.model_missing = True  # ať okénko i lišta ukazují totéž
+        try:
+            # [F2] I tady se musí počkat na otevírání mikrofonu — `stop()` před
+            # dokončeným `start()` by nechal stream viset otevřený.
+            self._await_recorder_start()
+            self.recorder.stop()
+        except Exception as exc:  # noqa: BLE001
+            print(f"⚠️  mikrofon se nepodařilo zavřít: {exc}")
+        with self._lock:
+            self.state = IDLE
+            self._processing_since = 0.0
+        self._cancel_watchdog()
+
+    def _await_recorder_start(self) -> None:
+        """[F2] Počká, až doběhne otevírání mikrofonu na worker vlákně.
+
+        Musí předcházet KAŽDÉMU `recorder.stop()` v pipeline. Pořadí start/stop
+        sice od opravy B2 hlídá `Recorder` sám (`_open_lock`), ale bez čekání by
+        se u pomalého Bluetooth mikrofonu zavřel stream hned po otevření a
+        diktát by vyšel prázdný.
+        """
+        starter = getattr(self, "_start_thread", None)
+        if starter is not None:
+            starter.join(timeout=5.0)
+
+    def _collect_audio(self) -> tuple:
+        """Ukončí nahrávání → (audio, běžel streamovací přepis?).
+
+        Pořadí uvnitř je závazné a nesmí se rozpadnout mezi volajícího a tuhle
+        metodu: počkat na `start()` → `stop()` → počkat na streamovací vlákno.
+        Kdyby `stop()` přišel dřív než dokončený `start()`, zůstane mikrofon
+        otevřený napořád (B2); kdyby se nepočkalo na streamovací vlákno, zapíše
+        poslední segment až do seznamu DALŠÍHO diktátu.
+        """
+        self._await_recorder_start()
+        audio = self.recorder.stop()  # [B9] těžké volání až tady, na workeru
+        stream_th = getattr(self, "_stream_thread", None)
+        if stream_th is not None:
+            stream_th.join(timeout=3.0)
+        return audio, stream_th is not None
+
+    def _start_context_gather(self) -> tuple:
+        """Spustí sběr kontextu na vlákně → (vlákno, slovník s výsledkem).
+
+        [F2/F3] Běží PARALELNĚ s přepisem: kontext nepotřebuje audio a
+        `browser_context` čeká na `osascript` (až 2 s). Dřív to běželo před
+        přepisem a ta doba se čistě přičítala; teď se schová za Whisper.
+
+        Má vedlejší efekt `self.target_bundle` a je to ZÁMĚR, ne nedopatření:
+        HUD se řídí `target_bundle` a vkládání `ctx["bundle"]`. Kdyby se z téhle
+        metody udělala čistá funkce bez zápisu do stavu, okénko by po přepnutí
+        aplikace během držení klávesy hlásilo jiný cíl, než kam text opravdu jde.
+        """
+        ctx: dict = {}
+
+        def _gather() -> None:
             try:
-                self.recorder.stop()
-            except Exception:  # noqa: BLE001
-                pass
+                a_name, a_bundle = context.frontmost_app()
+                ctx["app_name"], ctx["bundle"] = a_name, a_bundle
+                self.target_bundle = a_bundle
+                ctx["profile"] = context.app_profile(a_bundle, a_name)
+                ctx["win_target"] = context.is_windows_target(a_bundle, a_name)
+                # JEDEN snímek fokusu pro všechno — obsah pole, kurzor i otisk
+                # pole musí pocházet ze stejného okamžiku. Dřív to byly tři
+                # nezávislé dotazy a mezi nimi se fokus mohl změnit. Otisk pole
+                # slouží k ověření před vložením, že jsme pořád ve stejném poli.
+                snap = context.focus_snapshot(want_text=True, want_sig=True)
+                ctx["field_text"], ctx["caret"] = snap.text, snap.caret
+                ctx["field_sig"] = snap.sig
+                if config.field_context():
+                    b_profile, b_domain = context.browser_context(a_bundle)
+                    ctx["domain"] = b_domain
+                    if b_profile:
+                        ctx["profile"] = b_profile
+            except Exception as exc:  # noqa: BLE001 — bez kontextu jedeme dál
+                ctx["error"] = exc
+
+        th = threading.Thread(target=_gather, daemon=True)
+        th.start()
+        return th, ctx
+
+    def _transcribe_audio(self, audio, streaming: bool) -> str:
+        """Audio → text. Zruší-li uživatel, vyhodí `_Abort`.
+
+        Streaming: segmenty (řez v tichu) se přepsaly už během mluvení, takže se
+        dopřepíše jen poslední úsek a zřetězí. Když streaming nic
+        nesegmentoval (krátký diktát bez pauz) → committed=0 → přepíše se celé
+        audio dávkou. Slovník (hotwords) jde jen do dávky.
+        """
+        if not self.transcriber.is_loaded:
+            print("💤→🔄 model byl uvolněný z paměti, znovu se načítá…")
+        t0 = time.perf_counter()
+        if streaming:
+            # Text a pozici čte JEDEN zámek: smyčka je zapisuje atomicky, takže
+            # jen tak dostaneme dvojici, která k sobě patří. Rozdělit ta dvě
+            # čtení = zdvojený nebo ztracený kus textu.
             with self._lock:
-                self.state = IDLE
-                self._processing_since = 0.0
-            self._cancel_watchdog()
+                committed = int(self._stream_committed)
+                segments = list(self._stream_segments)
+            tail = audio[committed:] if 0 <= committed < audio.size else audio[:0]
+            print(f"⏳ přepisuji zbytek {tail.size / 16000.0:.1f} s "
+                  f"(streaming: {len(segments)} segm. za mluvení)…")
+            tail_text = self._run_cancellable(
+                lambda: self.transcriber.transcribe(tail, language=self.language)
+            )
+            if tail_text is _CANCELLED:
+                raise _Abort("cancelled")
+            parts = segments + ([tail_text] if tail_text else [])
+            raw = " ".join(p for p in parts if p).strip()
+        else:
+            print(f"⏳ přepisuji {len(audio) / 16000.0:.1f} s audia…")
+            # Cancellable: Escape během přepisu ho okamžitě opustí.
+            raw = self._run_cancellable(lambda: self.transcriber.transcribe(
+                audio,
+                language=self.language,
+                hotwords=self.glossary if config.whisper_hotwords() else None,
+            ))
+            if raw is _CANCELLED:
+                raise _Abort("cancelled")
+        dt = time.perf_counter() - t0
+        if not raw:
+            print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")
+            raise _Abort("empty")
+        print(f"📝 přepis ({dt:.1f} s): {_preview(raw)}")
+        return raw
+
+    def _read_context(self, ctx_thread, ctx: dict) -> dict:
+        """Převezme kontext posbíraný souběžně s přepisem a dopočítá popisky."""
+        ctx_thread.join(timeout=3.0)
+        app_name = ctx.get("app_name")
+        domain = ctx.get("domain")
+        profile = ctx.setdefault("profile", "generic")
+        ctx["app_ctx"] = f"{app_name} ({domain})" if domain else app_name
+        win_note = " · Windows (Ctrl+V)" if ctx.get("win_target") else ""
+        print(f"   ({ctx['app_ctx']} · profil: {profile}{win_note})")
+        return ctx
+
+    def _apply_ai(self, raw: str, ctx: dict, audio_secs: float) -> tuple:
+        """Přepis → hotový text přes Clauda → (text, cena v USD).
+
+        Cena se vrací spolu s textem schválně: `last_cost_usd` je stav sdílený
+        mezi diktáty a další diktát ho přepíše. Musí se přečíst na stejném
+        volání jako request — a to i po chybě, protože volání, které spadlo až
+        na uříznuté odpovědi, tokeny reálně provolalo.
+        """
+        profile = ctx.get("profile", "generic")
+        # Krátký diktát („ok", „díky", „zítra v pět") do Clauda neposíláme —
+        # ušetří tokeny i ~1 s čekání. E-mail je výjimka: tam je i u krátké
+        # zprávy smyslem doplnit strukturu (oslovení/pozdrav).
+        min_s = config.llm_min_seconds()
+        skip_llm = min_s > 0 and audio_secs < min_s and profile != "email"
+        # Uživatel může AI úpravu úplně vypnout (přepínač „Odesílání do AI
+        # modelu") — pak nic neodchází k Anthropic, vloží se jen lokální úprava.
+        if not config.ai_edit():
+            text = basic_cleanup(raw)
+            print(f"🔒 AI úprava vypnutá → bez AI: {_preview(text)}")
+            return text, 0.0
+        if skip_llm:
+            text = basic_cleanup(raw)
+            print(f"⚡ krátký diktát ({audio_secs:.1f} s < {min_s:g} s) → bez AI: {_preview(text)}")
+            return text, 0.0
+        # Čtení klíče běží od startu na vlákně — tady, na workeru, se na něj
+        # smí počkat (v UI nikdy: viz `_await_api_key`).
+        self._await_api_key()
+        if self.cleaner is None:
+            return raw, 0.0
+
+        before = self._field_context_for(ctx, profile)
+        if before:
+            print(f"   ↳ kontext pole: {len(before)} zn.")
+        try:
+            # Cancellable: Escape během volání Clauda ho okamžitě opustí
+            # (odpověď dobíhá na pozadí a zahodí se). Nejdelší krok pipeline.
+            # `on_late` zaúčtuje tokeny, které stihlo provolat — cena dorazí až
+            # po zrušení, kdy je řádek diktátu dávno zapsaný.
+            result = self._run_cancellable(
+                lambda: self.cleaner.clean(
+                    raw,
+                    app_name=ctx.get("app_ctx"),
+                    profile=profile,
+                    before_text=before,
+                    glossary=self.glossary,
+                ),
+                on_late=self._bill_orphaned_llm_call,
+            )
+        except Exception as exc:  # noqa: BLE001 — [O6] chyba, ale text neztratit
+            print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
+            notify("AI úprava selhala", "Vložen syrový přepis. Zkontroluj API klíč / kredit.")
+            return raw, self._llm_cost()
+        if result is _CANCELLED:
+            raise _Abort("cancelled")  # cenu doúčtuje `on_late`
+        text = result or raw
+        print(f"✨ upraveno: {_preview(text)}")
+        return text, self._llm_cost()
+
+    def _llm_cost(self) -> float:
+        return getattr(self.cleaner, "last_cost_usd", 0.0) or 0.0
+
+    def _bill_orphaned_llm_call(self) -> None:
+        """Zaúčtuje volání Clauda, jehož odpověď dorazila až po zrušení."""
+        cost = self._llm_cost()
+        if cost > 0:
+            print(f"💸 zrušené volání přesto stálo ${cost:.4f} — účtuji zvlášť")
+            stats.record_extra_cost(cost, note="cancelled")
+
+    @staticmethod
+    def _field_context_for(ctx: dict, profile: str) -> str | None:
+        """Existující obsah pole jako kontext pro Clauda (jen když povoleno).
+
+        E-mail → celé pole (cap 3000); jinak okno před kurzorem. Kontext se
+        posílá vždy (pomáhá navázat tón / nezopakovat pozdrav); aby se NEDOSTAL
+        do výstupu (bug „vkládá se text z minula"), hlídá to přísně systémový
+        prompt v llm.py (text z <pole> nikdy neopakovat).
+        """
+        field_text = ctx.get("field_text")
+        if not (config.field_context() and field_text):
+            return None
+        if profile == "email":
+            return field_text[:3000]
+        caret = ctx.get("caret")
+        if caret and caret > 0:
+            return field_text[:caret][-800:]
+        return None
+
+    def _apply_separator(self, text: str, ctx: dict) -> str:
+        """Předřadí textu oddělovač: nic / mezera / nový řádek.
+
+        Nový řádek jen když navazuji za dokončenou větou ve víceřádkovém poli —
+        tam jde o další záznam pod sebe, ne o pokračování věty.
+
+        POZOR na signaturu: pole se čte ZNOVU, ne z `ctx`. Mezi sběrem kontextu
+        a tímhle bodem uběhl přepis i volání Clauda (klidně sekundy) a uživatel
+        mohl mezitím v poli sám psát. `ctx` slouží jen jako záloha, když čerstvý
+        snímek nic nevrátí — kdyby se rozhodovalo podle něj, vrátí se bug
+        „mezera nebo řádek navíc".
+        """
+        if not (config.auto_space() and not text[:1].isspace()):
+            return text
+        # `at_line_start` má přednost — rich-text pole (Mail) nevrací koncový
+        # konec řádku, takže z textu by to po Enteru vypadalo jako konec slova
+        # a vloudil by se oddělovač navíc na začátek nového řádku.
+        now = context.focus_snapshot(want_text=True, want_line=True, want_sig=True)
+        if now.at_line_start is True:
+            return text
+        sig = now.sig or ctx.get("field_sig")
+        role = sig[0] if sig else None
+        fresh = now.text is not None
+        sep = context.leading_separator(
+            now.text if fresh else ctx.get("field_text"),
+            now.caret if fresh else ctx.get("caret"),
+            role=role,
+            # RDP/AVD se ťuká znak po znaku → „\n" by byl Enter (odeslání).
+            allow_newline=not ctx.get("win_target"),
+        )
+        if sep == "\n":
+            print(f"   ↳ nový řádek (pole: {role or 'role neznámá'})")
+        return sep + text if sep else text
+
+    def _deliver(self, text: str, ctx: dict) -> str:
+        """Vloží text, nebo ho nechá ve schránce → `outcome`.
+
+        Nastavení `_pasting` musí zůstat pod stejným zámkem jako poslední
+        kontrola zrušení: mezi nimi je [F5] poslední šance na Escape a jakákoli
+        škvíra tam znamená, že Escape spolkne klávesu už rozjetému vkládání.
+        """
+        with self._lock:
+            if self._cancel.is_set():
+                raise _Abort("cancelled")
+            self._pasting = True
+
+        win_target = bool(ctx.get("win_target"))
+        # Vložit, nebo nechat ve schránce? Všechny tři důvody, proč nevkládat,
+        # drží pohromadě `context.decide_delivery`.
+        deliver, why = context.decide_delivery(
+            target_bundle=ctx.get("bundle"),
+            field_sig=ctx.get("field_sig"),
+            win_target=win_target,
+        )
+        if not deliver:
+            copy_to_clipboard(text)
+            print(f"📋 {why} → text ve schránce, nevkládám.")
+            # Lístek u ikony („Připraveno k vložení") to řekne líp než
+            # systémová notifikace — visí, dokud text nevložíš nebo neklikneš.
+            self.awaiting_paste = True
+            return "clipboard"
+
+        paste_text(text, windows_target=win_target)
+        return "pasted"
+
+    def _process(self) -> None:
+        """Pipeline po puštění klávesy: audio → přepis → AI → vložení.
+
+        Zůstává tu jen orchestrace a JEDINÝ `try/except/finally`. Ten se nesmí
+        rozdrobit do podmetod: `finally` je jediné místo, kde se zapisuje
+        statistika, a jen díky tomu platí, že každý běh zapíše právě jeden
+        řádek historie — ať skončí jakkoli.
+        """
+        # Ptáme se `models.is_ready()` (jen `os.path.exists`), NE příznaku
+        # `self.model_missing`: ten se plní jinde a při krátkém ťuknutí do
+        # klávesy by se tu četla hodnota z předchozího diktátu.
+        if not models.is_ready():
+            self._abort_without_model()
             return
 
         t_start = time.perf_counter()
         audio_secs = 0.0
-        speech_secs = 0.0  # skutečná řeč bez ticha — pro „tempo řeči"
+        speech_secs = 0.0
         raw = ""
         text = ""
-        app_name = None
-        domain = None
-        profile = "generic"
+        ctx: dict = {}
         outcome = "error"  # přepíše se, jakmile víme, jak to dopadlo
         llm_cost = 0.0  # cena AI úpravy tohoto diktátu (0, když se Claude nevolal)
         try:
-            # [F2] Počkat, až doběhne otevírání mikrofonu — jinak by `stop()`
-            # mohl proběhnout dřív než `start()` a stream by zůstal viset otevřený.
-            starter = getattr(self, "_start_thread", None)
-            if starter is not None:
-                starter.join(timeout=5.0)
-            audio = self.recorder.stop()  # [B9] těžké volání až tady, na workeru
-            # Počkat, až streamovací vlákno dokončí poslední segment — tím doběhne
-            # ještě před dalším diktátem a nezapíše do jeho (resetnutého) seznamu.
-            stream_th = getattr(self, "_stream_thread", None)
-            if stream_th is not None:
-                stream_th.join(timeout=3.0)
+            audio, streaming = self._collect_audio()
             audio_secs = len(audio) / 16000.0
             speech_secs = voiced_seconds(audio)  # bez ticha/pauz → tempo řeči
             print(f"🎙️ audio {audio_secs:.1f} s ({len(audio)} vz.) · řeč {speech_secs:.1f} s")
             if audio.size == 0:
-                # Prázdné audio = nic se nenahrálo (stream se neotevřel včas / moc
-                # krátký stisk). Diagnostika bugu „diktát se ztratil".
+                # Prázdné audio = nic se nenahrálo (stream se neotevřel včas /
+                # moc krátký stisk). Diagnostika bugu „diktát se ztratil".
                 print("⚠️  prázdné audio — nic se nenahrálo (nic k přepisu).")
             if self._cancel.is_set():
-                outcome = "cancelled"
-                return  # zrušeno ještě před přepisem → nula tokenů, nula práce
-            # [F2/F3] kontext: aktivní aplikace, profil formátování, obsah pole.
-            # Sbírá se PARALELNĚ s přepisem — nepotřebuje audio a `browser_context`
-            # čeká na `osascript` (až 2 s). Dřív to běželo před přepisem, takže se
-            # ta doba čistě přičítala; teď se schová za Whisper.
-            ctx: dict = {}
+                raise _Abort("cancelled")  # zrušeno před přepisem → nula tokenů
 
-            def _gather_context() -> None:
-                try:
-                    a_name, a_bundle = context.frontmost_app()
-                    ctx["app_name"], ctx["bundle"] = a_name, a_bundle
-                    # HUD se řídí `target_bundle`, vkládání `ctx["bundle"]` —
-                    # sjednotit, jinak okénko hlásí jiný cíl, než kam text půjde.
-                    # Rozejdou se, když uživatel přepne appku, zatímco drží klávesu.
-                    self.target_bundle = a_bundle
-                    ctx["profile"] = context.app_profile(a_bundle, a_name)
-                    ctx["win_target"] = context.is_windows_target(a_bundle, a_name)
-                    # JEDEN snímek fokusu pro všechno — obsah pole, kurzor i otisk
-                    # pole musí pocházet ze stejného okamžiku. Dřív to byly tři
-                    # nezávislé dotazy a mezi nimi se fokus mohl změnit.
-                    # Otisk pole slouží k ověření před vložením, že jsme pořád
-                    # ve stejném poli (jinak text jen do schránky, viz níž).
-                    snap = context.focus_snapshot(want_text=True, want_sig=True)
-                    ctx["field_text"], ctx["caret"] = snap.text, snap.caret
-                    ctx["field_sig"] = snap.sig
-                    if config.field_context():
-                        b_profile, b_domain = context.browser_context(a_bundle)
-                        ctx["domain"] = b_domain
-                        if b_profile:
-                            ctx["profile"] = b_profile
-                except Exception as exc:  # noqa: BLE001 — bez kontextu jedeme dál
-                    ctx["error"] = exc
+            ctx_thread, ctx = self._start_context_gather()
+            raw = self._transcribe_audio(audio, streaming)
+            text = raw  # od téhle chvíle má i zrušený běh co zapsat do historie
+            ctx = self._read_context(ctx_thread, ctx)
 
-            ctx_thread = threading.Thread(target=_gather_context, daemon=True)
-            ctx_thread.start()
-
-            secs = len(audio) / 16000.0
-            if not self.transcriber.is_loaded:
-                print("💤→🔄 model byl uvolněný z paměti, znovu se načítá…")
-            t0 = time.perf_counter()
-            # Streaming: segmenty (řez v tichu) se přepsaly už během mluvení —
-            # po puštění dopřepíšeme jen poslední úsek a zřetězíme. Když streaming
-            # nic nesegmentoval (krátký diktát bez pauz) → committed=0 → přepíše se
-            # celé audio (dávka, jako dřív). Slovník (hotwords) jde jen do dávky.
-            if stream_th is not None:  # streaming byl aktivní (joinuto po stop())
-                # Číst pod zámkem — smyčka zapisuje text a pozici atomicky, takže
-                # jen tak dostaneme dvojici, která k sobě patří.
-                with self._lock:
-                    committed = int(self._stream_committed)
-                    segments = list(self._stream_segments)
-                tail = audio[committed:] if 0 <= committed < audio.size else audio[:0]
-                print(f"⏳ přepisuji zbytek {tail.size / 16000.0:.1f} s "
-                      f"(streaming: {len(segments)} segm. za mluvení)…")
-                tail_text = self._run_cancellable(
-                    lambda: self.transcriber.transcribe(tail, language=self.language)
-                )
-                if tail_text is _CANCELLED:
-                    raw = ""
-                    outcome = "cancelled"
-                    return
-                parts = segments + ([tail_text] if tail_text else [])
-                raw = " ".join(p for p in parts if p).strip()
-            else:
-                print(f"⏳ přepisuji {secs:.1f} s audia…")
-                # Cancellable: Escape během přepisu ho okamžitě opustí.
-                raw = self._run_cancellable(lambda: self.transcriber.transcribe(
-                    audio,
-                    language=self.language,
-                    hotwords=self.glossary if config.whisper_hotwords() else None,
-                ))
-                if raw is _CANCELLED:
-                    raw = ""  # ať se sentinel nedostane do stats.record (TypeError)
-                    outcome = "cancelled"
-                    return
-            dt = time.perf_counter() - t0
-            if not raw:
-                print(f"… prázdný přepis ({dt:.1f} s) — nic nevkládám.")
-                outcome = "empty"
-                return
-            print(f"📝 přepis ({dt:.1f} s): {_preview(raw)}")
-
-            # Kontext už se mezitím posbíral souběžně s přepisem.
-            ctx_thread.join(timeout=3.0)
-            app_name = ctx.get("app_name")
-            bundle = ctx.get("bundle")
-            profile = ctx.get("profile", "generic")
-            win_target = bool(ctx.get("win_target"))
-            field_text, caret = ctx.get("field_text"), ctx.get("caret")
-            domain = ctx.get("domain")
-            app_ctx = f"{app_name} ({domain})" if domain else app_name
-            win_note = " · Windows (Ctrl+V)" if win_target else ""
-            print(f"   ({app_ctx} · profil: {profile}{win_note})")
-
-            text = raw
-            # Krátký diktát („ok", „díky", „zítra v pět") do Clauda neposíláme —
-            # ušetří tokeny i ~1 s čekání. E-mail je výjimka: tam je i u krátké
-            # zprávy smyslem doplnit strukturu (oslovení/pozdrav).
-            min_s = config.llm_min_seconds()
-            skip_llm = min_s > 0 and audio_secs < min_s and profile != "email"
-            # Uživatel může AI úpravu úplně vypnout (přepínač „Odesílání do AI
-            # modelu") — pak nic neodchází k Anthropic, vloží se jen lokální úprava.
-            if not config.ai_edit():
-                text = basic_cleanup(raw)
-                print(f"🔒 AI úprava vypnutá → bez AI: {_preview(text)}")
-            elif skip_llm:
-                text = basic_cleanup(raw)
-                print(f"⚡ krátký diktát ({audio_secs:.1f} s < {min_s:g} s) → bez AI: {_preview(text)}")
-            elif self.cleaner is not None:
-                # Existující obsah pole jako kontext (jen když povoleno).
-                # E-mail → celé pole (cap 3000); jinak okno před kurzorem.
-                # Kontext se posílá vždy (pomáhá navázat tón/nezopakovat pozdrav);
-                # aby se NEDOSTAL do výstupu (bug „vkládá se text z minula"), hlídá
-                # to přísně systémový prompt v llm.py (text z <pole> nikdy neopakovat).
-                before = None
-                if config.field_context() and field_text:
-                    if profile == "email":
-                        before = field_text[:3000]
-                    elif caret and caret > 0:
-                        before = field_text[:caret][-800:]
-                if before:
-                    print(f"   ↳ kontext pole: {len(before)} zn.")
-                try:
-                    # Cancellable: Escape během volání Clauda ho okamžitě opustí
-                    # (odpověď dobíhá na pozadí a zahodí se). Nejdelší krok pipeline.
-                    result = self._run_cancellable(lambda: self.cleaner.clean(
-                        raw,
-                        app_name=app_ctx,
-                        profile=profile,
-                        before_text=before,
-                        glossary=self.glossary,
-                    ))
-                    if result is _CANCELLED:
-                        outcome = "cancelled"
-                        return
-                    text = result or raw
-                    print(f"✨ upraveno: {_preview(text)}")
-                except Exception as exc:  # noqa: BLE001 — [O6] chyba, ale text neztratit
-                    print(f"⚠️  AI úprava selhala ({exc}) → vkládám syrový přepis.")
-                    notify("AI úprava selhala", "Vložen syrový přepis. Zkontroluj API klíč / kredit.")
-                    text = raw
-                # Cenu čti hned po volání (na cleaneru se přepíše dalším diktátem) —
-                # i po chybě: když volání provolalo tokeny a spadlo až na uříznuté
-                # odpovědi (max_tokens), náklad reálně vznikl a musí se započítat.
-                llm_cost = getattr(self.cleaner, "last_cost_usd", 0.0) or 0.0
-
-            # Chytrý oddělovač: nic / mezera / nový řádek. Nový řádek jen když
-            # navazuji za dokončenou větou ve víceřádkovém poli — tam jde o další
-            # záznam pod sebe, ne o pokračování věty.
-            # `at_line_start` má přednost — rich-text pole (Mail) nevrací koncový
-            # konec řádku, takže z textu by to po Enteru vypadalo jako konec slova
-            # a vloudil by se oddělovač navíc na začátek nového řádku.
-            if config.auto_space() and not text[:1].isspace():
-                # ČERSTVÝ snímek, a to celý najednou. Mezi sběrem kontextu a tímhle
-                # bodem uběhl přepis i volání Clauda (klidně sekundy) a uživatel
-                # mohl v poli sám psát — oddělovač se proto musí rozhodovat podle
-                # toho, jak pole vypadá TEĎ. Dřív se míchal čerstvý `at_line_start`
-                # se starým obsahem pole, což dávalo špatnou mezeru nebo řádek.
-                now = context.focus_snapshot(want_text=True, want_line=True, want_sig=True)
-                if now.at_line_start is not True:
-                    sig = now.sig or ctx.get("field_sig")
-                    role = sig[0] if sig else None
-                    sep = context.leading_separator(
-                        now.text if now.text is not None else field_text,
-                        now.caret if now.text is not None else caret,
-                        role=role,
-                        # RDP/AVD se ťuká znak po znaku → „\n" by byl Enter (odeslání).
-                        allow_newline=not win_target,
-                    )
-                    if sep:
-                        text = sep + text
-                    if sep == "\n":
-                        print(f"   ↳ nový řádek (pole: {role or 'role neznámá'})")
-
-            # [F5] Poslední šance zrušit. Za tímhle bodem už se vkládá a rušit
-            # nejde — `_pasting` zajistí, že Escape projde normálně dál a diktát
-            # se nezapíše jako zrušený.
-            with self._lock:
-                if self._cancel.is_set():
-                    outcome = "cancelled"
-                    return
-                self._pasting = True
-
-            # Vložit, nebo nechat ve schránce? Všechny tři důvody, proč
-            # nevkládat, drží pohromadě `context.decide_delivery`.
-            deliver, why = context.decide_delivery(
-                target_bundle=bundle,
-                field_sig=ctx.get("field_sig"),
-                win_target=win_target,
-            )
-            if not deliver:
-                copy_to_clipboard(text)
-                print(f"📋 {why} → text ve schránce, nevkládám.")
-                # Lístek u ikony („Připraveno k vložení") to řekne líp než
-                # systémová notifikace — visí, dokud text nevložíš nebo neklikneš.
-                self.awaiting_paste = True
-                outcome = "clipboard"
-                return
-
-            paste_text(text, windows_target=win_target)
-            outcome = "pasted"
+            text, llm_cost = self._apply_ai(raw, ctx, audio_secs)
+            text = self._apply_separator(text, ctx)
+            outcome = self._deliver(text, ctx)
+        except _Abort as stop:
+            # Řízený konec se známým výsledkem (zrušeno / prázdný přepis) —
+            # není to chyba a nesmí spustit notifikaci o pádu.
+            outcome = stop.outcome
         except Exception as exc:  # noqa: BLE001
             print(f"❌ chyba v pipeline: {exc}")
             notify("Chyba při vkládání", "Diktát se nepodařilo zpracovat/vložit.")
             outcome = "error"
         finally:
-            # Statistiky („kolik jsem ušetřil") — best-effort, nikdy neshodí pipeline.
-            # [F6] `outcome` rozliší skutečný diktát od prázdného/zrušeného/pádu,
-            # ať se do statistik nepočítá, co nic nevložilo.
+            app_name = ctx.get("app_name")
+            domain = ctx.get("domain")
+            profile = ctx.get("profile", "generic")
+            # Statistiky („kolik jsem ušetřil") — best-effort, nikdy neshodí
+            # pipeline. [F6] `outcome` rozliší skutečný diktát od
+            # prázdného/zrušeného/spadlého, ať se nepočítá, co nic nevložilo.
             stats.record(
                 raw=raw,
                 final=text,
@@ -704,8 +898,9 @@ class Controller:
                 outcome=outcome,
                 cost_usd=llm_cost,
             )
-            # Jednořádkový souhrn diktátu do logu — kotva pro ladění intermitentních
-            # chyb (ztracený/zdvojený diktát, zamrznutí). Bez obsahu (jen délky).
+            # Jednořádkový souhrn diktátu do logu — kotva pro ladění
+            # intermitentních chyb (ztracený/zdvojený diktát, zamrznutí).
+            # Bez obsahu (jen délky).
             total = time.perf_counter() - t_start
             print(
                 f"🏁 diktát: outcome={outcome} audio={audio_secs:.1f}s řeč={speech_secs:.1f}s "
@@ -714,12 +909,13 @@ class Controller:
             )
             with self._lock:
                 self._pasting = False
-                # Reset stavu jen když pořád „patří" tomuhle běhu. Kdyby watchdog
-                # mezitím tvrdě resetoval a uživatel začal NOVÝ diktát (RECORDING),
-                # nesmíme mu stav přepsat na IDLE.
+                # Reset stavu jen když pořád „patří" tomuhle běhu. Kdyby
+                # watchdog mezitím tvrdě resetoval a uživatel začal NOVÝ diktát
+                # (RECORDING), nesmíme mu stav přepsat na IDLE.
                 if self.state == PROCESSING:
                     self.state = IDLE
                     self._processing_since = 0.0
+
 
     def watchdog_check(self) -> None:
         """Odseknutí zaseklého zpracování — volá se z main-thread časovače v trayi.

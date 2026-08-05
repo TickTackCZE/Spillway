@@ -38,6 +38,9 @@ _DEFAULTS: dict = {
     # nezapisuje se víc, než je potřeba. "all" nebo výčet: "focus,hud,audio,text".
     # Pozor: "text" zapisuje do logu PŘEPSANÝ TEXT, ne jen jeho délku.
     "diagnostics": "",
+    # Ukládat do historie i text diktátů? Vypnutím zůstanou jen čísla (počty,
+    # délky, tempo, náklady) — „Poslední diktáty" pak budou prázdné. Viz stats.py.
+    "keep_dictation_texts": True,
     # Uvítání po instalaci se ukáže jednou; pak se klíč přepne na True.
     "seen_setup": False,
     # Do kdy (unix čas) neotravovat s chybějícím API klíčem. Klíč je
@@ -62,12 +65,40 @@ def _migrate(raw: dict) -> dict:
     return raw
 
 
+# Poslední načtená podoba souboru + otisk, podle kterého se pozná změna.
+# Bez cache četl `get()` soubor při KAŽDÉM volání — a protože přes něj chodí
+# i `diag.log()`, znamenalo to ~13–27 otevření a parsování JSONu za sekundu po
+# celou dobu, co svítí okénko (časovač lišty tiká 6,7×/s a na každý tik připadá
+# několik diagnostických řádků). Otisk je `os.stat`, tedy zlomek ceny čtení, a
+# na rozdíl od časového vypršení nikdy nevrátí zastaralou hodnotu: okno
+# nastavení zapisuje a lišta hned čte, takže cache musí být přesná, ne „skoro".
+_cache: dict | None = None
+_cache_stamp: tuple | None = None
+
+
+def _stamp() -> tuple | None:
+    try:
+        st = os.stat(_PATH)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 def _load() -> dict:
+    global _cache, _cache_stamp
+    stamp = _stamp()
+    if _cache is not None and stamp == _cache_stamp:
+        return _cache
     try:
         with open(_PATH, encoding="utf-8") as f:
-            return {**_DEFAULTS, **_migrate(json.load(f))}
+            data = {**_DEFAULTS, **_migrate(json.load(f))}
     except Exception:  # noqa: BLE001
-        return dict(_DEFAULTS)
+        data = dict(_DEFAULTS)
+    # Otisk se bere až PO čtení: kdyby soubor mezitím někdo přepsal, uloží se
+    # otisk staršího obsahu a příští volání načte znovu. Opačné pořadí by
+    # naopak označilo nový otisk za platný pro starý obsah.
+    _cache, _cache_stamp = data, _stamp() if stamp is not None else None
+    return data
 
 
 def get(key: str, default=None):
@@ -87,3 +118,8 @@ def set(key: str, value) -> None:  # noqa: A003
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, _PATH)
+        # Zahodit cache výslovně, ne se spoléhat na změnu otisku: kdyby zápis
+        # trefil stejnou nanosekundu i velikost jako předchozí, zůstala by v
+        # paměti stará hodnota a nastavení by se navenek „neuložilo".
+        global _cache, _cache_stamp
+        _cache, _cache_stamp = None, None

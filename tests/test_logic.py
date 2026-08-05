@@ -1317,7 +1317,7 @@ def test_text_input_decided_by_editability_not_by_role_or_selection():
         assert is_text_input(False, role)
 
 
-def test_has_focused_text_field_returns_none_when_ax_unavailable(monkeypatch):
+def test_focus_is_inconclusive_when_ax_unavailable(monkeypatch):
     import builtins
 
     from spillway import context
@@ -1331,7 +1331,8 @@ def test_has_focused_text_field_returns_none_when_ax_unavailable(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", blocked)
     # Bez Accessibility se nesmí tvrdit „není pole" — to by zablokovalo vkládání.
-    assert context.has_focused_text_field() is None
+    # `ok=False` znamená „nevím", ne „není pole"; `decide_delivery` pak vkládá.
+    assert context.focus_snapshot().ok is False
 
 
 # --- Sjednocené zjišťování fokusu (code review) ------------------------------
@@ -1356,8 +1357,6 @@ def test_focus_snapshot_survives_without_accessibility(monkeypatch):
     assert snap.is_input is False
     assert (snap.text, snap.caret, snap.sig, snap.at_line_start) == (None, None, None, None)
     assert "neodpověděl" in snap.description
-    # Bez AX se nesmí tvrdit „není pole" — to by zablokovalo vkládání.
-    assert context.has_focused_text_field() is None
 
 
 def test_focus_snapshot_reads_only_what_caller_asked_for(monkeypatch):
@@ -1609,17 +1608,35 @@ def test_missing_model_raises_instead_of_triggering_hidden_download(monkeypatch,
     assert models.path_for_transcribe() == str(tmp_path)
 
 
-def test_pipeline_refuses_to_run_without_model():
-    import pathlib
+def test_pipeline_refuses_to_run_without_model(monkeypatch):
+    import threading
+
+    from spillway import app as app_mod
+    from spillway.app import IDLE, Controller
 
     # A druhá pojistka: i kdyby se cesta někde protlačila, pipeline se bez
-    # modelu vůbec nespustí a nahrávku zahodí.
-    src = pathlib.Path("src/spillway/app.py").read_text(encoding="utf-8")
-    body = src[src.index("def _process(self) -> None:"):]
-    body = body[:body.index("t_start = time.perf_counter()")]
-    assert 'model_missing' in body and "return" in body, (
-        "_process musí bez modelu skončit hned, ne pustit přepis"
-    )
+    # modelu vůbec nespustí a nahrávku zahodí. Testuje se CHOVÁNÍM — dřív tu
+    # byl grep na řetězec, který přežil i to, že se četl zastaralý příznak.
+    monkeypatch.setattr(app_mod.models, "is_ready", lambda: False)
+
+    c = Controller.__new__(Controller)
+    c._lock = threading.Lock()
+    c.state = "PROCESSING"
+    c._processing_since = 1.0
+    c._start_thread = None
+    c.model_missing = False
+    stopped = []
+    c.recorder = type("R", (), {"stop": lambda self: stopped.append(1)})()
+    c._cancel_watchdog = lambda: None
+    transcribed = []
+    c.transcriber = type("T", (), {
+        "transcribe": lambda self, *a, **k: transcribed.append(1),
+        "is_loaded": True})()
+
+    c._process()
+    assert not transcribed, "bez modelu se nesmí nic přepisovat"
+    assert stopped, "mikrofon se přesto musí zavřít"
+    assert c.state == IDLE and c.model_missing is True
 
 
 def test_model_size_and_removal(monkeypatch, tmp_path):
@@ -1795,7 +1812,37 @@ def test_cancel_actually_interrupts_the_transfer(monkeypatch, tmp_path):
     except models.Cancelled:
         pass
     assert len(written) < 1000, "přenos měl skončit dřív, ne doběhnout celý"
-    assert not (tmp_path / "m").exists(), "nedokončené stažení se má uklidit"
+
+
+def test_cancel_keeps_files_that_already_finished(monkeypatch, tmp_path):
+    import threading
+
+    from spillway import models
+
+    # Zrušení nesmí zahodit, co se stihlo stáhnout — jinak stojí každé „Zrušit"
+    # při dalším pokusu znovu celých 1,6 GB. Dřív se na zrušení mazala celá
+    # složka (a k tomu i kopie v cache HuggingFace).
+    d = tmp_path / "m"
+    d.mkdir()
+    (d / "config.json").write_bytes(b"x" * 10)
+    monkeypatch.setattr(models, "model_dir", lambda: str(d))
+    monkeypatch.setattr(models, "_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(models, "_remote_files", lambda: [
+        ("config.json", 10), ("weights.safetensors", 1_000_000)])
+
+    cancel = threading.Event()
+
+    def fake_fetch(url, dest, cancel_ev, on_bytes):
+        cancel_ev.set()
+        raise models.Cancelled
+
+    monkeypatch.setattr(models, "_fetch", fake_fetch)
+    monkeypatch.setattr(models, "hf_hub_url", lambda *a, **k: "http://x", raising=False)
+
+    with pytest.raises(models.Cancelled):
+        models.download(cancel=cancel)
+    assert (d / "config.json").exists(), "hotový soubor se po zrušení nemá mazat"
+    assert not models.is_ready(), "poloviční složka se nesmí tvářit jako hotový model"
 
 
 def test_finished_files_are_not_downloaded_again(monkeypatch, tmp_path):
@@ -1864,11 +1911,15 @@ def test_download_progress_is_throttled(monkeypatch, tmp_path):
     monkeypatch.setattr(models, "_remote_files", lambda: [("weights.npz", 100_000_000)])
     monkeypatch.setattr(models, "hf_hub_url", lambda *a, **k: "http://x", raising=False)
 
+    # Bloky schválně MENŠÍ než jedno procento (0,1 %). Se 100 bloky po 1 % by
+    # škrcení nemělo co zahodit a test by prošel, i kdyby se odstranilo.
+    blocks = 1000
+
     def fake_fetch(url, dest, cancel_ev, on_bytes):
         with open(dest, "wb") as f:
             f.write(b"x")
-        for _ in range(100):          # 100 MB po megabajtu
-            on_bytes(1_000_000)
+        for _ in range(blocks):       # 100 MB po 100 kB
+            on_bytes(100_000)
 
     monkeypatch.setattr(models, "_fetch", fake_fetch)
     (tmp_path / "m").mkdir()
@@ -1876,9 +1927,8 @@ def test_download_progress_is_throttled(monkeypatch, tmp_path):
 
     reports = []
     models.download(on_progress=lambda d, t: reports.append(d))
-    # 100 bloků → nejvýš ~100 hlášení, ale díky škrcení jich má být výrazně míň
-    # (mění se procento po každém 1 %, takže kolem 100/1 % … kontrolujeme strop).
-    assert len(reports) <= 102, f"průběh se nehlásí škrceně: {len(reports)}×"
+    # Hlásí se jen na změnu procenta → nejvýš ~100 hlášení z 1000 bloků.
+    assert len(reports) <= 110, f"průběh se nehlásí škrceně: {len(reports)}× z {blocks}"
 
 
 def test_no_backend_downloads_a_model_on_its_own():
@@ -1898,9 +1948,9 @@ def test_no_backend_downloads_a_model_on_its_own():
     )
 
     # A chybějící model nesmí vést k fallbacku na CPU — ten stahuje jiný model.
-    init = src[src.index("self.model_missing = not models.is_ready()"):]
+    init = src[src.index("self._weights_absent = not models.is_ready()"):]
     init = init[:init.index("def _mlx_ok")]
-    assert re.search(r"not self\.model_missing and not self\._mlx_ok\(\)", init), (
+    assert re.search(r"not self\._weights_absent and not self\._mlx_ok\(\)", init), (
         "chybějící model se nesmí zaměnit za poruchu mlx"
     )
 
@@ -1929,13 +1979,18 @@ def test_blocking_subprocesses_have_timeouts():
 
 # --- Rozhodnutí „vložit vs. schránka" (vytaženo z pipeline) -------------------
 def _delivery(monkeypatch, *, now_bundle="app.A", same=True, has_field=True):
+    """`has_field`: True = zaměřené pole, False = není pole, None = nelze zjistit."""
     from spillway import context
 
     monkeypatch.setattr(context, "frontmost_app", lambda: ("A", now_bundle))
     monkeypatch.setattr(context, "same_field", lambda a, b, tol=8: same)
-    monkeypatch.setattr(context, "focus_snapshot", lambda **k: context.Focus(
-        True, True, "AXTextArea", ("AXTextArea", 1, 2, 3, 4), None, None, None))
-    monkeypatch.setattr(context, "has_focused_text_field", lambda: has_field)
+    snap = context.Focus(
+        has_field is not None,            # ok
+        bool(has_field),                  # is_input
+        "AXTextArea", ("AXTextArea", 1, 2, 3, 4), None, None, None)
+    context._delivery_focus_calls = []    # čítač pro test „ptá se nejvýš jednou"
+    monkeypatch.setattr(context, "focus_snapshot",
+                        lambda **k: context._delivery_focus_calls.append(k) or snap)
     return context
 
 
@@ -1964,16 +2019,21 @@ def test_delivery_keeps_clipboard_when_no_field_at_all(monkeypatch):
 
 
 def test_delivery_does_not_ask_about_field_on_remote_desktop(monkeypatch):
-    from spillway import context
-
     ctx = _delivery(monkeypatch, has_field=False)
-    asked = []
-    monkeypatch.setattr(context, "has_focused_text_field",
-                        lambda: asked.append(1) or False)
     # U RDP/AVD je pole uvnitř vzdálené plochy — macOS do ní nevidí, takže by
     # odpověď stejně nic neznamenala a jen by blokovala vkládání.
     ok, _why = ctx.decide_delivery(target_bundle="app.A", field_sig=("x",), win_target=True)
-    assert ok is True and not asked
+    assert ok is True
+
+
+def test_delivery_asks_about_focus_at_most_once(monkeypatch):
+    # Regrese: dřív se tu volalo `focus_snapshot` a `has_focused_text_field`
+    # zvlášť. Dvě kola Accessibility se sekundovým stropem přímo v cestě
+    # vložení — a hlavně se mezi nimi mohl fokus změnit, takže se důvod v logu
+    # rozešel s tím, co se opravdu stalo.
+    ctx = _delivery(monkeypatch, has_field=False)
+    ctx.decide_delivery(target_bundle="app.A", field_sig=("x",), win_target=False)
+    assert len(ctx._delivery_focus_calls) == 1
 
 
 def test_delivery_pastes_when_field_check_is_inconclusive(monkeypatch):
@@ -2044,3 +2104,273 @@ def test_run_js_gives_up_eventually(monkeypatch):
     # Nekonečné odkládání by drželo frontu hlavního vlákna — musí to mít strop.
     webview.run_js(Stuck(), "x()", "test", _tries=webview._MAX_TRIES)
     assert not calls, "po vyčerpání pokusů se už nesmí plánovat další"
+
+
+# --- Opravy z nezávislé revize (kompletní code review) -----------------------
+def test_welcome_actually_reaches_the_window(monkeypatch, tmp_path):
+    from spillway import models, settings
+    from spillway.tray import SpillwayTray
+
+    # REGRESE: `_maybe_welcome` nastavovalo `seen_setup=True` PŘED otevřením
+    # okna, a okno si `first_run` počítalo z téhož klíče až při načtení
+    # stránky — takže vždy False. Nový uživatel dostal po instalaci prázdné
+    # nastavení bez vysvětlení, proč se otevřelo.
+    monkeypatch.setattr(settings, "_PATH", str(tmp_path / "s.json"))
+    monkeypatch.setattr(settings, "_DIR", str(tmp_path))
+    settings._cache = settings._cache_stamp = None
+    monkeypatch.setattr(models, "is_ready", lambda: False)
+
+    tray = SpillwayTray.__new__(SpillwayTray)
+    opened = {}
+    monkeypatch.setattr(SpillwayTray, "open_settings",
+                        lambda self, s, page="settings", welcome=False:
+                        opened.update(page=page, welcome=welcome))
+    tray._maybe_welcome()
+    assert opened == {"page": "settings", "welcome": True}
+    # Podruhé už ne.
+    opened.clear()
+    tray._maybe_welcome()
+    assert opened == {}
+
+
+def test_welcome_flag_comes_from_caller_not_from_settings():
+    import inspect
+
+    from spillway.settings_window import _Bridge
+
+    # Kdyby se `first_run` zase odvozovalo z `seen_setup`, vrátí se nález 5:
+    # v okamžiku plnění stránky je ten klíč už přepnutý.
+    src = inspect.getsource(_Bridge._push_state)
+    assert "seen_setup" not in src, "first_run se nesmí odvozovat z seen_setup"
+    assert "self._welcome" in src
+
+
+def test_pipeline_asks_the_disk_not_a_stale_flag():
+    import inspect
+
+    from spillway.app import Controller
+
+    # REGRESE: `_process` četlo `self.model_missing`, které plní jiné vlákno až
+    # za AX voláními se sekundovým stropem. Krátké ťuknutí do klávesy ho
+    # předběhlo → buď zahozený platný diktát (hned po stažení modelu), nebo
+    # „Chyba při vkládání" místo nabídky ke stažení.
+    src = inspect.getsource(Controller._process)
+    head = src[:src.index("t_start")]
+    assert "models.is_ready()" in head, "chybějící model se musí ověřit na disku"
+    assert "self.model_missing" not in head.replace("`self.model_missing`", "")
+
+
+def test_new_dictation_clears_targets_from_the_previous_one():
+    import inspect
+
+    from spillway.app import Controller
+
+    # Lišta čte `target_bundle`/`no_field` každý tik. Bez resetu na začátku
+    # diktátu kotví okénko podle MINULÉHO pole, dokud nedoběhne `_start_recording`.
+    src = inspect.getsource(Controller.on_press)
+    for attr in ("self.target_bundle = None", "self.no_field = False"):
+        assert attr in src, f"na začátku diktátu chybí reset: {attr}"
+
+
+def test_history_can_be_kept_without_dictation_texts(monkeypatch, tmp_path):
+    import json
+
+    from spillway import settings, stats
+
+    # Slib soukromí musí jít dotáhnout: kdo nechce mít texty diktátů na disku,
+    # vypne je a čísla mu zůstanou.
+    monkeypatch.setattr(stats, "_DIR", str(tmp_path))
+    monkeypatch.setattr(stats, "_PATH", str(tmp_path / "h.jsonl"))
+    monkeypatch.setattr(settings, "get",
+                        lambda k, d=None: False if k == "keep_dictation_texts" else d)
+    stats.record(raw="tajné", final="tajné", app="A", profile="generic",
+                 audio_seconds=1.0, process_seconds=0.5, outcome="pasted")
+    row = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    assert "raw" not in row and "final" not in row
+    assert row["words"] == 1 and row["outcome"] == "pasted"  # čísla zůstávají
+
+
+def test_cancelled_llm_call_is_still_billed(monkeypatch, tmp_path):
+    import json
+
+    from spillway import stats
+
+    # Zrušení je okamžité, ale request už odešel a tokeny se provolaly. Cena
+    # dorazí, až když je řádek diktátu dávno zapsaný — proto vlastní záznam.
+    monkeypatch.setattr(stats, "_DIR", str(tmp_path))
+    monkeypatch.setattr(stats, "_PATH", str(tmp_path / "h.jsonl"))
+    stats.record_extra_cost(0.0042, note="cancelled")
+    row = json.loads((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip())
+    assert row["cost_usd"] == 0.0042 and row["outcome"] == "cost_only"
+    # Nesmí se počítat mezi diktáty, ale musí se počítat do nákladů.
+    assert stats._counted([row]) == []
+    assert stats._cost_this_month([row]) == 0.0042
+    stats.record_extra_cost(0.0)  # nulový náklad nemá co zapisovat
+    assert len((tmp_path / "h.jsonl").read_text(encoding="utf-8").strip().splitlines()) == 1
+
+
+def test_late_llm_result_is_billed_exactly_once():
+    import threading
+    import time
+
+    from spillway.app import _CANCELLED, Controller
+
+    # `on_late` musí padnout právě jednou i v souběhu, kdy volání doběhne
+    # přesně ve chvíli zrušení — jinak se náklad buď ztratí, nebo započítá 2×.
+    c = Controller.__new__(Controller)
+    c._cancel = threading.Event()
+    billed = []
+    started = threading.Event()
+
+    def slow():
+        started.set()
+        time.sleep(0.2)
+        return "hotovo"
+
+    th = threading.Thread(target=lambda: c._cancel.set(), daemon=True)
+    result = None
+
+    def run():
+        nonlocal result
+        result = c._run_cancellable(slow, on_late=lambda: billed.append(1))
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    started.wait()
+    th.start()
+    worker.join(5.0)
+    time.sleep(0.4)  # nechat pozdní volání doběhnout
+    assert result is _CANCELLED
+    assert billed == [1], f"náklad se měl zaúčtovat právě jednou, ne {len(billed)}×"
+
+
+def test_mlx_queue_counts_the_job_it_is_running():
+    import threading
+
+    from spillway.transcribe import _MlxWorker
+
+    # `qsize()` je nula od chvíle, kdy si vlákno práci vyzvedne — sám o sobě by
+    # tvrdil „nic se neděje" i uprostřed dlouhého přepisu a streaming by za něj
+    # dál sypal segmenty.
+    w = _MlxWorker()
+    running = threading.Event()
+    release = threading.Event()
+
+    def job():
+        running.set()
+        release.wait(5.0)
+
+    threading.Thread(target=lambda: w.submit(job), daemon=True).start()
+    running.wait(5.0)
+    assert w.pending() == 1, "právě běžící práce se musí počítat"
+    release.set()
+
+
+def test_settings_are_not_reread_on_every_get(monkeypatch, tmp_path):
+    import builtins
+
+    from spillway import settings
+
+    # `diag.log()` chodí přes `settings.get()` a volá se několikrát na každý tik
+    # časovače lišty (6,7×/s). Bez cache to bylo ~13–27 otevření a parsování
+    # JSONu za sekundu po celou dobu, co svítí okénko.
+    path = tmp_path / "s.json"
+    path.write_text('{"diagnostics": ""}', encoding="utf-8")
+    monkeypatch.setattr(settings, "_PATH", str(path))
+    monkeypatch.setattr(settings, "_DIR", str(tmp_path))
+    settings._cache = settings._cache_stamp = None
+
+    opens = []
+    real = builtins.open
+    monkeypatch.setattr(builtins, "open",
+                        lambda p, *a, **k: (opens.append(p), real(p, *a, **k))[1])
+    for _ in range(50):
+        settings.get("diagnostics")
+    assert len([o for o in opens if str(o).endswith("s.json")]) == 1
+
+
+def test_settings_cache_does_not_hide_a_write(monkeypatch, tmp_path):
+    from spillway import settings
+
+    # Cache nesmí být „skoro přesná": okno nastavení zapisuje a lišta hned čte.
+    monkeypatch.setattr(settings, "_PATH", str(tmp_path / "s.json"))
+    monkeypatch.setattr(settings, "_DIR", str(tmp_path))
+    settings._cache = settings._cache_stamp = None
+    assert settings.get("language") == "cs"
+    settings.set("language", "en")
+    assert settings.get("language") == "en"
+
+
+def test_unload_never_waits_for_the_model_to_finish_loading():
+    import threading
+    import time
+
+    from spillway.transcribe import Transcriber
+
+    # `unload_if_idle` volá UI časovač na HLAVNÍM vlákně a `preload()` drží
+    # tentýž zámek po celou dobu načítání modelu (změřeno 1,45 s). Čekat na něj
+    # znamená zmrazit ikonu, okénko i popover.
+    t = Transcriber.__new__(Transcriber)
+    t._lock = threading.Lock()
+    t._model = True
+    t._last_used = 0.0
+    t.backend = "faster"
+    t._mlx = None
+    t._lock.acquire()          # jako by zrovna běželo načítání
+    try:
+        t0 = time.perf_counter()
+        assert t.unload_if_idle(0.01) is False
+        assert time.perf_counter() - t0 < 0.1, "nesmí se čekat na zámek"
+    finally:
+        t._lock.release()
+    # Bez souběhu se uvolnit musí.
+    assert t.unload_if_idle(0.01) is True
+
+
+def test_recorder_publishes_the_stream_under_the_open_lock():
+    import inspect
+
+    from spillway.audio import Recorder
+
+    # [B2] `stop()`, který přijde uprostřed otevírání, musí počkat — jinak
+    # neuvidí nic k zavření a mikrofon zůstane otevřený do restartu.
+    src = inspect.getsource(Recorder.start)
+    assert "_open_lock" in src, "start() musí držet _open_lock"
+    assert src.index("_open_lock") < src.index("sd.InputStream"), (
+        "stream se smí vytvářet až pod zámkem"
+    )
+    assert "_open_lock" in inspect.getsource(Recorder.stop)
+
+
+def test_startup_never_reads_the_keychain_on_the_main_thread():
+    import inspect
+
+    from spillway.app import Controller
+
+    # ZMĚŘENO na zaseknutém startu: hlavní vlákno stálo v `SecItemCopyMatching`,
+    # protože macOS po přeinstalování .app ukázal dialog Klíčenky. `__init__`
+    # běží dřív, než vznikne ikona v liště → aplikace neměla ŽÁDNÉ UI a
+    # vypadala, že se nespustila.
+    src = inspect.getsource(Controller.__init__)
+    assert "config.get_api_key()" not in src, (
+        "klíč z Klíčenky se nesmí číst synchronně v __init__"
+    )
+    assert "_load_api_key" in src, "čtení klíče musí jít na vlákno"
+    assert "config.get_api_key()" in inspect.getsource(Controller._load_api_key)
+
+
+def test_tray_does_not_block_on_a_pending_keychain_prompt(monkeypatch):
+    from spillway import config
+    from spillway.tray import SpillwayTray
+
+    # Časovač lišty běží na hlavním vlákně. Dokud čtení Klíčenky nedoběhlo,
+    # nesmí se na ni ptát — jinak zmrazí UI na celou dobu dialogu.
+    monkeypatch.setattr(config, "api_key_known", lambda: False)
+    monkeypatch.setattr(config, "get_api_key",
+                        lambda: pytest.fail("lišta se nesmí ptát Klíčenky"))
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray._notice_checked_at = 0.0
+    tray._notice_state = (False, False)
+    model_ok, key_ok = tray._setup_state()
+    assert key_ok is True, "dokud klíč neznáme, nemá se na něj upozorňovat"
+    assert isinstance(model_ok, bool)

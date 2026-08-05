@@ -253,6 +253,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   </div>
 
   <div class="card"><h3>Data a soukromí</h3>
+    <div class="rowt"><div class="l">Ukládat texty diktátů<small>Bez toho zůstanou jen čísla — počty, tempo, náklady</small></div><div class="sw" data-key="keep_dictation_texts" onclick="tog(this)"></div></div>
     <div class="rowt">
       <div class="l">Reset statistik<small>Vynuluje počty, tempo, náklady i aktivitu</small></div>
       <button class="btn danger" data-label="Resetovat" onclick="armReset(this,'reset_stats')">Resetovat</button>
@@ -344,7 +345,9 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
       <div class="arrow">→</div>
       <div class="box"><b>☁️ Úprava</b><span>Ven jde jen text, a to nepovinně.</span></div>
     </div>
-    <div class="hint">API klíč leží v systémové Klíčence, ne v souboru. Do logu se obsah diktátů nezapisuje.</div>
+    <div class="hint">API klíč leží v systémové Klíčence, ne v souboru. Do logu se obsah diktátů nezapisuje.
+      Historie diktátů se ale ukládá do souboru v tvém Macu (nešifrovaně), ať jde v popoveru kliknout na starší text&nbsp;—
+      vypneš ji v <b>Nastavení → Data a soukromí</b>.</div>
   </div>
 
   <div class="card"><h3>Slovník a náklady</h3>
@@ -585,7 +588,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     applyKey(!!s.has_key);
     if(s.first_run) document.getElementById('welcome').classList.remove('hidden');
     document.getElementById('gloss').value = s.glossary || '';
-    [['autostart',s.autostart],['ai_edit',s.ai_edit],['field_context',s.field_context],['auto_space',s.auto_space]].forEach(function(kv){
+    [['autostart',s.autostart],['ai_edit',s.ai_edit],['field_context',s.field_context],['auto_space',s.auto_space],['keep_dictation_texts',s.keep_dictation_texts]].forEach(function(kv){
       var el=document.querySelector('.sw[data-key="'+kv[0]+'"]'); if(el) el.classList.toggle('on', !!kv[1]);
     });
     syncAiEdit();
@@ -606,6 +609,9 @@ class _Bridge(NSObject):
             return None
         self.controller = controller
         self.webview = None
+        # Ukázat uvítací blok? Nastaví `SettingsWindow.show(welcome=True)`.
+        # Neodvozuje se z `seen_setup` — viz vysvětlení tamtéž.
+        self._welcome = False
         return self
 
     def userContentController_didReceiveScriptMessage_(self, ucc, message):  # noqa: N802
@@ -674,7 +680,8 @@ class _Bridge(NSObject):
                 val = bool(body.get("value"))
                 if key == "autostart":
                     (autostart.enable if val else autostart.disable)()
-                elif key in ("field_context", "auto_space", "ai_edit"):
+                elif key in ("field_context", "auto_space", "ai_edit",
+                             "keep_dictation_texts"):
                     settings.set(key, val)
         except Exception as exc:  # noqa: BLE001
             print(f"[settings] bridge error: {exc}")
@@ -783,8 +790,9 @@ class _Bridge(NSObject):
             # AI úpravě maskuje na False) — dítě má v UI ukazovat vlastní stav.
             "field_context": bool(settings.get("field_context", True)),
             "auto_space": config.auto_space(),
+            "keep_dictation_texts": bool(settings.get("keep_dictation_texts", True)),
             "auto_unload_sec": config.get_auto_unload_seconds(),
-            "first_run": not settings.get("seen_setup", False),
+            "first_run": self._welcome,
         }
         js = "applyState(" + json.dumps(state, ensure_ascii=False) + ")"
         run_js(self.webview, js, "nastavení")
@@ -840,8 +848,17 @@ class SettingsWindow:
         self._delegate = _WinDelegate.alloc().initWithController_(controller)
         self.window.setDelegate_(self._delegate)
 
-    def show(self, page: str = "settings") -> None:
-        """Zobrazí okno; `page="help"` rovnou přepne na Nápovědu."""
+    def show(self, page: str = "settings", *, welcome: bool = False) -> None:
+        """Zobrazí okno; `page="help"` rovnou přepne na Nápovědu.
+
+        `welcome=True` odemkne uvítací blok. Musí se předat sem, ne odvozovat
+        z `seen_setup`: ten se přepíná při startu, kdežto stav se do stránky
+        posílá až po jejím načtení — v tu chvíli by už byl `False` a uvítání by
+        se nikdy neukázalo (nový uživatel dostal po instalaci prázdné okno
+        nastavení bez vysvětlení, proč se otevřelo).
+        """
+        if welcome:
+            self.bridge._welcome = True
         try:
             NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         except Exception:  # noqa: BLE001
@@ -850,9 +867,9 @@ class SettingsWindow:
         self.window.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
         self._show_page(page)
-        # Okno se vytvoří jednou a pak recykluje — bez tohohle by karta
-        # Statistiky ukazovala zamrzlá data z prvního otevření (`ready` už
-        # podruhé nenastane, protože se HTML znovu nenačítá).
+        # Okno se vytvoří jednou a pak recykluje — bez tohohle by ukazovalo
+        # zamrzlý stav z prvního otevření (`ready` už podruhé nenastane,
+        # protože se HTML znovu nenačítá).
         self.refresh()
 
     def _show_page(self, page: str) -> None:
@@ -865,7 +882,7 @@ class SettingsWindow:
             pass
 
     def refresh(self) -> None:
-        """Přenačte stav do okna (hlavně Statistiky). Musí běžet na main threadu."""
+        """Přenačte stav do okna (model, klíč, přepínače). Jen z main threadu."""
         try:
             self.bridge._push_state()
         except Exception:  # noqa: BLE001 — refresh je kosmetika, nesmí nic shodit

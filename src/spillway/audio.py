@@ -41,6 +41,10 @@ class Recorder:
         self._frames: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
         self._lock = threading.Lock()
+        # [B2] Odděleně od `_lock`: ten bere i audio callback na svém vlákně a
+        # nesmí čekat na otevírání zařízení (u Bluetooth i sekundu). `_open_lock`
+        # drží jen pořadí start/stop, `_lock` chrání buffer.
+        self._open_lock = threading.Lock()
         self._total = 0
 
     def _callback(self, indata, frames, time_info, status):  # noqa: ANN001
@@ -51,16 +55,25 @@ class Recorder:
                 self._total += frames
 
     def start(self) -> None:
+        """Otevře mikrofon. Smí běžet souběžně se `stop()` — viz `_open_lock`."""
         with self._lock:
             self._frames = []
             self._total = 0
-        self._stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            callback=self._callback,
-        )
-        self._stream.start()
+        # [B2] Otevření a přiřazení streamu drží `_open_lock`, který `stop()`
+        # taky bere. Bez něj `stop()`, který přijde uprostřed otevírání, uvidí
+        # `self._stream` ještě jako None, nic nezavře — a stream, který se
+        # dokončí o chvíli později, už nikdo nezastaví: mikrofon zůstane
+        # otevřený (oranžová tečka) až do restartu aplikace.
+        with self._open_lock:
+            stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="float32",
+                callback=self._callback,
+            )
+            stream.start()
+            with self._lock:
+                self._stream = stream
 
     def level(self, window_s: float = 0.12) -> float:
         """Hlasitost posledního krátkého úseku jako 0..1 — pro živý ukazatel v liště.
@@ -99,9 +112,12 @@ class Recorder:
         # Převzetí streamu pod zámkem: `stop()` volá jak pipeline, tak ukončení
         # aplikace. Bez zámku můžou obě větve přečíst tentýž stream dřív, než
         # ho první vynuluje, a zavřít nativní CoreAudio stream dvakrát.
-        with self._lock:
-            stream = self._stream
-            self._stream = None
+        # `_open_lock` navíc počká, když se zrovna otevírá — jinak by se
+        # zavíralo nic a otevřený stream by zůstal viset (B2).
+        with self._open_lock:
+            with self._lock:
+                stream = self._stream
+                self._stream = None
         if stream is not None:
             for name, op in (("stop", stream.stop), ("close", stream.close)):
                 try:

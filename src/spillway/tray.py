@@ -119,7 +119,10 @@ class SpillwayTray(rumps.App):
             settings.set("seen_setup", True)
             if models.is_ready():
                 return
-            self.open_settings(None, page="settings")
+            # `welcome=True` výslovně: okno se plní až po načtení stránky a
+            # `seen_setup` je v tu chvíli už True, takže odvozený příznak by
+            # uvítání nikdy neukázal.
+            self.open_settings(None, page="settings", welcome=True)
         except Exception:  # noqa: BLE001 — uvítání nesmí shodit start
             pass
 
@@ -157,11 +160,15 @@ class SpillwayTray(rumps.App):
         NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
 
     def _setup_state(self) -> tuple[bool, bool]:
-        """(je model, má se řešit klíč) — přepočítává se nejvýš jednou za 2 s.
+        """(je model?, je klíč v pořádku?) — přepočítává se nejvýš jednou za 2 s.
 
-        Čte se z časovače 6,7×/s; bez tlumení by to zbytečně sahalo na disk
-        a do Klíčenky při každém tiku. Odložené upozornění na klíč se tváří
-        jako by klíč byl — dokud odklad neuplyne.
+        Druhá hodnota je `True` i tehdy, když klíč chybí, ale upozornění je
+        odložené — nebo když se ho ještě nepodařilo přečíst. Kartička se řídí
+        jí, takže „nevím" znamená „neotravuj".
+
+        Čte se z časovače 6,7×/s; bez tlumení by to při každém tiku zbytečně
+        sahalo na disk (`models.is_ready()`). Klíčenka se neptá — `config` si
+        klíč cachuje na celý běh procesu.
         """
         import time as _t
 
@@ -170,7 +177,10 @@ class SpillwayTray(rumps.App):
             return self._notice_state
         self._notice_checked_at = now
         try:
-            key_ok = bool(config.get_api_key())
+            # Dokud čtení Klíčenky nedoběhlo, tvař se, že klíč je: ptát se
+            # odsud (hlavní vlákno, časovač) by se při otevřeném dialogu
+            # Klíčenky zaseklo a s ním celé UI.
+            key_ok = bool(config.get_api_key()) if config.api_key_known() else True
             if not key_ok:
                 snooze = float(settings.get("key_notice_snooze_until", 0) or 0)
                 key_ok = _t.time() < snooze
@@ -241,7 +251,11 @@ class SpillwayTray(rumps.App):
         """Klik na okénko: chybí-li model, otevře Nastavení u karty K provozu;
         jinak jen schová lístek „Připraveno k vložení"."""
         if getattr(self.controller, "model_missing", False):
-            self.controller.model_missing = False
+            # Stav pipeline se tu NEPŘEPISUJE. Dřív se `model_missing` shodilo
+            # na False, jen aby kartička zmizela — jenže během nahrávání to
+            # znamenalo, že po puštění klávesy vyjela plná pipeline bez modelu
+            # a skončila hláškou „Chyba při vkládání". Kartička zmizí sama,
+            # jakmile `models.is_ready()` řekne, že model je.
             self.open_settings(None)
             return
         self.controller.clear_awaiting_paste()
@@ -347,12 +361,13 @@ class SpillwayTray(rumps.App):
             print(f"(Edit menu nedostupné: {exc})")
 
     def _refresh_stats_when_done(self) -> None:
-        """Po dokončení diktátu obnovit kartu Statistiky, je-li okno otevřené.
+        """Po dokončení diktátu přetlačit čerstvý stav do otevřeného nastavení.
 
-        `stats.record` zapíše data hned, ale okno se plní jen při `ready` (tj.
-        při prvním načtení HTML) — bez tohohle by čísla naskočila až po zavření
-        a znovuotevření nastavení. Běží z rumps.Timeru = main thread, takže
-        `evaluateJavaScript` je bezpečné.
+        Statistiky samy jsou v popoveru, ne v okně nastavení — tohle obnovuje
+        stav okna (stav modelu, klíče, přepínače), který se po diktátu mohl
+        změnit. Okno se jinak plní jen při `ready`, tj. při prvním načtení
+        HTML, takže bez tohohle by viselo na hodnotách z prvního otevření.
+        Běží z rumps.Timeru = main thread, takže `evaluateJavaScript` je bezpečné.
         """
         state = getattr(self.controller, "state", IDLE)
         prev = getattr(self, "_prev_state", state)
@@ -487,13 +502,14 @@ class SpillwayTray(rumps.App):
         except Exception:  # noqa: BLE001
             pass
 
-    def open_settings(self, _sender, page: str = "settings") -> None:  # noqa: ANN001
+    def open_settings(self, _sender, page: str = "settings", *,
+                      welcome: bool = False) -> None:  # noqa: ANN001
         try:
             if self._settings is None:
                 from .settings_window import SettingsWindow
 
                 self._settings = SettingsWindow(self.controller)
-            self._settings.show(page)
+            self._settings.show(page, welcome=welcome)
         except Exception as exc:  # noqa: BLE001
             rumps.alert("Nastavení nelze otevřít", str(exc))
 

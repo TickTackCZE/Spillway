@@ -173,15 +173,25 @@ def _fetch(url: str, dest: str, cancel, on_bytes) -> None:
 
     tmp = dest + ".part"
     req = urllib.request.Request(url, headers={"User-Agent": "Spillway"})
-    with urllib.request.urlopen(req, timeout=30) as resp, open(tmp, "wb") as f:
-        while True:
-            if cancel is not None and cancel.is_set():
-                raise Cancelled
-            chunk = resp.read(1 << 20)
-            if not chunk:
-                break
-            f.write(chunk)
-            on_bytes(len(chunk))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp, open(tmp, "wb") as f:
+            while True:
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                on_bytes(len(chunk))
+    except BaseException:
+        # Rozdělaný kus zahodit: range requesty neděláme, takže navázat na něj
+        # stejně nejde a jen by matoucně zabíral místo. HOTOVÉ soubory vedle
+        # něj zůstávají — na ty se při dalším pokusu naváže.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     os.replace(tmp, dest)
 
 
@@ -230,15 +240,19 @@ def download(on_progress=None, cancel: threading.Event | None = None) -> str:
         for name, size in files:
             dest = os.path.join(target, name)
             os.makedirs(os.path.dirname(dest) or target, exist_ok=True)
-            # Hotový soubor přeskočit — po zrušení a novém spuštění se nestahuje znovu.
+            # Hotový soubor přeskočit. Tohle je to, co dělá zrušení levným:
+            # po Zrušit a novém Stáhnout se dotáhne jen zbytek, ne znovu celých
+            # 1,6 GB. Dřív tu bylo `remove()` na zrušení, které smazalo celou
+            # složku (a k tomu kopii v cache HuggingFace) — komentář o
+            # nestahování znovu tehdy prostě nebyl pravda.
             if os.path.exists(dest) and (size == 0 or os.path.getsize(dest) == size):
                 bump(size)
                 continue
             _fetch(hf_hub_url(REPO, name), dest, cancel, bump)
     except Cancelled:
-        remove()
-        raise
-    except Exception:
+        # Nedokončený `.part` uklidil `_fetch`; hotové soubory schválně necháme.
+        # Poloviční složka se za hotový model vydávat nemůže — `_complete()`
+        # trvá na config.json i vahách zároveň.
         raise
 
     if not _complete(target):

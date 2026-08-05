@@ -2,7 +2,7 @@
 
 > Archiv. **Co je tady, se nevrací do návrhů.** Hotové funkce, uzavřená rozhodnutí
 > a poučení z provozu. Aktivní věci žijí v [rozvoj a nápady](spillway-rozvoj-a-napady.md).
-> Aktualizováno: 5. 8. 2026
+> Aktualizováno: 6. 8. 2026
 
 ---
 
@@ -74,6 +74,20 @@ nová data nebo změněné zadání, ne opakování téhož nápadu.
 - **Stejné rozhodnutí na více místech se dřív nebo později rozejde.** Poloha okénka
   a volba vložit/schránka se počítaly zvlášť — a okénko pak viselo jinde, než kam text
   šel. Odvozovat vše z jednoho snímku.
+- **Příznak plněný na jiném vlákně se čte zastaralý.** „Chybí model" se zjišťovalo na
+  vlákně, které předtím čeká na Accessibility (strop 1 s). Krátké ťuknutí do klávesy ho
+  předběhlo → jednou zahozený platný diktát, podruhé „Chyba při vkládání" místo nabídky
+  ke stažení. Levný dotaz (`os.path.exists`) je lepší se prostě zeptat znovu.
+- **Hlavní vlákno nesmí sáhnout na Klíčenku.** `SecItemCopyMatching` čeká libovolně
+  dlouho — po přeinstalování `.app` ukáže macOS dialog. Četlo se to v `Controller.__init__`,
+  tedy dřív, než vznikne ikona v liště: aplikace pak neměla ŽÁDNÉ UI a vypadala, že se
+  nespustila. Totéž platí pro časovač lišty.
+- **„Bezpečná" pojistka umí být ta nejdražší operace.** Zrušení stahování mazalo celou
+  složku i kopii v cache HuggingFace, takže každé Zrušit stálo při dalším pokusu znovu
+  1,6 GB — a komentář nad tím tvrdil pravý opak.
+- **Test, který grepuje zdroják, přežije i rozbitou funkci.** Uvítání po instalaci mělo
+  zelený test na existenci HTML, zatímco příznak, který ho zobrazuje, byl vždy `False`.
+  Testovat chování, ne přítomnost řetězce.
 
 ---
 

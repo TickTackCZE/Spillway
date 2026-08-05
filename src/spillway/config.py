@@ -200,6 +200,15 @@ def get_api_key() -> str | None:
     return key
 
 
+def api_key_known() -> bool:
+    """Je klíč už načtený v paměti? Nesahá do Klíčenky, takže nikdy neblokuje.
+
+    Pro hlavní vlákno: `get_api_key()` umí čekat libovolně dlouho (dialog
+    Klíčenky) a z UI časovače by to zmrazilo celou aplikaci.
+    """
+    return _api_key_cache is not _UNSET
+
+
 def set_api_key_cache(key: str | None) -> None:
     """Nastaví cache přímo (po uložení/smazání klíče v UI) — ať se hned neptá
     Keychain znovu, jen aby potvrdil to, co jsme sami právě zapsali."""

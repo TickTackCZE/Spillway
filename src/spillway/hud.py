@@ -177,6 +177,9 @@ class StatusHUD:
         self._state = None
         self._visible = False
         self._anchor_offset = None   # px od levého okraje okna (šipka), None = u kurzoru
+        # Tlumení dotazů na polohu kurzoru — viz `_caret_rect`.
+        self._rect_cache: tuple | None = None
+        self._rect_at = 0.0
         self.status_button = None    # tlačítko ikony v liště (doplní tray)
         self.on_dismiss = None       # zavolá se, když uživatel klikne na lístek
 
@@ -196,9 +199,30 @@ class StatusHUD:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _caret_rect(self) -> tuple | None:
+        """Poloha kurzoru, přepočítaná nejvýš 3×/s.
+
+        `caret_screen_rect()` je 5–7 kol Accessibility do CIZÍ aplikace a každé
+        má strop 1 s. Volalo se to z časovače lišty 6,7×/s, takže stačilo, aby
+        cílová appka chvíli neodpovídala (Electron při GC, Xcode při indexaci) a
+        zamrzlo celé UI Spillway: ikona přestala animovat, okénko se
+        nepřekreslilo, popover nešel otevřít.
+
+        Kurzor se mezi dvěma tiky nikam neposune tak, aby to šlo vidět, takže
+        se tím nic neztrácí — jen se přestane ptát zbytečně často.
+        """
+        import time as _t
+
+        now = _t.monotonic()
+        if now - self._rect_at < 0.3:
+            return self._rect_cache
+        self._rect_at = now
+        self._rect_cache = context.caret_screen_rect()
+        return self._rect_cache
+
     def _reposition(self) -> None:
         gap = 10.0
-        rect = context.caret_screen_rect()
+        rect = self._caret_rect()
         screens = NSScreen.screens()
         primary_h = float(screens[0].frame().size.height) if screens else 0.0
         screen_w = float(screens[0].frame().size.width) if screens else 99999.0
@@ -285,6 +309,9 @@ class StatusHUD:
 
     def hide(self) -> None:
         self._set_state("hide")
+        # Zahodit polohu kurzoru, ať se příští diktát neukotví podle pole, ve
+        # kterém se diktovalo minule.
+        self._rect_cache, self._rect_at = None, 0.0
         if self._visible:
             self.panel.setIgnoresMouseEvents_(True)
             self.panel.orderOut_(None)

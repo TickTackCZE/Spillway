@@ -289,6 +289,9 @@ class _PopBridge(NSObject):
                 if self.on_open_settings is not None:
                     self.on_open_settings()
             elif action == "open_help":
+                # Zavřít stejně jako u Nastavení — jinak popover visí za nově
+                # otevřeným oknem, dokud uživatel neklikne jinam.
+                self.popover.close()
                 if self.on_open_help is not None:
                     self.on_open_help()
             elif action == "quit":

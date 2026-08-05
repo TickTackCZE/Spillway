@@ -7,8 +7,11 @@ strojově čitelný — je to zároveň podklad pro pozdější export na RPi (v
 Ušetřený čas = odhad, jak dlouho by trvalo text NAPSAT, minus reálný čas
 diktování + zpracování. Psaní se počítá přes `TYPING_WPM` (slov za minutu).
 
-Pozn.: ukládá se i text (raw i upravený) — je to lokálně, nešifrovaně, dle
-rozhodnutí O5 v plánu. Zápis je best-effort: chyba nikdy neshodí pipeline.
+**Soukromí:** standardně se ukládá i text diktátu (syrový i upravený) — lokálně
+a nešifrovaně. Je to vědomé rozhodnutí (O5 v plánu): bez textů by nešly
+„Poslední diktáty" v popoveru. Kdo to nechce, vypne v nastavení „Ukládat texty
+diktátů" (`keep_dictation_texts`) — čísla fungují dál, jen se přestane zapisovat
+obsah. Zápis je best-effort: chyba nikdy neshodí pipeline.
 """
 
 from __future__ import annotations
@@ -69,9 +72,15 @@ def record(
             "out_chars": len(final or ""),
             "outcome": outcome,
             "cost_usd": round(float(cost_usd or 0.0), 6),
-            "raw": raw,
-            "final": final,
         }
+        # Texty diktátů jsou to nejcitlivější, co aplikace má, a na rozdíl od
+        # logu ležely v historii natrvalo a nešifrovaně. Kdo si kupuje Spillway
+        # kvůli soukromí, musí mít možnost je neukládat vůbec — čísla (počty,
+        # délky, tempo, náklady) fungují i bez nich. Výchozí je ukládat, ať
+        # „Poslední diktáty" v nastavení dál k něčemu jsou.
+        if _keep_texts():
+            entry["raw"] = raw
+            entry["final"] = final
         os.makedirs(_DIR, exist_ok=True)
         with _lock:
             with open(_PATH, "a", encoding="utf-8") as f:
@@ -114,6 +123,39 @@ def _entries() -> list[dict]:
         return []
 
 
+def _keep_texts() -> bool:
+    """Smí se do historie zapisovat text diktátů? (nastavení „Ukládat texty")"""
+    try:
+        return bool(settings.get("keep_dictation_texts", True))
+    except Exception:  # noqa: BLE001 — při pochybnosti radši neukládat
+        return False
+
+
+def record_extra_cost(cost_usd: float, note: str = "") -> None:
+    """Zaúčtuje náklad volání, jehož výsledek se zahodil (zrušený diktát).
+
+    Zrušení je okamžité — pipeline na odpověď Clauda nečeká. Request ale už
+    odešel a tokeny se provolají, takže se cena dozvíme až o pár sekund později,
+    kdy je řádek diktátu dávno zapsaný. Zapíše se proto samostatný záznam, který
+    se počítá JEN do nákladů (`outcome` ho drží mimo počty diktátů).
+    """
+    try:
+        usd = round(float(cost_usd or 0.0), 6)
+    except (TypeError, ValueError):
+        return
+    if usd <= 0:
+        return
+    try:
+        os.makedirs(_DIR, exist_ok=True)
+        entry = {"ts": time.time(), "outcome": "cost_only", "cost_usd": usd, "note": note}
+        with _lock:
+            with open(_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            _rotate()
+    except Exception:  # noqa: BLE001 — účtování nesmí shodit diktování
+        pass
+
+
 def _counted(entries: list[dict]) -> list[dict]:
     """Jen skutečně vložené diktáty — do statistik se ostatní nepočítají."""
     return [
@@ -134,12 +176,18 @@ def _stats_since() -> float:
 def summary() -> dict:
     """Agregace pro popover a nastavení.
 
-    Počítá jen skutečně vložené diktáty (`outcome == "pasted"`) — zrušené,
-    prázdné a spadlé pokusy nic nevložily, takže by jen kazily čísla.
-    Starší záznamy (před polem `outcome`) se poznají podle `cancelled`.
+    Počítá jen hotové diktáty — `outcome` „pasted" nebo „clipboard" (viz
+    `_counted`); obojí skončilo použitelným textem. Zrušené, prázdné a spadlé
+    pokusy nic nevložily, takže by jen kazily čísla. Starší záznamy (před polem
+    `outcome`) se poznají podle `cancelled`.
+
+    Výjimka jsou NÁKLADY: ty se sčítají i z pokusů, které nic nevložily. Zrušený
+    diktát mohl stihnout provolat tokeny a ty zaplatíš bez ohledu na to, že se
+    výsledek zahodil — vykázat je jako nulu by bylo lhaní do vlastní kapsy.
     """
     since = _stats_since()
-    rows = [e for e in _counted(_entries()) if float(e.get("ts", 0) or 0) >= since]
+    fresh = [e for e in _entries() if float(e.get("ts", 0) or 0) >= since]
+    rows = _counted(fresh)
     if not rows:
         return {
             "count": 0, "words": 0, "dictation_s": 0.0, "top_apps": [],
@@ -176,7 +224,7 @@ def summary() -> dict:
         "dictation_s": dictation,
         "top_apps": top,
         "tempo_wpm": tempo_wpm,
-        "cost_month": _cost_this_month(rows),
+        "cost_month": _cost_this_month(fresh),
         "activity_7d": _activity_7d(rows),
     }
 
