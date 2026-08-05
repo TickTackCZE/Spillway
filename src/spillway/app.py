@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-from . import config, context, diag, stats
+from . import config, context, diag, models, stats
 from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner, basic_cleanup
@@ -130,6 +130,9 @@ class Controller:
         # ať se dá i bez zapnuté diagnostiky zpětně poznat, proč text skončil
         # ve schránce místo v poli.
         self._focus_field = "?"
+        # Chybí model pro přepis? Zjistí se při startu nahrávání a drží po celý
+        # diktát — okénko podle toho nabídne stažení místo mlčení.
+        self.model_missing = False
         # Vyhlazená hlasitost mikrofonu (0..1) pro animovanou ikonu v liště.
         self._level_smooth = 0.0
         # [F2] Vlákno, které otevírá mikrofon; `_process` na něj počká.
@@ -309,6 +312,14 @@ class Controller:
                 self._focus_field = "?"
                 why = "chyba zjišťování fokusu"
             diag.log("focus", f"{why} → okénko {'u ikony' if self.no_field else 'u pole'}")
+            # Bez modelu nemá smysl mlčky nahrávat — přepis by spustil tiché
+            # stahování 1,5 GB a vypadalo by to jako zamrznutí.
+            try:
+                self.model_missing = not models.is_ready()
+            except Exception:  # noqa: BLE001
+                self.model_missing = False
+            if self.model_missing:
+                print("⚠️  model pro přepis chybí — okénko nabídne stažení")
             self.recorder.start()
         except Exception as exc:  # noqa: BLE001 — [O6] viditelná chyba, ne tichý pád
             print(f"❌ mikrofon se nepodařilo spustit: {exc}")

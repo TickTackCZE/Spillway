@@ -51,7 +51,7 @@ class SpillwayTray(rumps.App):
 
             self.hud = StatusHUD()
             # Klik na lístek „Připraveno k vložení" = už ho nechci.
-            self.hud.on_dismiss = self.controller.clear_awaiting_paste
+            self.hud.on_dismiss = self._hud_clicked
         except Exception as exc:  # noqa: BLE001
             print(f"(HUD nedostupný: {exc})")
 
@@ -91,6 +91,15 @@ class SpillwayTray(rumps.App):
         # odsekne, ať appka nezůstane viset na „Zpracovávám" a nemusí se vypínat.
         self._stuck_timer = rumps.Timer(self._check_stuck, 5)
         self._stuck_timer.start()
+
+    def _hud_clicked(self) -> None:
+        """Klik na okénko: chybí-li model, otevře Nastavení u karty K provozu;
+        jinak jen schová lístek „Připraveno k vložení"."""
+        if getattr(self.controller, "model_missing", False):
+            self.controller.model_missing = False
+            self.open_settings(None)
+            return
+        self.controller.clear_awaiting_paste()
 
     def _check_tap(self, _sender) -> None:  # noqa: ANN001
         listener = getattr(self.controller, "hotkey_listener", None)
@@ -309,7 +318,9 @@ class SpillwayTray(rumps.App):
             at_icon = self._left_target_app() or getattr(
                 self.controller, "no_field", False
             )
-            if state == RECORDING:
+            if getattr(self.controller, "model_missing", False) and state != IDLE:
+                self.hud.show("nomodel")
+            elif state == RECORDING:
                 self.hud.show("rec", at_icon=at_icon)
             elif state == PROCESSING:
                 self.hud.show("proc", at_icon=at_icon)

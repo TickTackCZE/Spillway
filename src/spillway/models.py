@@ -13,6 +13,11 @@ Proti dřívějšímu stavu (cache huggingface v `~/.cache`) je tohle umístěn�
 viditelné a spravovatelné: v Nastavení jde ukázat, kolik zabírá, a smazat ho.
 `mlx_whisper.load_model()` přijme lokální cestu, takže si o stažení říkáme sami
 a nespoléháme na to, kam a kdy si soubory uloží knihovna.
+
+**Existující kopie se hledá i jinde** (`find_local`). Model si do cache
+huggingface stahuje samo `mlx-whisper` a stahovaly ho tam i starší verze
+Spillway — bez toho by aplikace hlásila „není stažený" nad plnohodnotnou
+kopií a uživatel by zbytečně stahoval druhých 1,5 GB.
 """
 
 from __future__ import annotations
@@ -31,13 +36,14 @@ _REQUIRED = ("config.json",)
 
 
 def model_dir() -> str:
-    """Složka s modelem. Jméno se odvozuje z repozitáře, ať jde mít víc modelů."""
+    """Kam model stahujeme MY. Jméno z repozitáře, ať jde mít víc modelů."""
     return os.path.join(_DIR, REPO.split("/")[-1])
 
 
-def is_ready() -> bool:
-    """Je model kompletně stažený a použitelný?"""
-    d = model_dir()
+def _complete(d: str) -> bool:
+    """Je ve složce kompletní model? (nedokončené stažení se nesmí počítat)"""
+    if not d or not os.path.isdir(d):
+        return False
     if not all(os.path.exists(os.path.join(d, f)) for f in _REQUIRED):
         return False
     # Váhy mají jedno ze dvou jmen podle toho, jak byl model publikovaný.
@@ -46,16 +52,63 @@ def is_ready() -> bool:
     )
 
 
-def size_bytes() -> int:
-    """Kolik model na disku zabírá (0 = není)."""
+def _hf_cache_dir() -> str | None:
+    """Snapshot v cache huggingface, když už si ho někdo stáhl dřív.
+
+    Důležité: model si do téhle cache stahuje samo `mlx-whisper` a stahovaly ho
+    tam i starší verze Spillway. Bez tohohle hledání by aplikace hlásila
+    „není stažený" nad plnohodnotnou kopií a uživatel by stahoval **druhých
+    1,5 GB** zbytečně.
+    """
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        hit = try_to_load_from_cache(REPO, "config.json")
+        if isinstance(hit, str) and os.path.exists(hit):
+            return os.path.dirname(hit)
+    except Exception:  # noqa: BLE001 — bez knihovny prostě cache nehledáme
+        pass
+    return None
+
+
+def find_local() -> tuple[str, str] | None:
+    """(cesta, odkud) k použitelnému modelu na tomhle stroji, nebo None.
+
+    Naše složka má přednost — je pod naší kontrolou a jde ji smazat jedním
+    tlačítkem. Cache huggingface je plnohodnotná záloha.
+    """
+    ours = model_dir()
+    if _complete(ours):
+        return (ours, "složka Spillway")
+    cached = _hf_cache_dir()
+    if _complete(cached or ""):
+        return (cached, "cache HuggingFace")  # type: ignore[return-value]
+    return None
+
+
+def is_ready() -> bool:
+    """Je model použitelný — ať leží kdekoliv?"""
+    return find_local() is not None
+
+
+def _dir_size(d: str) -> int:
     total = 0
-    for root, _dirs, files in os.walk(model_dir()):
+    for root, _dirs, files in os.walk(d):
         for f in files:
             try:
-                total += os.path.getsize(os.path.join(root, f))
+                # `os.stat` bez follow_symlinks: cache huggingface je samé
+                # symlinky do blobs a přes ně by se soubory počítaly dvakrát.
+                st = os.stat(os.path.join(root, f), follow_symlinks=True)
+                total += st.st_size
             except OSError:
                 pass
     return total
+
+
+def size_bytes() -> int:
+    """Kolik model na disku zabírá (0 = není)."""
+    found = find_local()
+    return _dir_size(found[0]) if found else 0
 
 
 def human_size(n: int) -> str:
@@ -65,12 +118,33 @@ def human_size(n: int) -> str:
 
 
 def remove() -> bool:
-    """Smaže stažený model. Vrátí True, když bylo co mazat."""
-    d = model_dir()
-    if not os.path.isdir(d):
-        return False
-    shutil.rmtree(d, ignore_errors=True)
-    return True
+    """Smaže model odkudkoliv, kde leží. Vrátí True, když bylo co mazat.
+
+    Maže i kopii v cache huggingface — jinak by uživatel klikl na Smazat,
+    místo se neuvolnilo a aplikace by dál hlásila „připraven".
+    """
+    removed = False
+    ours = model_dir()
+    if os.path.isdir(ours):
+        shutil.rmtree(ours, ignore_errors=True)
+        removed = True
+
+    cached = _hf_cache_dir()
+    if cached:
+        # Snapshot leží v .../hub/models--<org>--<jméno>/snapshots/<hash>/;
+        # smazat je potřeba celou složku repozitáře i s blobs, jinak zabírá dál.
+        repo_root = cached
+        marker = "models--" + REPO.replace("/", "--")
+        while repo_root and os.path.basename(repo_root) != marker:
+            parent = os.path.dirname(repo_root)
+            if parent == repo_root:
+                repo_root = ""
+                break
+            repo_root = parent
+        if repo_root and os.path.isdir(repo_root):
+            shutil.rmtree(repo_root, ignore_errors=True)
+            removed = True
+    return removed
 
 
 def _expected_bytes() -> int:
@@ -106,7 +180,9 @@ def download(on_progress=None, cancel: threading.Event | None = None) -> str:
         while not done.wait(0.5):
             if on_progress is not None:
                 try:
-                    on_progress(size_bytes(), total)
+                    # `_dir_size(target)`, ne `size_bytes()` — to hledá
+                    # existující kopii kdekoliv a ukazovalo by cizí velikost.
+                    on_progress(_dir_size(target), total)
                 except Exception:  # noqa: BLE001 — ukazatel nesmí shodit stahování
                     pass
 
@@ -126,11 +202,11 @@ def download(on_progress=None, cancel: threading.Event | None = None) -> str:
     if cancel is not None and cancel.is_set():
         remove()
         raise RuntimeError("stahování zrušeno")
-    if not is_ready():
+    if not _complete(target):
         raise RuntimeError("model se nestáhl kompletně")
     if on_progress is not None:
         try:
-            on_progress(size_bytes(), total)
+            on_progress(_dir_size(target), total)
         except Exception:  # noqa: BLE001
             pass
     return target
@@ -139,9 +215,10 @@ def download(on_progress=None, cancel: threading.Event | None = None) -> str:
 def path_for_transcribe() -> str:
     """Co předat mlx-whisperu.
 
-    Když je model stažený u nás, vrátí **lokální cestu** (mlx ji použije přímo).
-    Když ne, vrátí jméno repozitáře — mlx si ho stáhne sám do své cache. To je
-    záchranná brzda, ne běžná cesta: bez ukazatele průběhu vypadá první diktát
-    jako by aplikace zamrzla.
+    Když je model kdekoliv na stroji, vrátí **lokální cestu** (mlx ji použije
+    přímo, bez sítě). Když ne, vrátí jméno repozitáře — mlx si ho stáhne sám.
+    To je záchranná brzda, ne běžná cesta: bez ukazatele průběhu vypadá první
+    diktát, jako by aplikace zamrzla.
     """
-    return model_dir() if is_ready() else REPO
+    found = find_local()
+    return found[0] if found else REPO

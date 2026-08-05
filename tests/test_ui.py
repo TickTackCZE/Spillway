@@ -276,8 +276,60 @@ def test_model_card_offers_download_and_removal():
     from spillway import settings_window as sw
 
     html = sw._HTML
-    for marker in ('id="cardModel"', 'id="modelState"', 'id="modelHint"',
+    # Model a API klíč jsou v JEDNÉ kartě — obojí je podmínka funkčnosti.
+    for marker in ('id="cardSetup"', 'id="modelState"', 'id="modelHint"',
                    'id="modelProg"', "model_download", "model_remove"):
         assert marker in html, marker
     # Průběh stahování musí být vidět — 1,5 GB bez ukazatele vypadá jako zamrznutí.
     assert "applyModel" in html and "percent" in html
+
+
+def test_hud_offers_download_when_model_missing():
+    from spillway import hud
+
+    # Bez modelu nemá okénko mlčet — přepis by spustil tiché stahování 1,5 GB
+    # a vypadalo by to jako zamrznutí.
+    html = hud._HTML if hasattr(hud, "_HTML") else hud.HTML
+    assert "nomodel" in html and "Chybí model" in html
+    assert ".dot.nomodel" in html, "výzva musí mít vlastní barvu tečky"
+
+
+def test_clickable_hud_states_are_not_transparent_to_mouse():
+    import inspect
+
+    from spillway import hud
+
+    # Na lístek i na výzvu se musí dát kliknout; u ostatních stavů má myš
+    # propadávat do aplikace pod okénkem.
+    src = inspect.getsource(hud)
+    assert 'setIgnoresMouseEvents_(state not in ("ready", "nomodel"))' in src
+    assert 'if state in ("ready", "nomodel") or at_icon:' in src
+
+
+def test_setup_card_groups_key_and_model_together():
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    # API klíč a model jsou obojí podmínka funkčnosti → jedna karta.
+    setup = html[html.index('id="cardSetup"'):html.index('Data a soukromí')]
+    assert "Anthropic API klíč" in setup and "Model pro přepis" in setup
+    assert 'id="modelBtn"' in setup and 'id="key"' in setup
+
+
+def test_not_ready_banner_links_to_setup_card():
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    assert 'id="notReady"' in html
+    # Klik na pruh musí vést na kartu, která opravdu existuje.
+    assert "showPage('settings','cardSetup')" in html
+    assert 'id="cardSetup"' in html
+
+
+def test_model_removal_goes_through_confirmation():
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    # Mazání 1,5 GB je nevratné → stejné pětisekundové potvrzení jako u resetů.
+    assert "armReset(btn, 'model_remove')" in html
+    assert "btn.dataset.mode === 'remove'" in html

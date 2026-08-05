@@ -63,6 +63,7 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     transform:translateX(-50%) rotate(45deg);
   }
   .dot.ready { background:#4ADE80; }
+  .dot.nomodel { background:#E11D48; animation:pulse 1.5s infinite; }
   .kbd {
     font-size:11px; font-weight:600; color:#F5F5F7; padding:2px 6px; border-radius:5px;
     background:rgba(255,255,255,0.14); border:0.5px solid rgba(255,255,255,0.18);
@@ -96,6 +97,8 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
       else if(s==='cancel'){c.style.display='inline-flex';d.className='dot cancel';l.textContent='Ruším';}
       else if(s==='ready'){c.style.display='inline-flex';d.className='dot ready';
         l.textContent='Připraveno k vložení';k.style.display='inline-block';}
+      else if(s==='nomodel'){c.style.display='inline-flex';d.className='dot nomodel';
+        l.textContent='Chybí model — klikni a stáhni';}
       else {c.style.display='none';}
     }
     // `off` = vzdálenost středu ikony od levého okraje okénka (v px), nebo null
@@ -270,14 +273,14 @@ class StatusHUD:
         — používá se, když uživatel odejde z cílové aplikace (jinak by okénko
         zůstalo viset u kurzoru v cizí appce, kam se nic vkládat nebude)."""
         self._set_state(state)
-        if state == "ready" or at_icon:
+        if state in ("ready", "nomodel") or at_icon:
             # Lístek „Připraveno k vložení" visí u ikony a dá se na něj kliknout.
             # Panel je neaktivační, takže klik NEPŘEPNE aplikaci a tvoje pole
             # nepřijde o kurzor (jinak by následné ⌘V vložilo text jinam).
             self._anchor_to_status_item()
         else:
             self._reposition()
-        self.panel.setIgnoresMouseEvents_(state != "ready")  # jinde ať myš propadává
+        self.panel.setIgnoresMouseEvents_(state not in ("ready", "nomodel"))  # jinde ať myš propadává
         if not self._visible:
             self.panel.orderFrontRegardless()
             self._visible = True

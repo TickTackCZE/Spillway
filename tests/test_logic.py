@@ -1578,6 +1578,7 @@ def test_model_readiness_needs_both_config_and_weights(monkeypatch, tmp_path):
     from spillway import models
 
     monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(models, "_hf_cache_dir", lambda: None)
     assert models.is_ready() is False
 
     # Samotný config nestačí — nedokončené stažení se nesmí tvářit jako hotové.
@@ -1592,6 +1593,7 @@ def test_model_path_falls_back_to_repo_when_missing(monkeypatch, tmp_path):
     from spillway import models
 
     monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(models, "_hf_cache_dir", lambda: None)
     # Bez staženého modelu se předá jméno repozitáře — mlx si poradí sám.
     assert models.path_for_transcribe() == models.REPO
 
@@ -1604,9 +1606,11 @@ def test_model_size_and_removal(monkeypatch, tmp_path):
     from spillway import models
 
     monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path / "m"))
+    monkeypatch.setattr(models, "_hf_cache_dir", lambda: None)
     (tmp_path / "m").mkdir()
+    (tmp_path / "m" / "config.json").write_text("{}", encoding="utf-8")
     (tmp_path / "m" / "weights.npz").write_bytes(b"x" * 2_000_000)
-    assert models.size_bytes() == 2_000_000
+    assert models.size_bytes() == 2_000_002
     assert models.human_size(models.size_bytes()) == "2 MB"
     assert models.human_size(1_600_000_000) == "1.6 GB"
     assert models.human_size(0) == "0 MB"
@@ -1624,3 +1628,40 @@ def test_transcribe_reads_model_path_lazily():
     src = pathlib.Path("src/spillway/transcribe.py").read_text(encoding="utf-8")
     assert "_MLX_MODEL =" not in src, "cesta k modelu se nesmí zmrazit do konstanty"
     assert "models.path_for_transcribe()" in src
+
+
+def test_model_found_in_huggingface_cache_is_not_downloaded_again(monkeypatch, tmp_path):
+    from spillway import models
+
+    # REGRESE: aplikace hlásila „není stažený" nad plnohodnotnou kopií v cache
+    # huggingface (kam ho stahuje mlx-whisper i starší verze Spillway) a uživatel
+    # tak stáhl druhých 1,5 GB zbytečně.
+    cache = tmp_path / "hf"
+    cache.mkdir()
+    (cache / "config.json").write_text("{}", encoding="utf-8")
+    (cache / "weights.safetensors").write_bytes(b"x" * 1000)
+
+    monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path / "prazdna"))
+    monkeypatch.setattr(models, "_hf_cache_dir", lambda: str(cache))
+
+    assert models.is_ready() is True
+    found = models.find_local()
+    assert found == (str(cache), "cache HuggingFace")
+    # mlx dostane cestu ke kopii, ne jméno repozitáře → nestahuje se nic.
+    assert models.path_for_transcribe() == str(cache)
+    assert models.size_bytes() == 1002   # váhy 1000 B + config.json 2 B
+
+
+def test_our_folder_wins_over_cache(monkeypatch, tmp_path):
+    from spillway import models
+
+    ours, cache = tmp_path / "ours", tmp_path / "hf"
+    for d in (ours, cache):
+        d.mkdir()
+        (d / "config.json").write_text("{}", encoding="utf-8")
+        (d / "weights.npz").write_bytes(b"x")
+
+    monkeypatch.setattr(models, "model_dir", lambda: str(ours))
+    monkeypatch.setattr(models, "_hf_cache_dir", lambda: str(cache))
+    # Naše složka má přednost — je pod naší kontrolou a jde ji smazat tlačítkem.
+    assert models.find_local() == (str(ours), "složka Spillway")

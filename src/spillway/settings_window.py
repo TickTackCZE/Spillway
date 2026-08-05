@@ -122,6 +122,16 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .tabs button{flex:1;border:0.5px solid transparent;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:600;padding:7px;border-radius:8px;cursor:pointer;}
   .tabs button.on{background:var(--surface);color:var(--text);border-color:var(--border);}
   .hidden{display:none;}
+  /* Stavový pruh nahoře — dokud něco chybí, aplikace nediktuje. Klik vede
+     rovnou na kartu, kde se to doplní. */
+  .banner{display:flex;align-items:center;gap:9px;margin-top:12px;padding:11px 14px;
+    border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;
+    background:color-mix(in srgb,var(--danger) 14%,transparent);
+    border:0.5px solid color-mix(in srgb,var(--danger) 45%,transparent);color:var(--text);}
+  .banner:hover{background:color-mix(in srgb,var(--danger) 22%,transparent);}
+  .banner .go{margin-left:auto;color:var(--accent);font-size:12px;}
+  .banner .dot{width:8px;height:8px;border-radius:50%;flex:none;}
+  .sub-h{font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;}
   .prog{height:6px;background:var(--bg);border-radius:3px;overflow:hidden;margin-top:10px;}
   .prog>div{height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .3s;}
   @keyframes flash{0%{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent);}
@@ -167,6 +177,12 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <button id="tabHelp" onclick="showPage('help')">Nápověda</button>
   </div>
 
+  <div id="notReady" class="banner hidden" onclick="showPage('settings','cardSetup')">
+    <span class="dot" style="background:var(--danger)"></span>
+    <span id="notReadyText">Aplikace není připravená</span>
+    <span class="go">Nastavit →</span>
+  </div>
+
   <div id="pageSettings">
 
   <div class="card"><h3>Klávesy</h3>
@@ -207,23 +223,13 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="hint" id="unloadHint" style="display:none;"></div>
   </div>
 
-  <div class="card" id="cardModel"><h3>Model pro přepis</h3>
-    <div class="rowt">
-      <!-- Stav a popisek musí být SOUROZENCI: `textContent` na rodiči by dítě smazal. -->
-      <div class="l"><span id="modelState">Zjišťuji…</span><small id="modelHint">&nbsp;</small></div>
-      <button class="btn" id="modelBtn" onclick="modelAction()">…</button>
-    </div>
-    <div class="prog" id="modelProg" style="display:none;"><div id="modelBar"></div></div>
-    <div class="hint">Přepis běží na tomhle Macu. Model se stáhne jednou a zůstane
-      i po aktualizaci aplikace.</div>
-  </div>
-
   <div class="card" id="cardGloss"><h3>Slovník výrazů</h3>
     <textarea id="gloss" rows="4" placeholder="commit, pull request, repository, Trackio…" onchange="saveGloss()"></textarea>
     <div class="hint">Termíny oddělujte čárkou „,". Vstupuje až do AI modelu.</div>
   </div>
 
-  <div class="card"><h3>Anthropic API klíč</h3>
+  <div class="card" id="cardSetup"><h3>K provozu</h3>
+    <div class="sub-h">Anthropic API klíč</div>
     <div id="keyset" style="display:none">
       <div class="rowt" style="border-bottom:none;padding:0;">
         <div class="l"><span style="color:var(--success)">●</span> Klíč je nastavený<small>uložený v macOS Keychain</small></div>
@@ -234,6 +240,15 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
       <div class="field"><input id="key" type="password" placeholder="sk-ant-…"><button class="btn" onclick="saveKey()">Uložit</button></div>
       <div class="hint">Klíč se uloží do macOS Keychain, ne do souboru.</div>
     </div>
+    <div class="sub-h" style="margin-top:16px;">Model pro přepis</div>
+    <div class="rowt">
+      <!-- Stav a popisek musí být SOUROZENCI: `textContent` na rodiči by dítě smazal. -->
+      <div class="l"><span id="modelState">Zjišťuji…</span><small id="modelHint">&nbsp;</small></div>
+      <button class="btn" id="modelBtn" onclick="modelAction()">…</button>
+    </div>
+    <div class="prog" id="modelProg" style="display:none;"><div id="modelBar"></div></div>
+    <div class="hint">Přepis běží na tomhle Macu. Model se stáhne jednou a zůstane
+      i po aktualizaci aplikace.</div>
   </div>
 
   <div class="card"><h3>Data a soukromí</h3>
@@ -333,7 +348,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     if(m.downloading){
       st.textContent = 'Stahuji model…';
       hint.textContent = m.progress_text || '';
-      btn.disabled = true; btn.textContent = 'Stahuji';
+      btn.disabled = true; btn.textContent = 'Stahuji'; btn.dataset.mode = '';
       prog.style.display = 'block';
       document.getElementById('modelBar').style.width = (m.percent || 0) + '%';
       return;
@@ -342,18 +357,40 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     btn.disabled = false;
     if(m.ready){
       st.textContent = 'Připraven';
-      hint.textContent = m.size + ' · ' + m.repo;
-      btn.textContent = 'Smazat'; btn.classList.add('danger');
+      // Kde model leží — ať je vidět, že se nestahuje podruhé, když už někde je.
+      hint.textContent = m.size + ' · ' + (m.where || '');
+      btn.textContent = 'Smazat'; btn.dataset.label = 'Smazat';
+      btn.dataset.mode = 'remove'; btn.classList.add('danger');
     } else {
       st.textContent = 'Není stažený';
-      hint.textContent = 'Bez něj nejde přepisovat · ' + m.repo;
-      btn.textContent = 'Stáhnout'; btn.classList.remove('danger');
+      hint.textContent = 'Bez něj nejde přepisovat · ~1,6 GB ke stažení';
+      btn.textContent = 'Stáhnout'; btn.dataset.label = 'Stáhnout';
+      btn.dataset.mode = ''; btn.classList.remove('danger');
     }
+    setReady(m.ready, m.has_key);
   }
   function modelAction(){
     var btn = document.getElementById('modelBtn');
-    send({action: btn.textContent === 'Smazat' ? 'model_remove' : 'model_download'});
+    // Mazání jde přes stejné pětisekundové potvrzení jako ostatní nevratné akce.
+    if(btn.dataset.mode === 'remove'){ armReset(btn, 'model_remove'); return; }
+    send({action:'model_download'});
     btn.disabled = true;
+  }
+  // Pruh nahoře: dokud něco chybí, aplikace nediktuje. Klik vede na kartu.
+  var _ready = {model:null, key:null};
+  function setReady(model, key){
+    if(model !== undefined && model !== null) _ready.model = model;
+    if(key !== undefined && key !== null) _ready.key = key;
+    if(_ready.model === null || _ready.key === null) return;   // ještě nevíme obojí
+    var miss = [];
+    if(!_ready.model) miss.push('model pro přepis');
+    if(!_ready.key) miss.push('API klíč');
+    var el = document.getElementById('notReady');
+    el.classList.toggle('hidden', miss.length === 0);
+    if(miss.length){
+      document.getElementById('notReadyText').textContent =
+        'Chybí ' + miss.join(' a ') + ' — diktování zatím nepojede';
+    }
   }
   function showPage(name, anchor){
     var help = name === 'help';
@@ -493,6 +530,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     }
     applyTheme(s.theme||'system');
     document.getElementById('lang').value = s.language || 'cs';
+    setReady(null, !!s.has_key);
     document.getElementById('keyset').style.display = s.has_key ? 'block' : 'none';
     document.getElementById('keyunset').style.display = s.has_key ? 'none' : 'block';
     document.getElementById('gloss').value = s.glossary || '';
@@ -645,10 +683,13 @@ class _Bridge(NSObject):
 
     @objc.python_method
     def _push_model(self, extra: dict | None = None) -> None:
+        found = models.find_local()
         state = {
-            "ready": models.is_ready(),
+            "ready": found is not None,
             "size": models.human_size(models.size_bytes()),
+            "where": found[1] if found else "",
             "repo": models.REPO,
+            "has_key": bool(config.get_api_key()),
             "downloading": False,
         }
         state.update(extra or {})
