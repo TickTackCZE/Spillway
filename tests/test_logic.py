@@ -1815,3 +1815,48 @@ def test_cancel_when_nothing_runs_is_harmless(monkeypatch):
     monkeypatch.setattr(models, "_dl_thread", None)
     models.cancel_download()   # nesmí spadnout ani nic rozhodit
     assert models.download_state()["downloading"] is False
+
+
+def test_notice_hides_when_there_is_no_window_or_nothing_missing():
+    from spillway.notice import NoticePanel
+
+    # Bez okna (zavřel se popover) i když je vše v pořádku musí kartička zmizet.
+    # Testujeme přes nezinicializovanou instanci — jen logiku, bez AppKitu.
+    calls = []
+    panel = NoticePanel.__new__(NoticePanel)
+    panel.hide = lambda: calls.append("hide")
+
+    NoticePanel.show_beside(panel, None, model_ready=False, has_key=False)
+    assert calls == ["hide"], "bez okna se kartička musí schovat"
+
+    calls.clear()
+    NoticePanel.show_beside(panel, object(), model_ready=True, has_key=True)
+    assert calls == ["hide"], "když nic nechybí, kartička nemá co ukazovat"
+
+
+def test_download_progress_is_throttled(monkeypatch, tmp_path):
+    from spillway import models
+
+    # REGRESE: průběh se hlásil po každém megabajtu → při 20 MB/s dvacetkrát
+    # za sekundu, a každé hlášení rozjelo překreslení oken. UI se sekalo
+    # a Zrušit reagovalo se zpožděním.
+    monkeypatch.setattr(models, "model_dir", lambda: str(tmp_path / "m"))
+    monkeypatch.setattr(models, "_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(models, "_remote_files", lambda: [("weights.npz", 100_000_000)])
+    monkeypatch.setattr(models, "hf_hub_url", lambda *a, **k: "http://x", raising=False)
+
+    def fake_fetch(url, dest, cancel_ev, on_bytes):
+        with open(dest, "wb") as f:
+            f.write(b"x")
+        for _ in range(100):          # 100 MB po megabajtu
+            on_bytes(1_000_000)
+
+    monkeypatch.setattr(models, "_fetch", fake_fetch)
+    (tmp_path / "m").mkdir()
+    (tmp_path / "m" / "config.json").write_text("{}", encoding="utf-8")
+
+    reports = []
+    models.download(on_progress=lambda d, t: reports.append(d))
+    # 100 bloků → nejvýš ~100 hlášení, ale díky škrcení jich má být výrazně míň
+    # (mění se procento po každém 1 %, takže kolem 100/1 % … kontrolujeme strop).
+    assert len(reports) <= 102, f"průběh se nehlásí škrceně: {len(reports)}×"

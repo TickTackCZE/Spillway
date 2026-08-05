@@ -148,7 +148,9 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .welcome b{font-size:13px;}
   .welcome p{margin-top:7px;color:var(--muted);}
   .welcome p b{font-size:12px;color:var(--text);}
-  .prog{height:6px;background:var(--bg);border-radius:3px;overflow:hidden;margin-top:10px;}
+  /* Drobný ukazatel přímo v řádku, nalevo od procent — pod dělící čárou
+     vypadal, že patří k dalšímu nastavení. */
+  .prog{width:70px;height:5px;background:var(--bg);border-radius:3px;overflow:hidden;flex:none;}
   .prog>div{height:100%;width:0;background:var(--accent);border-radius:3px;transition:width .3s;}
   @keyframes flash{0%{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent);}
     100%{border-color:var(--border);box-shadow:none;}}
@@ -251,11 +253,11 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="rowt">
       <div class="l">Model pro přepis<small id="modelHint">&nbsp;</small></div>
       <div class="field" style="width:auto;align-items:center;gap:10px;">
+        <div class="prog" id="modelProg" style="display:none;"><div id="modelBar"></div></div>
         <span class="l" id="modelState" style="font-weight:600;">Zjišťuji…</span>
         <button class="btn" id="modelBtn" onclick="modelAction()">…</button>
       </div>
     </div>
-    <div class="prog" id="modelProg" style="display:none;"><div id="modelBar"></div></div>
 
     <div class="rowt">
       <div class="l">Claude API key<small id="keyHint">&nbsp;</small></div>
@@ -399,11 +401,15 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     if(m.downloading){
       st.textContent = (m.percent || 0) + ' %';
       hint.textContent = 'Stahuji · ' + (m.progress_text || '');
-      btn.disabled = true; btn.textContent = 'Stahuji'; btn.dataset.mode = '';
       prog.style.display = 'block';
       document.getElementById('modelBar').style.width = (m.percent || 0) + '%';
+      // Po kliknutí na Zrušit zůstane tlačítko zamčené, dokud běh neskončí.
+      if(_mdlCancelling){ btn.disabled = true; btn.textContent = 'Ruším…'; return; }
+      btn.disabled = false; btn.textContent = 'Zrušit';
+      btn.dataset.mode = 'cancel'; btn.classList.remove('danger');
       return;
     }
+    _mdlCancelling = false;
     prog.style.display = 'none';
     btn.disabled = false;
     if(m.ready){
@@ -418,11 +424,18 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
       btn.dataset.mode = ''; btn.classList.remove('danger');
     }
   }
+  var _mdlCancelling = false;
   function modelAction(){
     var btn = document.getElementById('modelBtn');
+    if(btn.disabled) return;                     // opakovaný klik ignorovat
     // Mazání jde přes stejné pětisekundové potvrzení jako ostatní nevratné akce.
     if(btn.dataset.mode === 'remove'){ armReset(btn, 'model_remove'); return; }
-    send({action:'model_download'});
+    if(btn.dataset.mode === 'cancel'){
+      _mdlCancelling = true; btn.textContent = 'Ruším…';
+      send({action:'model_cancel'});
+    } else {
+      send({action:'model_download'});
+    }
     btn.disabled = true;
   }
   function applyKey(has){
@@ -631,6 +644,8 @@ class _Bridge(NSObject):
                 settings.set("theme", str(body.get("value", "system")))
             elif action == "model_download":
                 self._start_model_download()
+            elif action == "model_cancel":
+                models.cancel_download()
             elif action == "model_remove":
                 models.remove()
                 self._push_model()

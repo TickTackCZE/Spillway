@@ -113,32 +113,44 @@ class SpillwayTray(rumps.App):
         try:
             if settings.get("seen_setup", False):
                 return
-            from . import config as _cfg
-
-            if models.is_ready() and _cfg.get_api_key():
-                settings.set("seen_setup", True)   # vše je nastavené, neotravovat
+            # Otevřít samo od sebe jen kvůli MODELU — bez něj se nedá diktovat.
+            # Chybějící klíč je volitelný a řekne to kartička; kvůli němu okno
+            # vyskakovat nemá, působí to jako by se otevíralo bez důvodu.
+            settings.set("seen_setup", True)
+            if models.is_ready():
                 return
             self.open_settings(None, page="settings")
-            settings.set("seen_setup", True)
         except Exception:  # noqa: BLE001 — uvítání nesmí shodit start
             pass
 
-    def _on_download_anywhere(self, _st: dict) -> None:
-        """Stav stahování se změnil — přetlač ho do popoveru i nastavení."""
+    def _on_download_anywhere(self, st: dict) -> None:
+        """Stav stahování se změnil — přetlač ho do otevřených oken.
+
+        Během stahování se posílá JEN karta modelu. Plný přepočet stavu čte
+        Klíčenku, autostart i statistiky, a několikrát za sekundu to znatelně
+        sekalo UI — proto se dělá až po doběhnutí, kdy se opravdu změnilo víc.
+        """
         from Foundation import NSOperationQueue
+
+        running = bool(st.get("downloading"))
 
         def apply() -> None:
             self._notice_checked_at = 0.0     # ať se stav přepočítá hned
+            win = self._settings
+            try:
+                if win is not None and win.is_visible():
+                    if running:
+                        win.bridge._push_model(st)     # lehké
+                    else:
+                        win.refresh()                  # doběhlo → přepočítat vše
+            except Exception:  # noqa: BLE001
+                pass
+            if running:
+                return
             try:
                 pop = getattr(self, "_popover", None)
                 if pop is not None and pop.is_shown():
                     pop.bridge.push_state()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                win = self._settings
-                if win is not None and win.is_visible():
-                    win.refresh()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -168,25 +180,27 @@ class SpillwayTray(rumps.App):
         return self._notice_state
 
     def _notice_target(self):  # noqa: ANN201
-        """Rám okna, u kterého má kartička viset — nebo None, když žádné není."""
+        """Okno, ke kterému se má kartička připnout — nebo None."""
         pop = getattr(self, "_popover", None)
         if pop is not None and pop.is_shown():
             try:
-                return pop.popover.contentViewController().view().window().frame()
+                win = pop.popover.contentViewController().view().window()
+                if win is not None and win.isVisible():
+                    return win
             except Exception:  # noqa: BLE001
                 return None
         win = self._settings
         if win is not None and win.is_visible():
             try:
-                return win.window.frame()
+                return win.window
             except Exception:  # noqa: BLE001
                 return None
         return None
 
     def _update_notice(self) -> None:
         """Kartička visí vedle otevřeného popoveru nebo nastavení; jinak je pryč."""
-        frame = self._notice_target()
-        if frame is None:
+        parent = self._notice_target()
+        if parent is None:
             if self._notice is not None:
                 self._notice.hide()
             return
@@ -210,7 +224,7 @@ class SpillwayTray(rumps.App):
                 print(f"(upozornění nedostupné: {exc})")
                 self._notice_state = (True, True)
                 return
-        self._notice.show_beside(frame, model_ready=model_ok, has_key=key_ok)
+        self._notice.show_beside(parent, model_ready=model_ok, has_key=key_ok)
 
     def _notice_key_action(self, what: str) -> None:
         """Tlačítka u hlášky o API klíči."""

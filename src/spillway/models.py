@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import shutil
 import threading
+import time
 
 REPO = os.environ.get("SPILLWAY_MLX_MODEL") or "mlx-community/whisper-large-v3-turbo"
 
@@ -205,15 +206,25 @@ def download(on_progress=None, cancel: threading.Event | None = None) -> str:
     total = sum(sz for _n, sz in files) or _ESTIMATE_BYTES
 
     done_bytes = 0
+    last_report = [0.0, -1]      # [čas, procento] posledního hlášení
 
     def bump(n: int) -> None:
         nonlocal done_bytes
         done_bytes += n
-        if on_progress is not None:
-            try:
-                on_progress(done_bytes, total)
-            except Exception:  # noqa: BLE001 — ukazatel nesmí shodit stahování
-                pass
+        if on_progress is None:
+            return
+        # Hlásit nejvýš 4×/s a jen když se procento změnilo. Bez toho by při
+        # 20 MB/s přišlo 20 hlášení za sekundu a každé rozjelo překreslení
+        # oken — přesně to sekalo UI a zdržovalo reakci na Zrušit.
+        now = time.monotonic()
+        pct = int(done_bytes / total * 100) if total else 0
+        if pct == last_report[1] and now - last_report[0] < 0.25:
+            return
+        last_report[0], last_report[1] = now, pct
+        try:
+            on_progress(done_bytes, total)
+        except Exception:  # noqa: BLE001 — ukazatel nesmí shodit stahování
+            pass
 
     try:
         for name, size in files:
@@ -300,10 +311,15 @@ def _emit(**state) -> None:
 
 
 def cancel_download() -> None:
-    """Požádá běžící stahování o ukončení. Nedokončená složka se uklidí."""
-    if _dl_thread is None or not _dl_thread.is_alive():
-        return
-    _dl_cancel.set()
+    """Požádá běžící stahování o ukončení. Nedokončená složka se uklidí.
+
+    Pod zámkem, ať klik přesně v okamžiku startu nového běhu nezruší omylem
+    ten nový místo starého. Opakovaný klik je neškodný — příznak je idempotentní.
+    """
+    with _dl_lock:
+        if _dl_thread is None or not _dl_thread.is_alive():
+            return
+        _dl_cancel.set()
     # Ohlásit hned — jinak by UI drželo „Stahuji X %", než vlákno doběhne.
     _emit(downloading=True, percent=0, progress_text="ruším…")
 

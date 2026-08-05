@@ -22,6 +22,7 @@ from AppKit import (
     NSMakeRect,
     NSPanel,
     NSScreen,
+    NSWindowAbove,
 )
 from WebKit import WKWebView, WKWebViewConfiguration
 
@@ -95,17 +96,30 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   </div>
 <script>
   function say(a){ try{ window.webkit.messageHandlers.spillway.postMessage({action:a}); }catch(e){} }
-  var _dl = false;
+  var _dl = false, _cancelling = false;
   function modelBtn(){
+    var b = document.getElementById('btnModel');
+    if(b.disabled) return;                 // opakovaný klik ignorovat
     // Během stahování se ze stejného tlačítka stane „Zrušit".
+    if(_dl){ _cancelling = true; b.textContent = 'Ruším…'; }
     say(_dl ? 'cancel' : 'download');
-    document.getElementById('btnModel').disabled = true;
+    b.disabled = true;
   }
   function render(s){
     document.getElementById('itModel').style.display = s.model ? 'none' : 'block';
     document.getElementById('itKey').style.display = s.key ? 'none' : 'block';
     _dl = !!s.downloading;
     var b = document.getElementById('btnModel'), prog = document.getElementById('prog');
+    // Po kliknutí na Zrušit zůstane tlačítko zamčené, dokud běh opravdu
+    // neskončí — jinak ho každé hlášení průběhu zase povolí a dá se klikat
+    // dokola, což jen zahltí most.
+    if(_cancelling && s.downloading){
+      prog.style.display = 'block';
+      document.getElementById('bar').style.width = (s.percent||0) + '%';
+      b.disabled = true; b.textContent = 'Ruším…';
+      return;
+    }
+    _cancelling = false;
     b.disabled = false;
     if(s.downloading){
       prog.style.display = 'block';
@@ -179,6 +193,7 @@ class NoticePanel:
         self._visible = False
         self._last: dict | None = None
         self.on_key = None       # doplní tray: 'key_open' | 'key_snooze'
+        self._parent = None      # okno, ke kterému je kartička připnutá
 
     # --- vzhled ---------------------------------------------------------------
 
@@ -217,33 +232,63 @@ class NoticePanel:
     # --- poloha a viditelnost -------------------------------------------------
 
     @objc.python_method
-    def show_beside(self, frame, *, model_ready: bool, has_key: bool) -> None:
-        """Ukáže kartičku vlevo od `frame` (rám okna, u kterého má viset).
+    def show_beside(self, parent, *, model_ready: bool, has_key: bool) -> None:
+        """Pověsí kartičku vlevo od okna `parent` (NSWindow).
 
-        Když je vše v pořádku, schová se — ať nevisí zbytečně.
+        Kartička se připojí jako **potomek okna**, ne jen posadí na souřadnice.
+        Díky tomu zmizí spolu s rodičem — když se popover zavře klikem jinam,
+        odejde i ona. Dřív to hlídal jen časovač a kartička uměla zůstat viset.
+
+        Nikdy rodiče nepřekrývá: kdyby vlevo nebylo místo, jde doprava od něj.
+        Překryv byl nebezpečný — klik na její tlačítko vypadal jako klik do
+        popoveru a otevíral Nastavení „samo od sebe".
         """
-        if model_ready and has_key:
+        if parent is None or (model_ready and has_key):
             self.hide()
             return
-        state = {"model": model_ready, "key": has_key,
-                 **models.download_state()}
+
+        state = {"model": model_ready, "key": has_key, **models.download_state()}
         self._last = state
         self._render(state)
 
-        x = float(frame.origin.x) - self.W + 4.0
-        y = float(frame.origin.y) + float(frame.size.height) - self.H - 6.0
+        pf = parent.frame()
+        gap = 8.0
+        x = float(pf.origin.x) - self.W - gap
+        y = float(pf.origin.y) + float(pf.size.height) - self.H
+
         screens = NSScreen.screens()
         if screens:
-            left = float(screens[0].frame().origin.x)
-            if x < left + 4.0:                       # vlevo není místo → doprava
-                x = float(frame.origin.x) + float(frame.size.width) - 4.0
+            vf = screens[0].visibleFrame()
+            left, bottom = float(vf.origin.x), float(vf.origin.y)
+            if x < left + 4.0:                      # vlevo se nevejde → doprava
+                x = float(pf.origin.x) + float(pf.size.width) + gap
+            y = max(bottom + 4.0, y)
+
         self.panel.setFrameOrigin_(NSMakePoint(x, y))
-        if not self._visible:
+
+        if self._parent is not parent:
+            self._detach()
+            try:
+                parent.addChildWindow_ordered_(self.panel, NSWindowAbove)
+                self._parent = parent
+            except Exception:  # noqa: BLE001 — bez vazby aspoň ukázat
+                self.panel.orderFrontRegardless()
+        elif not self._visible:
             self.panel.orderFrontRegardless()
-            self._visible = True
+        self._visible = True
+
+    @objc.python_method
+    def _detach(self) -> None:
+        if self._parent is not None:
+            try:
+                self._parent.removeChildWindow_(self.panel)
+            except Exception:  # noqa: BLE001
+                pass
+            self._parent = None
 
     @objc.python_method
     def hide(self) -> None:
+        self._detach()
         if self._visible:
             self.panel.orderOut_(None)
             self._visible = False
