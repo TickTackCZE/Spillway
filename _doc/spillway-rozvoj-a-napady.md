@@ -3,7 +3,7 @@
 > Kam dál. **Nic tady není hotové ani slíbené** — je to podklad k rozhodování, ne plán práce
 > (ten je v [spillway-plan-implementace.md](spillway-plan-implementace.md)).
 > Stav aplikace: **v1.2** · Aktualizováno: 5. 8. 2026
-> **Sekce 6 = odmítnuto / neaktuální. Ty nápady se do návrhů nevracejí.**
+> **Sekce 8 = odmítnuto / neaktuální. Ty nápady se do návrhů nevracejí.**
 
 ---
 
@@ -125,9 +125,79 @@ nepřeložil.
 ---
 
 
-## 3. Uživatelské rozhraní
+### 2.2 Vlastní klíč k jinému poskytovateli (OpenAI, Gemini)
 
-### 3.1 Průvodce oprávněními při prvním spuštění
+**Nápad:** uživatel si zadá klíč nejen k Anthropic, ale i k OpenAI nebo Google, a vybere,
+kdo má text upravovat.
+
+**Technicky je to malá práce.** Všichni tři mají stejný tvar volání — systémový pokyn plus
+uživatelská zpráva, zpátky text. Stačí tenká vrstva nad HTTP a tabulka cen; **nové SDK
+přidávat netřeba** (bundlu by to jen nafouklo velikost).
+
+**Skutečné riziko je jinde: zadání pro Claude je vyladěné NA Clauda.** Vzniklo měřením
+na reálné historii a přepisovalo se kvůli vymýšlení. Jiný model má jiné sklony — typicky
+víc přeformulovává a rozepisuje, což je přesně to, čemu jsme se bránili. „Podporuje víc
+poskytovatelů" tedy neznamená „funguje stejně dobře".
+
+**Postup, který dává smysl:**
+1. rozhraní pro poskytovatele + tenký HTTP klient (~2 dny),
+2. **profiltrovat historických 152 diktátů** přes každý model a porovnat výstupy proti
+   dnešnímu stavu — teprve to řekne, jestli jsou použitelné,
+3. u modelů, které projdou, případně doladit odchylky v zadání.
+
+**Náročnost:** 2 dny kód, zbytek ověření. **Riziko:** střední — u neověřeného modelu
+hrozí návrat vymýšlení, tedy chyba, kterou uživatel nemusí poznat.
+
+---
+
+## 3. Režim schůzka — dlouhý lokální přepis bez AI
+
+**Nápad:** v aplikaci se spustí nahrávání schůzky. Zvuk se přepíše **výhradně na tomhle
+Macu**, do žádného cloudu ani modelu nic neodejde a text se nijak neupravuje — uživatel
+dostane surový přepis a dál si s ním naloží sám.
+
+**Proč to dává smysl:** Otter, Fireflies, Granola i Zoom posílají nahrávku na server.
+Spillway už dnes přepisuje lokálně — jediné, co posílá ven, je hotový text k úpravě,
+a i to jde vypnout. V režimu schůzka neodejde ven **nic**. To je argument, který
+konkurence nemá, a v prostředí, kde se řeší mlčenlivost (právo, zdravotnictví, HR,
+interní porady), to není detail.
+
+**Jako bonus je to zadarmo na provoz** — žádné volání API, tedy nulový variabilní náklad.
+Sedne to přesně do varianty s vlastním klíčem (viz Monetizace).
+
+### Kde je skutečný háček — slyšet druhou stranu
+
+Bez zvuku protistrany je funkce k ničemu; mikrofon zachytí jen tebe. macOS **od 14.4**
+umí zachytit zvuk běžících aplikací (Core Audio process taps) **bez instalace ovladače**.
+Na starším systému by uživatel musel doinstalovat virtuální zvukové zařízení (BlackHole,
+Loopback), což je bariéra, o kterou většina lidí zakopne.
+
+- Pravděpodobně přibude **čtvrté oprávnění** (zachytávání zvuku / nahrávání obrazovky).
+- Míchání dvou zdrojů (mikrofon + systém) do jedné stopy je práce navíc; oddělené stopy
+  by naopak umožnily rozlišit „já" vs „ostatní" bez skutečné diarizace.
+
+### Další věci, které se musí vyřešit
+
+| Věc | Dnes | Co je potřeba |
+|---|---|---|
+| **Paměť** | audio drží v RAM, strop 5 minut (19 MB) | Hodina schůzky = **230 MB**, tři hodiny 690 MB. Nutné streamovat na disk, ne držet v paměti. |
+| **Doba zpracování** | diktát pár sekund | Hodinový záznam se musí přepisovat **po částech s průběžným výsledkem**, ne až na konci. |
+| **Uložení** | audio se nikdy neukládá (privacy) | Schůzka nutně vzniká jako soubor → nová rozvaha o soukromí, mazání, kde to leží. |
+| **Výstup** | text do schránky | Delší text chce vlastní okno, časové značky, export. |
+| **Právo** | — | Nahrávání hovoru vyžaduje souhlas účastníků. Aplikace na to musí upozornit, ne to řešit za uživatele. |
+
+**Náročnost:** velká — je to samostatný režim, ne úprava stávajícího. Odhad **3–4 týdny**,
+z toho polovina na zachytávání zvuku systému a na běh přes dlouhé nahrávky.
+
+**Rozvaha:** je to nejsilnější nápad v dokumentu z hlediska „proč by si to někdo koupil".
+Zároveň největší kus práce a jediný, který mění povahu produktu (z pomocníka při psaní
+na nástroj na schůzky).
+
+---
+
+## 4. Uživatelské rozhraní
+
+### 4.1 Průvodce oprávněními při prvním spuštění
 Spillway potřebuje tři povolení (mikrofon, sledování klávesnice, zpřístupnění). Dnes si je
 musíš najít sám a když jedno chybí, projeví se to jen tím, že „to nefunguje".
 
@@ -135,7 +205,7 @@ musíš najít sám a když jedno chybí, projeví se to jen tím, že „to nef
 tlačítkem otevře přesné místo v Nastavení systému, a na konci nabídne **zkušební diktát**
 s potvrzením „funguje".
 
-### 3.2 Úprava zadání pro AI (promptu) s resetem
+### 4.2 Úprava zadání pro AI (promptu) s resetem
 **Návrh:** v nastavení textové pole s tím, co se posílá Claudovi, plus tlačítko
 **„Vrátit na výchozí"**. Kdo chce, doladí si tón; kdo ne, nesahá na to.
 
@@ -148,12 +218,12 @@ zhoršit.
   „nepoužívej pomlčky") — připojí se k našemu promptu, nepřepíše ho.
 - **Expertní úroveň:** celý prompt k přepsání, schované za varováním, s resetem na výchozí.
 
-### 3.3 Úprava profilů aplikací
+### 4.3 Úprava profilů aplikací
 Dnes je pevně dané, že Mail = formální e-mail, Slack = neformální chat, editor = kód atd.
 **Návrh:** v nastavení tabulka „aplikace → profil", kde si to přepíšeš (třeba že Slack u tebe
 má být formální), a možnost přidat vlastní aplikaci nebo webovou doménu.
 
-### 3.4 Drobnosti
+### 4.4 Drobnosti
 - **Zabalit font Raleway** do aplikace (dnes padá na systémový, když ho nemáš).
 - **Doladit okénko u kurzoru** na více monitorech.
 - **Notarizace u Apple** (Developer ID, ~$99/rok) — odstraní varování „nelze ověřit vývojáře"
@@ -162,19 +232,44 @@ má být formální), a možnost přidat vlastní aplikaci nebo webovou doménu.
 
 ---
 
-## 4. Data a další platformy
+## 5. Data a další platformy
 
-### 4.1 Export historie a statistik
+### 5.1 Export historie a statistik
 Historie se od začátku ukládá strojově čitelně (`history.jsonl`), takže jde poslat jinam —
 na Raspberry Pi nebo do databáze — a dělat nad tím přehledy: kolik toho denně nadiktuji,
 kde nejvíc, jaké termíny se opakují, jestli se přepis v čase zlepšuje.
 
-### 4.2 Windows
-Jádro (přepis, AI úprava, statistiky) je přenositelné — asi **třetina kódu**. Přepsat by se
-musela „platformní vrstva": odchytávání klávesy, vkládání textu, zjištění aktivní aplikace a UI.
+### 5.2 Export diagnostiky (hypotéza)
+Když něco nefunguje, dnes je potřeba najít log ručně. **Návrh:** tlačítko, které složí
+do jednoho ZIPu log, nastavení (bez API klíče) a údaje o systému. U cizích uživatelů to
+je rozdíl mezi „pošlete mi log" a „klikněte sem".
+**Náročnost:** malá (~půl dne). **Nutné, jestli to má používat někdo další.**
+
+### 5.3 Export nahrávek (hypotéza)
+Dnes **nedává smysl** — audio se nikdy neukládá, není co exportovat. Smysl dostane teprve
+s režimem schůzka (viz 3), kde nahrávka nutně vznikne jako soubor. Pak by šlo nabídnout
+export zvuku i přepisu, ideálně s časovými značkami.
+**Podmíněno režimem schůzka.**
+
+### 5.4 Windows
+Rozšířilo by to okruh uživatelů řádově — Maců je zlomek trhu. Ale je to **největší
+položka ze všech nápadů**.
+
+Přenositelné je jádro: úprava textu, statistiky, nastavení, a dokonce i vzhled oken
+(je to HTML/CSS). Přepsat by se musela celá platformní vrstva — odchytávání klávesy,
+vkládání, zjištění aktivní aplikace, ikona v liště, plovoucí okénko. To je dnes
+postavené na PyObjC a AppKit, tedy **k přepsání beze zbytku**.
+
+**Horší je přepis.** `mlx-whisper` běží jen na Apple GPU. Na Windows zbývá CPU (pomalé),
+CUDA (jen NVIDIA) nebo DirectML. Hlavní přednost — „přepis je hotový dřív, než pustíš
+klávesu" — na běžném Windows notebooku nejspíš nevyjde.
+
 Princip držet stejný: **schránka + zkratka**, čtení kontextu jen pro informaci.
 
-### 4.3 iPhone
+**Náročnost:** 2–3 měsíce a **trvale dvojnásobná údržba**. Rozumné až ve chvíli, kdy
+se macOS verze prodává natolik, že to zaplatí.
+
+### 5.5 iPhone
 Tady je to jinak — iOS **nedovolí** aplikaci běžet na pozadí a vkládat text do cizích aplikací.
 Existuje ale jedna dobrá cesta:
 
@@ -193,18 +288,72 @@ Existuje ale jedna dobrá cesta:
 
 Varianta 3 je zajímavá i proto, že hodnota Spillway není jen v přepisu, ale právě v té úpravě.
 
-### 4.4 Android
+### 5.6 Android
 Android je vstřícnější: aplikace může být **plnohodnotná klávesnice**, smí běžet na pozadí
 a nemá tak tvrdé limity paměti. Šel by tam i model přímo v telefonu (na slabších přístrojích
 menší varianta), nebo stejné rozdělení jako u iPhonu (systémový přepis + naše úprava).
 
-### 4.5 Sdílení nastavení mezi zařízeními
+### 5.7 Sdílení nastavení mezi zařízeními
 Kdyby vznikla mobilní verze, dávalo by smysl sdílet aspoň **slovník výrazů** a nastavení stylu,
 aby se termíny psaly všude stejně.
 
 ---
 
-## 5. Poznámky z provozu (ať se to neopakuje)
+## 6. Monetizace
+
+> Podklad k rozhodování, ne plán. Čísla jsou **změřená na reálném provozu**, ne odhad.
+
+### 6.1 Kolik to reálně stojí
+Za 19 dní provozu: **185 diktátů (9,8 denně), náklad $0,77** → přepočteno **$1,22/měsíc
+≈ 29 Kč**. Podstatné je, že **44 % diktátů se AI vůbec neposílá** (krátké se upraví
+lokálně) a přepis na GPU nestojí nic.
+
+Náklad ale **roste se spotřebou**, zatímco předplatné je fixní:
+
+| Uživatel | API náklad | Marže při 50 Kč |
+|---|---|---|
+| jako dnes (10 diktátů/den) | 29 Kč | +21 Kč |
+| 3× aktivnější | 86 Kč | **−36 Kč** |
+| profesionál (100/den) | 288 Kč | **−238 Kč** |
+
+Z těch +21 Kč navíc ukousne platební brána a DPH. **Aktivní uživatel by byl ztrátový** —
+a právě ten má nejsilnější důvod platit.
+
+### 6.2 Dvě varianty produktu
+- **Vlastní klíč** — uživatel si zadá klíč k Anthropic (případně jinému poskytovateli,
+  viz 2.2). **Nulový variabilní náklad**, žádný server v cestě diktátu. Levnější varianta.
+  Bariéra: uživatel si musí založit účet a nabít kredit.
+- **S naším klíčem** — pohodlné, klik a jede. Vyžaduje **proxy server** (klíč nesmí do
+  aplikace), měření spotřeby a **limit**, jinak platí předchozí tabulka. Dražší varianta.
+
+Režim schůzka (viz 3) sedí do levnější varianty ideálně — neplatí se za něj nic.
+
+### 6.3 Co je potřeba postavit
+| Věc | Proč | Odhad |
+|---|---|---|
+| **Notarizace u Apple** ($99/rok) | dnes self-signed → Gatekeeper hlásí „nelze ověřit vývojáře" a cizí člověk to nenainstaluje | 1 den |
+| **Licencování** | klíč, aktivace, kontrola platnosti. **Musí fungovat offline** (podepsaný token, ověření bez sítě, občasná kontrola) — jinak přestane fungovat ve vlaku | 1–2 týdny |
+| **Platební brána** | Paddle je *merchant of record* → vyřeší DPH v celé EU za tebe; Stripe ne | 3–5 dní |
+| **Proxy na API** | jen pro dražší variantu; s ním přichází odpovědnost za zneužití a provozní náklad | 1–2 týdny |
+| **Automatické aktualizace** (Sparkle) | bez nich zůstanou zákazníci na rozbité verzi | 2–3 dny |
+| **Export diagnostiky** (5.2) | jinak je podpora neúnosná | ½ dne |
+| **Průvodce oprávněními** (4.1) | tři povolení; když jedno chybí, „prostě to nefunguje" → okamžitý refund | 3–4 dny |
+| **Anglické UI** | bez něj je trh jen ČR+SK | 3–5 dní |
+
+### 6.4 Co se snadno přehlédne
+- **Pasivní příjem není pasivní.** macOS každý rok něco rozbije (oprávnění, Accessibility),
+  API mění modely a ceny. Nejblíž pasivnímu je **jednorázová licence s vlastním klíčem** —
+  žádný server, žádné měření, žádné předplatné ke správě.
+- **Zásady soukromí musí uvést Anthropic jako zpracovatele.** Že zvuk neopouští stroj, je
+  nejsilnější argument — ale musí být formulovaný přesně, ne jako „vaše data jsou v bezpečí".
+- **Testováno na jednom stroji.** Intel Macy, starší macOS, jiné mikrofony, jiné jazyky
+  systému — nic z toho není ověřené.
+- **Konkurence bere $10–15/měsíc** (Wispr Flow, superwhisper, Aqua Voice). 50 Kč je
+  pětinásobně pod trhem, a přitom má Spillway silnější argument o soukromí.
+
+---
+
+## 7. Poznámky z provozu (ať se to neopakuje)
 
 - **Ikony si macOS cachuje podle cesty A NÁZVU souboru.** Po překreslení ikony nestačí
   přeinstalovat ani vyčistit systémové cache — nejjistější je změnit název `.icns`.
@@ -222,7 +371,7 @@ aby se termíny psaly všude stejně.
 
 ---
 
-## 6. ⛔ ODMÍTNUTO / NEAKTUÁLNÍ — už nenavrhovat
+## 8. ⛔ ODMÍTNUTO / NEAKTUÁLNÍ — už nenavrhovat
 
 **Tohle se nesmí vracet do návrhů.** Každý řádek je uzavřené rozhodnutí; když se objeví znovu, musí k tomu být nový důvod (nová data, změněné zadání), ne opakování.
 
@@ -239,7 +388,7 @@ aby se termíny psaly všude stejně.
 | **Vždy přepsat schránku posledním diktátem** (nevracet původní obsah) | ⛔ odmítnuto 4. 8. | **Změřeno na 154 diktátech:** 91 % se normálně vloží, jen 6 % skončí ve schránce — a ty už fallback řeší sám. Přeplácnutí by tedy poškodilo schránku v 91 % případů kvůli riziku v 6 %, které je navíc pojištěné dvakrát (lístek „Připraveno k vložení" + Historie, do které se zapisuje **každý** diktát bez ohledu na výsledek). Navíc by rozbilo běžný postup „zkopíruj odkaz → nadiktuj komentář → vlož odkaz" a vynutilo výjimku pro RDP. Rozhodnutí: schránka se po vložení **vrací** jako dosud. |
 | **„Přemluvit" (nahradit poslední vložení)** | ⛔ odmítnuto | Jednodušší je smazat a nadiktovat znovu. |
 | **Tichý režim / pauza** | ⛔ odmítnuto | Řeší se sám — bez řeči se nic nepřepisuje (je tam filtr ticha). |
-| **Slovník jako páry „špatně → správně"** | ⛔ odmítnuto | Ruční slovník stačí; automatické učení je slepá ulička (viz 7). |
+| **Slovník jako páry „špatně → správně"** | ⛔ odmítnuto | Ruční slovník stačí; automatické učení je slepá ulička (viz 9). |
 | **Hlasové editační a formátovací příkazy** | ⛔ odmítnuto 5. 8. | **Měřeno na 152 diktátech (9 112 slov):** editační fráze („přepiš", „odstraň") se 4× objevily jako běžný OBSAH — např. „jenom přepiš tu dvojku prosím". Rozpoznávání příkazů by tak ukusovalo kusy zadání, a navíc by otevřelo čtvrtá vrátka v pravidle NEZTRÁCEJ OBSAH, které stálo nejvíc práce. Formátovací příkazy (odrážka, nový řádek) jsou rizikově bezpečné (1 výskyt), ale uživatel je nechce — nemá pro ně use case. |
 | **Restart GPU vlákna při zaseknutí** | 🕓 neaktuální | Zaseknutí se po opravách neděje. Otevřít až kdyby nastalo. |
 
@@ -248,7 +397,7 @@ Streaming přepisu · oprava přeřeknutí („teda v 5") · prompt proti vymý�
 
 ---
 
-## 7. Proč nebude automatický slovník (analýza)
+## 9. Proč nebude automatický slovník (analýza)
 
 **Nápad byl:** ať se Spillway sám učí termíny, které špatně slyší, a přidává si je do slovníku.
 

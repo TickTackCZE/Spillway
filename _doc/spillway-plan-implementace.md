@@ -78,6 +78,19 @@ Log: `~/Library/Logs/Spillway/spillway.log` (obsahuje `AXIsProcessTrusted`, stav
 
 ---
 
+## Směr produktu (v1.3+)
+
+Rozhodnuto: aplikace se bude **monetizovat** (viz [rozvoj a nápady, sekce 6](spillway-rozvoj-a-napady.md)).
+Dvě varianty — **vlastní klíč** (levnější, nulový variabilní náklad) a **náš klíč s limitem**
+(pohodlnější, vyžaduje proxy). Potřebuje: notarizaci, licencování s offline ověřením,
+platební bránu (Paddle kvůli DPH), automatické aktualizace a export diagnostiky.
+
+Největší nová funkce v plánu je **režim schůzka** — dlouhý přepis čistě lokálně, bez AI
+a bez sítě. Klíčová technická otázka: zachytávání zvuku systému (macOS 14.4+ to umí bez
+ovladače) a běh přes hodinové nahrávky (dnešní strop je 5 minut v RAM).
+
+---
+
 ## Otevřená rozhodnutí
 
 - **Kontext pole u e-mailu:** profil `email` posílá `field_text[:3000]`, tj. i citovanou historii a podpis. Prompt zakazuje echo, ale je to velký blok tokenů. Zvážit omezení jen na text nad citací. (Vypínač „Číst kontext pole" existuje.)
