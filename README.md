@@ -66,8 +66,9 @@ uv run python set_api_key.py           # uloží API klíč do Keychain (getpass
 Podrž **F5**, mluv, pusť → text se vloží do aktivní aplikace. Model se při prvním
 běhu stáhne (~1,5 GB) do HuggingFace cache.
 
-> ⚠️ **Google Drive:** repo je v synchronizované složce. Když sync `.venv` zlobí,
-> založ virtualenv mimo Drive: `uv venv ~/.venvs/spillway` +
+> 💡 Máš-li repo ve složce synchronizované do cloudu (iCloud, Dropbox, Drive),
+> může sync kolidovat s `.venv`. Řešení: virtualenv mimo synchronizovanou
+> složku — `uv venv ~/.venvs/spillway` a
 > `export UV_PROJECT_ENVIRONMENT=~/.venvs/spillway`.
 
 ## Model a náklady
@@ -95,5 +96,9 @@ i unicode zahazují).
 ## Testy
 
 ```bash
-uv run pytest      # testy čisté logiky (bez GUI/API)
+uv run pytest      # testy čisté logiky (bez GUI, mikrofonu a API)
 ```
+
+Pokrývají zpracování přepisu, sestavení zadání pro Claude, rozhodování
+vložit-vs-schránka, geometrii ikony a skladbu obou stránek okna. Nic z toho
+nepotřebuje mikrofon ani API klíč, takže testy běží i v CI.
