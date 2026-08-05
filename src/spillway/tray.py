@@ -130,8 +130,6 @@ class SpillwayTray(rumps.App):
             if getattr(self.controller, "state", "IDLE") != "IDLE":
                 return  # neuvolňovat uprostřed nahrávání/zpracování
             idle_sec = config.get_auto_unload_seconds()
-            if not idle_sec:
-                return  # 0 = uživatel si přeje model držet načtený
             if self.controller.transcriber.unload_if_idle(idle_sec):
                 print(f"💤 Whisper model uvolněn z paměti (nečinný {idle_sec} s).")
         except Exception:  # noqa: BLE001

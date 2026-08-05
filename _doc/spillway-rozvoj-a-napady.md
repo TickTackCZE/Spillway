@@ -2,7 +2,7 @@
 
 > Kam dál. **Nic tady není hotové ani slíbené** — je to podklad k rozhodování, ne plán práce
 > (ten je v [spillway-plan-implementace.md](spillway-plan-implementace.md)).
-> Stav aplikace: **v1.1** · Aktualizováno: 30. 7. 2026
+> Stav aplikace: **v1.2** · Aktualizováno: 5. 8. 2026
 > **Sekce 6 = odmítnuto / neaktuální. Ty nápady se do návrhů nevracejí.**
 
 ---

@@ -117,7 +117,11 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .foot button{flex:1;border:0.5px solid var(--border);background:transparent;color:var(--text);font:inherit;font-size:13px;font-weight:600;padding:9px;border-radius:9px;cursor:pointer;}
   .foot button.primary{background:var(--accent);color:var(--onaccent);border-color:transparent;}
   /* Konec je jediná nevratná akce v popoveru → barevně oddělený od zbytku. */
-  .foot button.danger{background:var(--danger);color:#fff;border-color:transparent;}
+  /* Konec nemá soupeřit velikostí s Nastavením — je to jediná nevratná akce,
+     ale ne ta, kterou uživatel hledá nejčastěji. */
+  .foot .quit{display:flex;justify-content:center;margin-top:2px;}
+  .foot button.danger{flex:0 0 auto;width:auto;min-width:110px;padding:7px 22px;font-size:12px;
+    background:var(--danger);color:#fff;border-color:transparent;}
   #toast{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:var(--accent);color:var(--onaccent);
     font-size:12px;font-weight:600;padding:7px 14px;border-radius:20px;opacity:0;transition:opacity .18s;pointer-events:none;box-shadow:0 4px 14px var(--shadow);}
   #toast.show{opacity:1;}
@@ -166,7 +170,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
       <button class="primary" onclick="send({action:'open_settings'})">Nastavení</button>
       <button onclick="send({action:'open_help'})">Nápověda</button>
     </div>
-    <button class="danger" onclick="send({action:'quit'})">Konec</button>
+    <div class="quit"><button class="danger" onclick="send({action:'quit'})">Konec</button></div>
   </div>
 
   <div id="toast">Zkopírováno</div>
@@ -298,8 +302,19 @@ class _PopBridge(NSObject):
             height = int(float(h))
         except (TypeError, ValueError):
             return
-        # Výška obsahu + drobná rezerva; strop, ať se popover vejde na obrazovku.
-        height = max(320, min(height + 12, 760))
+        # Výška obsahu + drobná rezerva. Strop je vztažený k výšce obrazovky
+        # (mínus lišta a okraj), ne pevné číslo — pevných 760 px uřízlo
+        # tlačítko Konec, jakmile obsahu přibylo.
+        limit = 760
+        try:
+            from AppKit import NSScreen
+
+            screen = NSScreen.mainScreen()
+            if screen is not None:
+                limit = int(screen.visibleFrame().size.height) - 24
+        except Exception:  # noqa: BLE001
+            pass
+        height = max(320, min(height + 12, limit))
         self.popover.setContentSize_((320, height))
 
     @objc.python_method

@@ -154,23 +154,21 @@ AUTO_UNLOAD_MAX_SEC = 600
 def clamp_auto_unload(value) -> int | None:
     """Ověří zadaný práh v sekundách. None = nesmysl (volající si nechá starý).
 
-    0 je platná hodnota a znamená „neuvolňovat nikdy". Cokoliv jiného se
-    ořízne do povoleného rozsahu, ať z UI ani z proměnné prostředí nemůže
-    přijít hodnota, která appku rozhodí.
+    Vše ostatní se ořízne do rozsahu 10–600 s, ať z UI ani z proměnné prostředí
+    nemůže přijít hodnota, která appku rozhodí. Držet model načtený natrvalo
+    nejde schválně — zabírá ~2 GB a reload stojí jen ~1,6 s.
     """
     try:
         sec = int(round(float(str(value).strip().replace(",", "."))))
     except (TypeError, ValueError, AttributeError):
         return None
-    if sec <= 0:
-        return 0
     return max(AUTO_UNLOAD_MIN_SEC, min(AUTO_UNLOAD_MAX_SEC, sec))
 
 
 def get_auto_unload_seconds() -> int:
     """[R5] Po kolika sekundách nečinnosti uvolnit Whisper model z (unified)
     paměti (~1,5–2 GB); znovu se lazy-loadne při dalším diktátu (~1,6 s).
-    0 = nikdy. Env SPILLWAY_AUTO_UNLOAD_SEC přebíjí uložené nastavení."""
+    Env SPILLWAY_AUTO_UNLOAD_SEC přebíjí uložené nastavení."""
     raw = os.environ.get("SPILLWAY_AUTO_UNLOAD_SEC") or settings.get("auto_unload_sec", 60)
     sec = clamp_auto_unload(raw)
     return 60 if sec is None else sec

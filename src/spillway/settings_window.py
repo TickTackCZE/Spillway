@@ -61,13 +61,14 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   *{margin:0;padding:0;box-sizing:border-box;}
   :root{ /* DARK · Půlnoční (výchozí) */
     --bg:#0F1117;--surface:#1A1F2E;--surface2:#252D42;--text:#E2E8F0;--muted:#94A3B8;
-    --accent:#818CF8;--border:rgba(129,140,248,0.2);--onaccent:#0F1117;--success:#4ADE80;--danger:#E11D48;--shadow:rgba(0,0,0,0.5);}
+    --accent:#818CF8;--border:rgba(129,140,248,0.2);--onaccent:#0F1117;--success:#4ADE80;--danger:#E11D48;--shadow:rgba(0,0,0,0.5);--chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2394A3B8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");}
   @media (prefers-color-scheme: light){ :root:not([data-theme]){
     --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#EEF2F8;--text:#1E293B;--muted:#64748B;
-    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--danger:#E11D48;--shadow:rgba(30,41,59,0.18);} }
+    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--danger:#E11D48;--shadow:rgba(30,41,59,0.18);--chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2364748B' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");} }
   :root[data-theme="light"]{
     --bg:#F8FAFC;--surface:#FFFFFF;--surface2:#EEF2F8;--text:#1E293B;--muted:#64748B;--shadow:rgba(30,41,59,0.18);
-    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--danger:#E11D48;}
+    --accent:#3B82F6;--border:rgba(59,130,246,0.15);--onaccent:#FFFFFF;--success:#16A34A;--danger:#E11D48;
+    --chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2364748B' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");}
   html,body{background:var(--surface);}
   body{font-family:-apple-system,'Raleway',sans-serif;color:var(--text);padding:22px;}
   .head{display:flex;align-items:center;gap:12px;margin-bottom:4px;}
@@ -86,6 +87,9 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   input,textarea,select{width:100%;background:var(--bg);border:0.5px solid var(--border);border-radius:9px;color:var(--text);
     font-family:inherit;font-size:13px;padding:9px 11px;outline:none;}
   textarea{resize:vertical;min-height:84px;line-height:1.5;}
+  select{appearance:none;-webkit-appearance:none;background-image:var(--chev);
+    background-repeat:no-repeat;background-position:right 12px center;padding-right:34px;cursor:pointer;}
+  select:hover{border-color:color-mix(in srgb,var(--accent) 55%,transparent);}
   input:focus,textarea:focus,select:focus{border-color:var(--accent);}
   .btn{background:var(--accent);color:var(--onaccent);border:none;border-radius:9px;padding:9px 16px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;white-space:nowrap;}
   .btn.danger{background:transparent;border:0.5px solid var(--danger);color:var(--danger);min-width:112px;text-align:center;}
@@ -131,7 +135,11 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   .st .ic.one svg{opacity:1;}
   .st .sl{font-size:12px;font-weight:600;} .st .sd{font-size:11px;color:var(--muted);margin-top:1px;}
   .privacy{display:flex;align-items:center;gap:8px;font-size:11px;}
-  .privacy .box{flex:1;background:var(--surface);border:0.5px solid var(--border);border-radius:9px;padding:9px;text-align:center;}
+  /* Stejná šířka i výška, ať schéma nevypadá jako váhy. */
+  .privacy{align-items:stretch;}
+  .privacy .box{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-start;
+    background:var(--surface);border:0.5px solid var(--border);border-radius:9px;padding:9px;text-align:center;}
+  .privacy .arrow{display:flex;align-items:center;}
   .privacy .box b{display:block;font-size:12px;margin-bottom:2px;}
   .privacy .box span{color:var(--muted);font-size:10px;line-height:1.35;display:block;}
 </style></head><body>
@@ -170,15 +178,15 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="rowt"><div class="l">Chytrá mezera<small>Mezera před textem, když jsi na konci slova</small></div><div class="sw" data-key="auto_space" onclick="tog(this)"></div></div>
     <div class="rowt"><div class="l">Odesílání do AI modelu<small>Úprava a formátování diktátu přes Claude</small></div><div class="sw" data-key="ai_edit" onclick="tog(this)"></div></div>
     <div class="rowt sub" id="fieldCtxRow"><div class="l">Číst kontext pole<small>Odesílání obsahu pole AI modelu</small></div><div class="sw" data-key="field_context" onclick="tog(this)"></div></div>
-    <div class="rowt">
-      <div class="l">Uvolnit model z paměti<small>Po jaké nečinnosti (v sekundách). 0 = držet stále</small></div>
+    <div class="rowt" style="border-top:0.5px solid var(--border);">
+      <div class="l">Uvolnit model z paměti (10–600 s)<small>Po jaké nečinnosti (v sekundách), model zabírá ~2 GB RAM</small></div>
       <div class="field" style="width:auto;align-items:center;gap:8px;">
         <input id="unload" type="text" inputmode="numeric" style="width:74px;text-align:right;"
                onchange="saveUnload()" onblur="saveUnload()">
         <span class="l" style="color:var(--muted);">s</span>
       </div>
     </div>
-    <div class="hint" id="unloadHint">Model zabírá ~2 GB. Znovu se načte při dalším diktátu (~1,6 s). Rozsah 10–600 s.</div>
+    <div class="hint" id="unloadHint" style="display:none;"></div>
   </div>
 
   <div class="card"><h3>Slovník výrazů</h3>
@@ -224,7 +232,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
   <div class="card"><h3>Jak to funguje</h3>
     <div class="flow">
-      <div class="step"><div class="big"><span class="kbd">F5</span></div><div class="t">Podrž</div><div class="d">kdekoliv v systému</div></div>
+      <div class="step"><div class="big"><span class="kbd hk">F5</span></div><div class="t">Podrž</div><div class="d">kdekoliv v systému</div></div>
       <div class="arrow">→</div>
       <div class="step"><div class="big">🎙️</div><div class="t">Mluv</div><div class="d">běžně, i s přeřeknutím</div></div>
       <div class="arrow">→</div>
@@ -254,7 +262,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
       <div class="st"><div class="ic one">__IC_IDLE__</div><div><div class="sl">Klid</div><div class="sd">Nic neběží</div></div></div>
       <div class="st"><div class="ic">__IC_REC__</div><div><div class="sl">Nahrávám</div><div class="sd">Sloupce skáčou podle tvého hlasu — poznáš, že tě mikrofon slyší</div></div></div>
       <div class="st"><div class="ic">__IC_PROC__</div><div><div class="sl">Zpracovávám</div><div class="sd">Vlna běží zleva doprava</div></div></div>
-      <div class="st"><div class="ic one">__IC_CANCEL__</div><div><div class="sl">Ruším</div><div class="sd">Po stisku <span class="kbd">Escape</span></div></div></div>
+      <div class="st"><div class="ic one">__IC_CANCEL__</div><div><div class="sl">Ruším</div><div class="sd">Po stisku <span class="kbd ck">Escape</span></div></div></div>
     </div>
   </div>
 
@@ -283,7 +291,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
 
   </div><!-- /pageHelp -->
 
-  <div class="foot">Spillway · v1.1</div>
+  <div class="foot">Spillway · v1.2</div>
 
 <script>
   function send(m){ try{ window.webkit.messageHandlers.spillway.postMessage(m); }catch(e){} }
@@ -304,11 +312,10 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     var el = document.getElementById('unload');
     var raw = (el.value || '').trim().replace(',', '.');
     var n = Number(raw);
-    if(raw === '' || !isFinite(n)){ el.value = lastUnload; flashUnload('Zadej číslo v sekundách.'); return; }
+    if(raw === '' || !isFinite(n)){ el.value = lastUnload; flashUnload('Zadej počet sekund (10–600).'); return; }
     n = Math.round(n);
-    if(n > 0 && n < 10){ n = 10; flashUnload('Nejméně 10 s — jinak by se model uvolňoval mezi větami.'); }
+    if(n < 10){ n = 10; flashUnload('Nejméně 10 s — jinak by se model uvolňoval mezi větami.'); }
     if(n > 600){ n = 600; flashUnload('Nejvíc 600 s (10 minut).'); }
-    if(n < 0){ n = 0; }
     el.value = n; lastUnload = n;
     send({action:'auto_unload', value:n});
   }
@@ -316,10 +323,9 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   function flashUnload(msg){
     var h = document.getElementById('unloadHint');
     if(!h) return;
-    h.dataset.base = h.dataset.base || h.textContent;
-    h.textContent = msg; h.style.color = 'var(--danger)';
+    h.textContent = msg; h.style.color = 'var(--danger)'; h.style.display = 'block';
     clearTimeout(unloadTimer);
-    unloadTimer = setTimeout(function(){ h.textContent = h.dataset.base; h.style.color = ''; }, 3200);
+    unloadTimer = setTimeout(function(){ h.style.display = 'none'; }, 3200);
   }
   function recordHotkey(){
     document.getElementById('hotkeyBtn').textContent = 'Stiskni klávesu…';
@@ -339,8 +345,10 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     document.getElementById(which+'Btn').textContent = 'Změnit';
     document.getElementById(which+'Btn').disabled = false;
     document.getElementById(which+'Label').textContent = h.label;
-    var help = document.getElementById(which === 'cancel' ? 'helpCancel' : 'helpHotkey');
-    if(help) help.textContent = h.label;
+    var cls = which === 'cancel' ? '.kbd.ck' : '.kbd.hk';
+    var id = which === 'cancel' ? 'helpCancel' : 'helpHotkey';
+    var one = document.getElementById(id); if(one) one.textContent = h.label;
+    document.querySelectorAll(cls).forEach(function(el){ el.textContent = h.label; });
   }
   function cancelHotkey(which){
     which = which || 'hotkey';
@@ -415,6 +423,9 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     // jedním voláním, ať se nemůžou rozejít.
     [['hotkeyLabel',hotkey],['helpHotkey',hotkey],['cancelLabel',cancel],['helpCancel',cancel]]
       .forEach(function(kv){ var el=document.getElementById(kv[0]); if(el && kv[1]) el.textContent = kv[1]; });
+    // Klávesy ve schématech nápovědy (může jich být víc než jedna).
+    document.querySelectorAll('.kbd.hk').forEach(function(el){ if(hotkey) el.textContent = hotkey; });
+    document.querySelectorAll('.kbd.ck').forEach(function(el){ if(cancel) el.textContent = cancel; });
   }
   function applyState(s){
     setKeyLabels(s.hotkey_label || 'F5', s.cancel_label || 'Escape');

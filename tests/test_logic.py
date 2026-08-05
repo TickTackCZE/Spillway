@@ -1533,9 +1533,9 @@ def test_auto_unload_rejects_nonsense_and_clamps_to_range():
     for bad in ("", "abc", "12x", None, "  ", "1.2.3"):
         assert clamp_auto_unload(bad) is None, f"{bad!r} mělo být odmítnuto"
 
-    # 0 je platné a znamená „neuvolňovat nikdy".
-    assert clamp_auto_unload(0) == 0
-    assert clamp_auto_unload("-5") == 0
+    # Držet model natrvalo nejde — 0 i záporná hodnota spadnou na minimum.
+    assert clamp_auto_unload(0) == AUTO_UNLOAD_MIN_SEC
+    assert clamp_auto_unload("-5") == AUTO_UNLOAD_MIN_SEC
 
     # Ořez do rozsahu — z UI ani z prostředí nesmí přijít hodnota, co appku rozhodí.
     assert clamp_auto_unload(1) == AUTO_UNLOAD_MIN_SEC
@@ -1705,3 +1705,24 @@ def test_popover_footer_actions():
     # Konec je jediná nevratná akce → musí být barevně oddělený.
     assert 'class="danger"' in html and "open_help" in html
     assert "--danger:#E11D48" in html, "červená z Domovoy palety"
+
+
+def test_help_shows_no_hardcoded_configurable_keys():
+    from spillway import settings_window as sw
+
+    html = sw._HTML
+    # Nastavitelné klávesy se v nápovědě nesmí psát natvrdo — po změně v
+    # Nastavení by v nápovědě zůstala stará hodnota.
+    help_part = html[html.index('id="pageHelp"'):html.index("/pageHelp")]
+    for token in (">F5<", ">Escape<"):
+        for occurrence in range(help_part.count(token)):
+            idx = -1
+            for _ in range(occurrence + 1):
+                idx = help_part.index(token, idx + 1)
+            snippet = help_part[max(0, idx - 90):idx]
+            assert ('class="kbd hk"' in snippet or 'class="kbd ck"' in snippet
+                    or 'id="helpHotkey"' in snippet or 'id="helpCancel"' in snippet), (
+                f"natvrdo napsaná klávesa {token} v nápovědě: …{snippet[-70:]}"
+            )
+    # ⌘V je systémová zkratka pro vložení, ta se nenastavuje — smí být natvrdo.
+    assert "⌘V" in help_part

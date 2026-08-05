@@ -102,8 +102,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "Spillway",
         "CFBundleDisplayName": "Spillway",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "0.1.0",
+        "CFBundleShortVersionString": "1.2.0",
+        "CFBundleVersion": "1.2.0",
         # Menu bar appka — žádná ikona v Docku, žádné okno na startu.
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
