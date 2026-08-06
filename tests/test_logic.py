@@ -2724,3 +2724,63 @@ def test_only_named_user_actions_open_settings():
     calls = re.findall(r"open_settings\((?!self)[^)]*\)", src)
     missing = [c for c in calls if "why=" not in c]
     assert not missing, f"otevření bez důvodu: {missing}"
+
+
+# --- Brána proti tichu: absolutní délka řeči, ne podíl ----------------------
+def _clip(total_s, speech_s, level=0.05, floor=0.001):
+    import numpy as np
+
+    sr = 16000
+    a = np.random.normal(0, floor, int(total_s * sr)).astype("float32")
+    n = int(speech_s * sr)
+    if n:
+        a[:n] = np.random.normal(0, level, n)
+    return a
+
+
+def test_silence_gate_does_not_scale_with_recording_length():
+    from spillway.transcribe import _is_silence
+
+    # SKUTEČNÁ CHYBA z provozu: brána počítala PODÍL řeči proti prahu 1 %, takže
+    # u 300s nahrávky bylo potřeba 3 s řeči, kdežto u 10s jen 0,1 s. Pětiminutový
+    # diktát s 1,7 s řeči (0,57 %) se zahodil CELÝ a přepis se ani nespustil.
+    for total in (5, 30, 60, 300, 600):
+        assert not _is_silence(_clip(total, 1.7)), (
+            f"{total}s nahrávka s 1,7 s řeči se nesmí zahodit jako ticho"
+        )
+
+
+def test_real_silence_is_still_thrown_away():
+    from spillway.transcribe import _is_silence
+
+    # Brána pořád musí chránit mlx před halucinací na tichu („Titulky vytvořil…").
+    assert _is_silence(_clip(300, 0)), "nahrávka bez řeči se přepisovat nemá"
+    assert _is_silence(_clip(0.05, 0)), "kratší než 0,1 s taky ne"
+    # Hranice: pod 0,25 s řeči to ještě není diktát.
+    assert _is_silence(_clip(10, 0.1))
+    assert not _is_silence(_clip(10, 0.5))
+
+
+def test_log_says_how_loud_the_recording_was():
+    from spillway.transcribe import level_summary
+
+    # Bez hlasitosti v logu nešlo po ztraceném diktátu poznat, jestli mikrofon
+    # nezachytil nic, nebo jen tiše (AirPods v HFP jsou znatelně tišší).
+    loud = level_summary(_clip(3, 3, level=0.08))
+    quiet = level_summary(_clip(3, 3, level=0.004))
+    assert "špička" in loud and "pozadí" in loud and "práh" in loud
+    assert loud != quiet, "hlasitá a tichá nahrávka nesmí vypadat stejně"
+    assert level_summary(_clip(0.001, 0)) == "bez signálu"
+
+
+def test_tap_dropout_is_never_silent():
+    import inspect
+
+    from spillway import hotkey
+
+    # Tap se po výpadku zapínal potichu, takže o ztrátě kláves (a tím
+    # i o ztraceném puštění) nebyla v logu stopa.
+    src = inspect.getsource(hotkey.HotkeyListener._callback)
+    head = src[:src.index("CGEventTapEnable")]
+    assert "print(" in head, "výpadek event tapu se musí objevit v logu"
+    assert "Secure Input" in src, "u ByUserInput má log říct, co to obvykle je"

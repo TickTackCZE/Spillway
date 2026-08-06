@@ -23,7 +23,12 @@ from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner, basic_cleanup
 from .paste import copy_to_clipboard, paste_text
-from .transcribe import Transcriber, next_segment_boundary, voiced_seconds
+from .transcribe import (
+    Transcriber,
+    level_summary,
+    next_segment_boundary,
+    voiced_seconds,
+)
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
 
@@ -886,7 +891,8 @@ class Controller:
             audio, streaming = self._collect_audio()
             audio_secs = len(audio) / 16000.0
             speech_secs = voiced_seconds(audio)  # bez ticha/pauz → tempo řeči
-            print(f"🎙️ audio {audio_secs:.1f} s ({len(audio)} vz.) · řeč {speech_secs:.1f} s")
+            print(f"🎙️ audio {audio_secs:.1f} s ({len(audio)} vz.) · řeč {speech_secs:.1f} s"
+                  f" · {level_summary(audio)}")
             if audio.size == 0:
                 # Prázdné audio = nic se nenahrálo (stream se neotevřel včas /
                 # moc krátký stisk). Diagnostika bugu „diktát se ztratil".

@@ -78,32 +78,61 @@ def _pick_backend() -> str:
     return "faster"
 
 
+_SPEECH_MIN_S = 0.25   # míň řeči než tohle = opravdu není co přepisovat
+_FRAME_MS = 30
+_SPEECH_RMS = 0.01     # hlasitost rámce, od které se počítá jako řeč
+
+
+def _frame_rms(audio: np.ndarray, frame_ms: int = _FRAME_MS) -> np.ndarray:
+    """Hlasitost po rámcích (RMS). Prázdné pole, když je audio kratší než rámec."""
+    n = int(SAMPLE_RATE * frame_ms / 1000)
+    if audio is None or n <= 0 or audio.size < n:
+        return np.zeros(0, dtype=np.float32)
+    usable = audio.size - (audio.size % n)
+    frames = audio[:usable].astype(np.float32).reshape(-1, n)
+    return np.sqrt(np.mean(frames ** 2, axis=1))
+
+
 def _is_silence(audio: np.ndarray) -> bool:
-    """Levná brána proti tichu pro mlx (které vlastní VAD nemá) — než by mlx na
-    tichu halucinovalo („Titulky vytvořil…"). Ověřeno: ticho/šum má „voiced"
-    podíl ≤ 0,1 %, i tichá řeč ≥ 59 %, takže práh 1 % bezpečně odděluje.
-    Silero VAD se sem záměrně nedává — na CPU by ukusoval z GPU zrychlení."""
-    if audio.size < 1600:  # < 0,1 s → nic k přepisu
+    """Je v nahrávce vůbec něco k přepsání? Brána proti halucinaci mlx na tichu
+    („Titulky vytvořil…"); mlx vlastní VAD nemá. Silero VAD se sem záměrně
+    nedává — na CPU by ukusoval z GPU zrychlení.
+
+    Rozhoduje ABSOLUTNÍ délka řeči, ne její podíl na nahrávce. Podíl byl chyba:
+    práh 1 % znamenal, že u 300s nahrávky je potřeba 3 s řeči, kdežto u 10s
+    stačí 0,1 s. Čím déle člověk nahrával, tím spíš mu appka zahodila i to, co
+    opravdu řekl — a zahodila to CELÉ, přepis se ani nespustil.
+    """
+    if audio is None or audio.size < 1600:  # < 0,1 s → nic k přepisu
         return True
-    voiced = float(np.mean(np.abs(audio) > 0.01))
-    return voiced < 0.01
+    return voiced_seconds(audio) < _SPEECH_MIN_S
 
 
-def voiced_seconds(audio: np.ndarray, frame_ms: int = 30, thresh: float = 0.01) -> float:
+def voiced_seconds(audio: np.ndarray, frame_ms: int = _FRAME_MS,
+                   thresh: float = _SPEECH_RMS) -> float:
     """Odhad délky SKUTEČNÉ řeči (bez ticha a pauz) — pro „tempo řeči". Sečte
     30ms rámce, jejichž RMS překročí práh; levné, bez VAD modelu. Ticho/pauzy
     (RMS pod prahem) se nezapočítají, takže tempo = slova / minuty MLUVENÍ."""
     if audio is None or audio.size == 0:
         return 0.0
-    n = int(SAMPLE_RATE * frame_ms / 1000)
-    if n <= 0:
-        return 0.0
-    usable = audio.size - (audio.size % n)
-    if usable <= 0:
+    rms = _frame_rms(audio, frame_ms)
+    if rms.size == 0:
         return float(audio.size) / SAMPLE_RATE
-    frames = audio[:usable].astype(np.float32).reshape(-1, n)
-    rms = np.sqrt(np.mean(frames ** 2, axis=1))
     return int(np.count_nonzero(rms > thresh)) * frame_ms / 1000.0
+
+
+def level_summary(audio: np.ndarray) -> str:
+    """Hlasitost nahrávky do logu: špička · pozadí · práh.
+
+    Bez toho nejde po ztraceném diktátu poznat, jestli mikrofon nezachytil nic,
+    nebo jen tiše — a to je rozdíl mezi mrtvým vstupem a špatným zařízením
+    (AirPods v režimu HFP jsou znatelně tišší než vestavěný mikrofon).
+    """
+    rms = _frame_rms(audio)
+    if rms.size == 0:
+        return "bez signálu"
+    return (f"špička {float(rms.max()):.4f} · pozadí "
+            f"{float(np.percentile(rms, 10)):.4f} · práh {_SPEECH_RMS:.4f}")
 
 
 def next_segment_boundary(
