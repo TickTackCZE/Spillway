@@ -22,7 +22,6 @@ from AppKit import (
     NSMakeRect,
     NSPanel,
     NSScreen,
-    NSWindowAbove,
 )
 from WebKit import WKWebView, WKWebViewConfiguration
 
@@ -107,8 +106,8 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     b.disabled = true;
   }
   function render(s){
-    document.getElementById('itModel').style.display = s.model ? 'none' : 'block';
-    document.getElementById('itKey').style.display = s.key ? 'none' : 'block';
+    document.getElementById('itModel').style.display = s.ready ? 'none' : 'block';
+    document.getElementById('itKey').style.display = s.key_ok ? 'none' : 'block';
     _dl = !!s.downloading;
     var b = document.getElementById('btnModel'), prog = document.getElementById('prog');
     // Po kliknutí na Zrušit zůstane tlačítko zamčené, dokud běh opravdu
@@ -195,9 +194,6 @@ class NoticePanel:
 
         self._visible = False
         self._last: dict | None = None
-        # Poslední známý stav klíče. Výchozí True: dokud se `show_beside`
-        # neozve, nemá se o klíč otravovat (radši nic než falešné varování).
-        self._has_key = True
         self.on_key = None       # doplní tray: 'key_open' | 'key_snooze'
         self._parent = None      # okno, ke kterému je kartička připnutá
         self._pos = None         # poslední poloha, ať se nepřesazuje zbytečně
@@ -212,17 +208,6 @@ class NoticePanel:
         return True
 
     @objc.python_method
-    def _compose(self, *, model_ready: bool, has_key: bool) -> dict:
-        """Jediné místo, kde se skládá stav kartičky.
-
-        Dřív ho skládaly dvě cesty zvlášť a ta z odběru stahování posílala jen
-        tři klíče navrch toho, co zbylo z minula. Při úplně prvním volání tam
-        `key` vůbec nebyl (`undefined` v JS), takže se ukázala hláška o
-        chybějícím API klíči i tomu, kdo ho zadaný má.
-        """
-        return {"model": model_ready, "key": has_key, **models.download_state()}
-
-    @objc.python_method
     def _apply(self, state: dict) -> None:
         """Překreslí, JEN když se stav změnil.
 
@@ -233,23 +218,6 @@ class NoticePanel:
         """
         if state != self._last and self._render(state):
             self._last = state
-
-    @objc.python_method
-    def on_download_state(self, _st: dict) -> None:
-        """Postup stahování z `models` — musí zpátky na hlavní vlákno.
-
-        Stav se skládá znovu z `models.download_state()`, ne z předaného `_st`:
-        je to týž údaj a takhle vede do kartičky jediná cesta.
-        """
-        from Foundation import NSOperationQueue
-
-        def apply() -> None:
-            state = self._compose(model_ready=models.is_ready(), has_key=self._has_key)
-            self._apply(state)
-            if state["model"]:
-                self.hide()
-
-        NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
 
     @objc.python_method
     def on_key_action(self, what: str) -> None:
@@ -263,7 +231,7 @@ class NoticePanel:
     # --- poloha a viditelnost -------------------------------------------------
 
     @objc.python_method
-    def show_beside(self, parent, *, model_ready: bool, has_key: bool) -> None:
+    def show_beside(self, parent, snap: dict) -> None:
         """Pověsí kartičku vlevo od okna `parent` (NSWindow).
 
         Kartička se připojí jako **potomek okna**, ne jen posadí na souřadnice.
@@ -274,12 +242,11 @@ class NoticePanel:
         Překryv byl nebezpečný — klik na její tlačítko vypadal jako klik do
         popoveru a otevíral Nastavení „samo od sebe".
         """
-        if parent is None or (model_ready and has_key):
+        if parent is None or (snap["ready"] and snap["key_ok"]):
             self.hide()
             return
 
-        self._has_key = has_key   # ať to ví i odběr postupu stahování
-        self._apply(self._compose(model_ready=model_ready, has_key=has_key))
+        self._apply(snap)
 
         pf = parent.frame()
         gap = 8.0
@@ -298,29 +265,30 @@ class NoticePanel:
             self._pos = (x, y)
             self.panel.setFrameOrigin_(NSMakePoint(x, y))
 
+        # Kartička NENÍ potomek rodičovského okna (`addChildWindow_`). Vypadá
+        # to lákavě — zmizela by s ním sama — ale u popoveru to rozbíjí jeho
+        # `Transient` chování: s připnutým potomkem se popover přestane zavírat
+        # klikem mimo. O to, kdy kartička zmizí, se proto stará JEDNO místo:
+        # `tray._update_notice`, které se ptá, jestli rodič vůbec svítí.
         if self._parent is not parent:
-            self._detach()
+            self._parent = parent
+            # Nad rodičem musí být i bez vazby — popover má vyšší hladinu než
+            # běžné okno, takže se hladina bere z něj, ne natvrdo.
             try:
-                parent.addChildWindow_ordered_(self.panel, NSWindowAbove)
-                self._parent = parent
-            except Exception:  # noqa: BLE001 — bez vazby aspoň ukázat
-                self.panel.orderFrontRegardless()
-        elif not self._visible:
+                self.panel.setLevel_(int(parent.level()) + 1)
+            except Exception:  # noqa: BLE001
+                self.panel.setLevel_(_STATUS_LEVEL)
+        if not self._visible:
             self.panel.orderFrontRegardless()
         self._visible = True
 
     @objc.python_method
-    def _detach(self) -> None:
-        if self._parent is not None:
-            try:
-                self._parent.removeChildWindow_(self.panel)
-            except Exception:  # noqa: BLE001
-                pass
-            self._parent = None
+    def is_visible(self) -> bool:
+        return self._visible
 
     @objc.python_method
     def hide(self) -> None:
-        self._detach()
+        self._parent = None
         if self._visible:
             self.panel.orderOut_(None)
             self._visible = False

@@ -26,7 +26,7 @@ from AppKit import (
 from PyObjCTools import AppHelper
 from WebKit import WKWebView, WKWebViewConfiguration
 
-from . import autostart, config, design, keymap, models, settings, stats
+from . import autostart, config, design, keymap, models, settings, stats, status
 from .config import KEYRING_ACCOUNT, KEYRING_SERVICE
 from .webview import run_js
 
@@ -203,6 +203,7 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
     <div class="rowt"><div class="l">Chytrá mezera<small>Mezera před textem, když jsi na konci slova</small></div><div class="sw" data-key="auto_space" onclick="tog(this)"></div></div>
     <div class="rowt"><div class="l">Odesílání do AI modelu<small>Úprava a formátování diktátu přes Claude</small></div><div class="sw" data-key="ai_edit" onclick="tog(this)"></div></div>
     <div class="rowt sub" id="fieldCtxRow"><div class="l">Číst kontext pole<small>Odesílání obsahu pole AI modelu</small></div><div class="sw" data-key="field_context" onclick="tog(this)"></div></div>
+    <div class="rowt"><div class="l">Ukládat texty diktátů<small>Bez toho zůstanou jen čísla — počty, tempo, náklady</small></div><div class="sw" data-key="keep_dictation_texts" onclick="tog(this)"></div></div>
     <div class="rowt" style="border-top:0.5px solid var(--border);">
       <div class="l">Uvolnit model z paměti (10–600 s)<small>Po jaké nečinnosti (v sekundách), model zabírá ~2 GB RAM</small></div>
       <div class="field" style="width:auto;align-items:center;gap:8px;">
@@ -253,7 +254,6 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   </div>
 
   <div class="card"><h3>Data a soukromí</h3>
-    <div class="rowt"><div class="l">Ukládat texty diktátů<small>Bez toho zůstanou jen čísla — počty, tempo, náklady</small></div><div class="sw" data-key="keep_dictation_texts" onclick="tog(this)"></div></div>
     <div class="rowt">
       <div class="l">Reset statistik<small>Vynuluje počty, tempo, náklady i aktivitu</small></div>
       <button class="btn danger" data-label="Resetovat" onclick="armReset(this,'reset_stats')">Resetovat</button>
@@ -633,7 +633,7 @@ class _Bridge(NSObject):
                 models.cancel_download()
             elif action == "model_remove":
                 models.remove()
-                self._push_model()
+                status.invalidate()   # rozešle se z tiku do všech oken
             elif action == "reset_stats":
                 stats.reset_stats()
             elif action == "reset_history":
@@ -644,6 +644,7 @@ class _Bridge(NSObject):
                     keyring.set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, key)
                     config.set_api_key_cache(key)  # ať se hned neptá Keychain znovu
                     self.controller.set_api_key(key)
+                    status.invalidate()
                     self._push_state()
             elif action == "delkey":
                 try:
@@ -652,6 +653,7 @@ class _Bridge(NSObject):
                     pass
                 config.set_api_key_cache(None)
                 self.controller.set_api_key(None)
+                status.invalidate()
                 self._push_state()
             elif action == "auto_unload":
                 # Validace i tady, ne jen v UI — z WKWebView může přijít cokoliv.
@@ -740,37 +742,30 @@ class _Bridge(NSObject):
         NSOperationQueue.mainQueue().addOperationWithBlock_(fn)
 
     @objc.python_method
-    def _push_model(self, extra: dict | None = None) -> None:
-        found = models.find_local()
-        state = {
-            "ready": found is not None,
-            "size": models.human_size(models.size_bytes()),
-            "where": found[1] if found else "",
-            "repo": models.REPO,
-            "has_key": bool(config.get_api_key()),
-        }
-        # Stav stahování se čte ze sdílené orchestrace, ne natvrdo — stahovat
-        # jde i z kartičky vedle okna a okno o tom musí vědět.
-        state.update(models.download_state())
-        state.update(extra or {})
-        js = "applyModel(" + json.dumps(state, ensure_ascii=False) + ")"
+    def apply_status(self, snap: dict) -> None:
+        """Vykreslí kartu „K provozu" ze společného snímku (viz `status.py`).
+
+        Volá se z jednoho místa v `tray`, které stav rozesílá do všech oken
+        naráz — proto tu není žádný vlastní odběr postupu stahování ani vlastní
+        skládání stavu. Dřív měl každý povrch obojí po svém a rozcházely se.
+        """
         if self.webview is not None:
-            run_js(self.webview, js, "nastavení")
+            run_js(self.webview, "applyModel(" + json.dumps(snap, ensure_ascii=False) + ")",
+                   "nastavení")
+
+    @objc.python_method
+    def _push_model(self) -> None:
+        self.apply_status(status.snapshot())
 
     @objc.python_method
     def _start_model_download(self) -> None:
         """Spustí stahování přes sdílenou orchestraci v `models`.
 
-        Tlačítko je i v popoveru — orchestrace je proto jedna a společná, ať
-        dvojí klik nespustí dvě stahování téhož modelu.
+        Tlačítko je i v popoveru a na kartičce — orchestrace je proto jedna a
+        společná, ať trojí klik nespustí tři stahování téhož modelu. Průběh se
+        do oken dostane sám, přes rozesílání v `tray`.
         """
-        models.add_download_listener(self._on_download)
         models.download_async()
-
-    @objc.python_method
-    def _on_download(self, st: dict) -> None:
-        """Postup stahování → okno. Volá se z cizího vlákna, proto přes hlavní."""
-        self._on_main(lambda: self._push_model(st if st.get("downloading") else None))
 
     def _push_state(self) -> None:
         if self.webview is None:
@@ -782,7 +777,7 @@ class _Bridge(NSObject):
             "cancel_label": cancel_label,
             "theme": config.get_theme(),
             "language": config.get_language(),
-            "has_key": bool(config.get_api_key()),
+            "has_key": status.snapshot()["has_key"],
             "glossary": ", ".join(config.glossary()),
             "autostart": autostart.is_enabled(),
             "ai_edit": bool(settings.get("ai_edit", True)),

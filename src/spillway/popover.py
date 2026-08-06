@@ -17,17 +17,18 @@ import time as _time
 import objc
 from AppKit import (
     NSApp,
+    NSEvent,
     NSMakeRect,
     NSMinYEdge,
     NSObject,
     NSPopover,
-    NSPopoverBehaviorTransient,
+    NSPopoverBehaviorApplicationDefined,
     NSViewController,
 )
 from PyObjCTools import AppHelper
 from WebKit import WKWebView, WKWebViewConfiguration
 
-from . import config, design, models, stats
+from . import config, design, stats, status
 from .paste import copy_to_clipboard
 from .webview import run_js
 
@@ -225,6 +226,13 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
         +'<span class="age">'+esc(it.age)+'</span><span class="cpy">Kopírovat</span></div>';
     }).join('');
   }
+  // Jen stavová pilulka — bez statistik a historie. Volá se během stahování
+  // několikrát za sekundu, tak ať to nestojí přepočet celého popoveru.
+  function applyStatus(p){
+    var pill=document.getElementById('statusPill'), txt=document.getElementById('statusText');
+    txt.textContent = p.text || 'Připraveno';
+    pill.classList.toggle('warn', !!p.warn);
+  }
   function applyState(s){
     applyTheme(s.theme||'system');
     document.getElementById('hotkeyKbd').textContent = s.hotkey_label || 'F5';
@@ -285,17 +293,17 @@ class _PopBridge(NSObject):
             elif action == "copy":
                 self._copy(body.get("i"))
             elif action == "open_settings":
-                self.popover.close()
+                self.owner.close()
                 if self.on_open_settings is not None:
                     self.on_open_settings()
             elif action == "open_help":
                 # Zavřít stejně jako u Nastavení — jinak popover visí za nově
                 # otevřeným oknem, dokud uživatel neklikne jinam.
-                self.popover.close()
+                self.owner.close()
                 if self.on_open_help is not None:
                     self.on_open_help()
             elif action == "quit":
-                self.popover.close()
+                self.owner.close()
                 if self.on_quit is not None:
                     self.on_quit()
         except Exception as exc:  # noqa: BLE001 — popover most nesmí nikdy shodit appku
@@ -335,6 +343,39 @@ class _PopBridge(NSObject):
                 if self.webview is not None:
                     run_js(self.webview, "toast('Zkopírováno')", "popover")
 
+    @objc.python_method
+    def _pill(self) -> tuple:
+        """(text pilulky, je to varování?) — jediné místo, kde se to rozhoduje.
+
+        Pořadí podle závažnosti: bez klávesy ani bez modelu se NEDÁ diktovat
+        vůbec, kdežto bez klíče se text jen neupraví. Dřív chybějící model
+        pilulka mlčky přeskočila a hlásila „Připraveno", i když nešlo nic.
+        """
+        snap = status.snapshot()
+        listener = getattr(self.controller, "hotkey_listener", None)
+        tap_ok = getattr(listener, "tap_ok", None) if listener is not None else None
+        if tap_ok is False:
+            return ("Klávesa nefunguje", True)
+        if snap["downloading"]:
+            return (f"Stahuji model · {snap.get('percent', 0)} %", True)
+        if not snap["ready"]:
+            return ("Chybí model", True)
+        if not snap["has_key"]:
+            return ("Bez API klíče", True)
+        return ("Připraveno", False)
+
+    @objc.python_method
+    def apply_status(self, snap: dict) -> None:
+        """Lehká aktualizace stavové pilulky — bez statistik a historie.
+
+        `push_state()` čte celou historii diktátů (`stats.summary()`), takže ho
+        NELZE volat na každou změnu procent při stahování; tohle překreslí jen
+        pilulku.
+        """
+        text, warn = self._pill()
+        payload = json.dumps({"text": text, "warn": warn}, ensure_ascii=False)
+        run_js(self.webview, f"applyStatus({payload})", "popover")
+
     def push_state(self) -> None:
         if self.webview is None:
             return
@@ -346,20 +387,7 @@ class _PopBridge(NSObject):
             loaded = bool(getattr(self.controller.transcriber, "is_loaded", False))
         except Exception:  # noqa: BLE001
             loaded = False
-        has_key = bool(config.get_api_key())
-        listener = getattr(self.controller, "hotkey_listener", None)
-        tap_ok = getattr(listener, "tap_ok", None) if listener is not None else None
-        # Pořadí podle závažnosti: bez modelu se NEDÁ diktovat vůbec, kdežto
-        # bez klíče se text jen neupraví. Dřív chybějící model pilulka mlčky
-        # přeskočila a hlásila „Připraveno", i když nešlo nic.
-        if tap_ok is False:
-            status_text, status_warn = "Klávesa nefunguje", True
-        elif not models.is_ready():
-            status_text, status_warn = "Chybí model", True
-        elif not has_key:
-            status_text, status_warn = "Bez API klíče", True
-        else:
-            status_text, status_warn = "Připraveno", False
+        status_text, status_warn = self._pill()
         # Krátký popisek klávesy do hero („F5 (diktování)" → „F5").
         short_key = (hotkey_label or "F5").split(" ")[0]
         top = summary["top_apps"]
@@ -433,6 +461,7 @@ class PopoverController:
         cfg = WKWebViewConfiguration.alloc().init()
         self.popover = NSPopover.alloc().init()
         self.bridge = _PopBridge.alloc().initWithController_popover_(controller, self.popover)
+        self.bridge.owner = self          # aby most zavíral přes `close()`
         self.bridge.on_open_settings = on_open_settings
         self.bridge.on_open_help = on_open_help
         self.bridge.on_quit = on_quit
@@ -447,10 +476,21 @@ class PopoverController:
         vc.setView_(self.web)
         self.popover.setContentViewController_(vc)
         self.popover.setContentSize_((320, 560))
-        self.popover.setBehavior_(NSPopoverBehaviorTransient)  # zavře se klikem mimo
+        # Zavírání klikem mimo si řídíme SAMI (`ApplicationDefined`), protože
+        # ani jedna z hotových voleb nesedí: vedle popoveru visí kartička
+        # s upozorněním ve vlastním okně a `Transient` ji považuje za „venku",
+        # takže by klik na její tlačítko Stáhnout popover zavřel. Připnout
+        # kartičku jako potomka okna zase `Transient` úplně umlčí — popover se
+        # pak nezavře vůbec (přesně ten bug). Vlastní hlídač obojí řeší: ví o
+        # obou oknech a zavírá jen na klik, který nepatří ani jednomu.
+        self.popover.setBehavior_(NSPopoverBehaviorApplicationDefined)
         self.popover.setAnimates_(True)
 
         self._handler = _ButtonHandler.alloc().initWithPopoverController_(self)
+        # Okna, která k popoveru patří, i když jsou technicky jinde (kartička
+        # s upozorněním). Doplní tray; bez něj je popover sám.
+        self.extra_windows = list
+        self._monitors: list = []
 
     def attach_to_button(self, button) -> None:
         """Přesměruje klik na ikonu na tenhle popover (místo rumps menu)."""
@@ -462,7 +502,7 @@ class PopoverController:
         try:
             button = button or getattr(self, "_button", None)
             if self.popover.isShown():
-                self.popover.close()
+                self.close()
                 return
             # Data se přenačtou při každém otevření (JS `ready` se už podruhé
             # nespustí — HTML se nenačítá znovu), ať čísla nejsou zamrzlá.
@@ -471,10 +511,63 @@ class PopoverController:
                 button.bounds(), button, NSMinYEdge
             )
             NSApp.activateIgnoringOtherApps_(True)
+            self._watch_clicks_outside()
         except Exception:  # noqa: BLE001
             import traceback
 
             _dbg("toggle ERROR\n" + traceback.format_exc())
+
+    def _own_window(self, win) -> bool:  # noqa: ANN001
+        """Patří okno `win` k popoveru (včetně přilepené kartičky)?"""
+        if win is None:
+            return False
+        try:
+            if win is self.popover.contentViewController().view().window():
+                return True
+            button = getattr(self, "_button", None)
+            # Ikona v liště: bez ní by hlídač popover zavřel dřív, než doběhne
+            # `toggle()`, a klik na ikonu by ho místo zavření pořád otevíral.
+            if button is not None and win is button.window():
+                return True
+            return any(win is w for w in self.extra_windows())
+        except Exception:  # noqa: BLE001 — při pochybnosti radši nezavírat
+            return True
+
+    def _watch_clicks_outside(self) -> None:
+        """Hlídač kliků mimo popover — náhrada za `Transient`, viz `__init__`."""
+        mask = (1 << 1) | (1 << 3)     # LeftMouseDown | RightMouseDown
+
+        def outside(_event) -> None:   # klik v CIZÍ aplikaci → vždycky zavřít
+            self.close()
+
+        def inside(event):             # klik v naší → jen když nepatří nám
+            if not self._own_window(event.window()):
+                self.close()
+            return event
+
+        self._unwatch_clicks()
+        self._monitors = [
+            NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, outside),
+            NSEvent.addLocalMonitorForEventsMatchingMask_handler_(mask, inside),
+        ]
+
+    def _unwatch_clicks(self) -> None:
+        for mon in self._monitors:
+            if mon is not None:
+                try:
+                    NSEvent.removeMonitor_(mon)
+                except Exception:  # noqa: BLE001
+                    pass
+        self._monitors = []
+
+    def close(self) -> None:
+        """Zavře popover a odhlásí hlídač. Jediná cesta ven."""
+        self._unwatch_clicks()
+        try:
+            if self.popover.isShown():
+                self.popover.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     def is_shown(self) -> bool:
         try:

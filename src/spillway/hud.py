@@ -96,9 +96,11 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
       else if(s==='proc'){c.style.display='inline-flex';d.className='dot proc';l.textContent='Zpracovávám';}
       else if(s==='cancel'){c.style.display='inline-flex';d.className='dot cancel';l.textContent='Ruším';}
       else if(s==='ready'){c.style.display='inline-flex';d.className='dot ready';
-        l.textContent='Připraveno k vložení';k.style.display='inline-block';}
+        l.textContent='Připraveno k vložení';
+        k.textContent='⌘V';k.style.display='inline-block';}
       else if(s==='nomodel'){c.style.display='inline-flex';d.className='dot nomodel';
-        l.textContent='Chybí model — klikni a stáhni';}
+        l.textContent='Chybí model — klikni a stáhni';
+        k.textContent='esc';k.style.display='inline-block';}
       else {c.style.display='none';}
     }
     // `off` = vzdálenost středu ikony od levého okraje okénka (v px), nebo null
@@ -139,7 +141,11 @@ class _ClickCatcher(NSView):
 
 
 class StatusHUD:
-    W, H = 240, 56
+    # Šířka musí pojmout NEJDELŠÍ stav („Chybí model — klikni a stáhni"),
+    # jinak se text uřízne: karta uvnitř má `width:fit-content`, ale okno ji
+    # ořízne na svoji šířku. Karta se v okně centruje, takže u kratších stavů
+    # nadbytečná šířka není vidět (okno je průhledné).
+    W, H = 330, 56
 
     def __init__(self) -> None:
         rect = NSMakeRect(0, 0, self.W, self.H)

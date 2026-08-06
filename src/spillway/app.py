@@ -159,6 +159,10 @@ class Controller:
         # Chybí model pro přepis? Zjistí se při startu nahrávání a drží po celý
         # diktát — okénko podle toho nabídne stažení místo mlčení.
         self.model_missing = False
+        # Uživatel výzvu „Chybí model" schoval (klikem nebo rušicí klávesou).
+        # Platí jen pro tenhle pokus — u dalšího diktátu se ukáže znovu, jinak
+        # by po prvním schování mlčky mizely všechny další diktáty.
+        self.model_notice_hidden = False
         # Vyhlazená hlasitost mikrofonu (0..1) pro animovanou ikonu v liště.
         self._level_smooth = 0.0
         # [F2] Vlákno, které otevírá mikrofon; `_process` na něj počká.
@@ -242,6 +246,11 @@ class Controller:
         """Zruší běžící nahrávání/zpracování. Vrací True, když bylo co rušit —
         podle toho tap pozná, jestli má klávesu spolknout (jinde musí Escape
         fungovat normálně). Volá se z vlákna tapu → drž to triviální."""
+        # Výzva „Chybí model" i lístek „Připraveno k vložení" jdou schovat
+        # rušicí klávesou. Klávesa se přesto NEspolkne — schování okénka není
+        # důvod, aby Escape přestal fungovat ve zbytku systému.
+        if self.model_missing:
+            self.model_notice_hidden = True
         with self._lock:
             # [F5] Už se vkládá → pozdě. Vrátit False, ať Escape projde do
             # systému normálně a diktát se nezapíše jako zrušený.
@@ -264,6 +273,16 @@ class Controller:
             self._cancel_watchdog()
             threading.Thread(target=self._process, daemon=True).start()
         return True
+
+    def clear_model_notice(self) -> None:
+        """Schová výzvu „Chybí model" — klik na ni, nebo rušicí klávesa.
+
+        Nesahá na `model_missing`: to je stav pipeline (bez modelu se opravdu
+        nedá přepisovat) a přepsat ho jen kvůli tomu, aby okénko zmizelo, dřív
+        znamenalo, že se po puštění klávesy rozjela pipeline bez modelu a
+        skončila hláškou „Chyba při vkládání".
+        """
+        self.model_notice_hidden = True
 
     def clear_awaiting_paste(self) -> None:
         """Lístek „Připraveno k vložení" pryč — uživatel text vložil (⌘V), klikl
@@ -325,6 +344,7 @@ class Controller:
         self.target_bundle = None
         self.no_field = False
         self._focus_field = "?"
+        self.model_notice_hidden = False
         # `is_ready()` je jen `os.path.exists` — levné i tady, a díky tomu je
         # příznak platný od první chvíle nahrávání (viz `_process`).
         try:

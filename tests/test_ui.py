@@ -395,29 +395,46 @@ def test_popover_footer_buttons_share_one_style():
     assert row.count('class="primary"') == 2
 
 
-def test_settings_reads_download_state_instead_of_assuming_idle():
+def test_every_surface_reads_the_same_readiness_source():
     import inspect
 
-    from spillway import settings_window as sw
+    from spillway import notice, popover, settings_window, tray
 
-    # REGRESE: `_push_model` měl „downloading": False natvrdo, takže okno
-    # otevřené během stahování spuštěného z kartičky ukazovalo „Chybí" bez
-    # ukazatele — a tray to 2×/s přetlačoval zpátky.
-    src = inspect.getsource(sw._Bridge._push_model)
-    assert "models.download_state()" in src
-    assert '"downloading": False' not in src
+    # Připravenost („je model?", „stahuje se?", „je klíč?") smí mít JEDEN zdroj.
+    # Dokud si ji každé okno skládalo samo, ukazovalo každé něco jiného:
+    # popover „Chybí model", nastavení zároveň „Stahuji 40 %" a kartička
+    # nabízela stažení, které už běželo.
+    assert 'status.snapshot()' in inspect.getsource(popover._PopBridge._pill)
+    assert "status.snapshot()" in inspect.getsource(settings_window._Bridge._push_model)
+    assert "status.snapshot()" in inspect.getsource(tray.SpillwayTray._broadcast_status)
+    # Kartička si stav neskládá vůbec — dostane hotový snímek.
+    assert "download_state" not in inspect.getsource(notice.NoticePanel.show_beside)
 
 
-def test_popover_pill_reports_missing_model():
+def test_only_one_place_pushes_readiness_into_windows():
+    import pathlib as _p
+    import re
+
+    # Dřív měl každý povrch vlastní `add_download_listener` a tlačil si stav
+    # sám — proto se rozcházely. Odběr smí zakládat jen `status` (kvůli
+    # zneplatnění cache); do oken rozesílá výhradně tray, z tiku.
+    hits = []
+    for f in _p.Path("src/spillway").glob("*.py"):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if re.search(r"\badd_download_listener\(", line) and "def " not in line:
+                hits.append(f.name)
+    assert hits == ["status.py"], f"odběr postupu stahování zakládá i: {hits}"
+
+
+def test_popover_pill_puts_missing_model_before_missing_key():
     import inspect
 
     from spillway import popover
 
     # Bez modelu se nedá diktovat vůbec — pilulka to nesmí mlčky přeskočit
     # a hlásit „Připraveno".
-    src = inspect.getsource(popover._PopBridge.push_state)
-    assert "models.is_ready()" in src
-    assert src.index("models.is_ready()") < src.index("not has_key"), (
+    src = inspect.getsource(popover._PopBridge._pill)
+    assert src.index('snap["ready"]') < src.index('snap["has_key"]'), (
         "chybějící model je závažnější než chybějící klíč → má mít přednost"
     )
 

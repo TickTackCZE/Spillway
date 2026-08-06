@@ -699,6 +699,8 @@ def _controller_stub(state):
     c._cancel = threading.Event()
     c._cancel_min_until = 0.0  # [F10] skutečné jméno atributu, ne staré cancel_notice_until
     c._pasting = False
+    c.model_missing = False
+    c.model_notice_hidden = False
     return c
 
 
@@ -1892,11 +1894,13 @@ def test_notice_hides_when_there_is_no_window_or_nothing_missing():
     panel = NoticePanel.__new__(NoticePanel)
     panel.hide = lambda: calls.append("hide")
 
-    NoticePanel.show_beside(panel, None, model_ready=False, has_key=False)
+    missing = {"ready": False, "key_ok": False}
+    fine = {"ready": True, "key_ok": True}
+    NoticePanel.show_beside(panel, None, missing)
     assert calls == ["hide"], "bez okna se kartička musí schovat"
 
     calls.clear()
-    NoticePanel.show_beside(panel, object(), model_ready=True, has_key=True)
+    NoticePanel.show_beside(panel, object(), fine)
     assert calls == ["hide"], "když nic nechybí, kartička nemá co ukazovat"
 
 
@@ -2359,18 +2363,122 @@ def test_startup_never_reads_the_keychain_on_the_main_thread():
     assert "config.get_api_key()" in inspect.getsource(Controller._load_api_key)
 
 
-def test_tray_does_not_block_on_a_pending_keychain_prompt(monkeypatch):
-    from spillway import config
-    from spillway.tray import SpillwayTray
+def test_status_does_not_block_on_a_pending_keychain_prompt(monkeypatch):
+    from spillway import config, status
 
-    # Časovač lišty běží na hlavním vlákně. Dokud čtení Klíčenky nedoběhlo,
-    # nesmí se na ni ptát — jinak zmrazí UI na celou dobu dialogu.
+    # Snímek stavu čte i časovač lišty na hlavním vlákně. Dokud čtení Klíčenky
+    # nedoběhlo, nesmí se na ni ptát — jinak zmrazí UI na celou dobu dialogu.
     monkeypatch.setattr(config, "api_key_known", lambda: False)
     monkeypatch.setattr(config, "get_api_key",
-                        lambda: pytest.fail("lišta se nesmí ptát Klíčenky"))
-    tray = SpillwayTray.__new__(SpillwayTray)
-    tray._notice_checked_at = 0.0
-    tray._notice_state = (False, False)
-    model_ok, key_ok = tray._setup_state()
-    assert key_ok is True, "dokud klíč neznáme, nemá se na něj upozorňovat"
-    assert isinstance(model_ok, bool)
+                        lambda: pytest.fail("stav se nesmí ptát Klíčenky"))
+    status.invalidate()
+    snap = status.snapshot()
+    assert snap["key_known"] is False
+    assert snap["has_key"] is False
+    assert snap["key_ok"] is True, "dokud klíč neznáme, nemá se na něj upozorňovat"
+
+
+# --- Skrývatelná výzva „Chybí model" ----------------------------------------
+def test_model_notice_can_be_dismissed_without_breaking_the_pipeline():
+    from spillway.app import Controller
+
+    # Výzva musí jít schovat (klik i rušicí klávesa), ale `model_missing` je
+    # stav pipeline — přepsat ho jen kvůli tomu, aby okénko zmizelo, dřív
+    # znamenalo, že se rozjela pipeline bez modelu a skončila „Chybou".
+    c = Controller.__new__(Controller)
+    c.model_missing = True
+    c.model_notice_hidden = False
+    c.clear_model_notice()
+    assert c.model_notice_hidden is True
+    assert c.model_missing is True, "schování okénka nesmí sáhnout na stav pipeline"
+
+
+def test_cancel_key_hides_the_model_notice_but_is_not_swallowed():
+    import threading
+
+    from spillway.app import IDLE, Controller
+
+    # Escape má výzvu schovat, ale nesmí se spolknout — jinak by v ostatních
+    # aplikacích přestal fungovat.
+    c = Controller.__new__(Controller)
+    c._lock = threading.Lock()
+    c._cancel = threading.Event()
+    c._pasting = False
+    c.state = IDLE
+    c.model_missing = True
+    c.model_notice_hidden = False
+    assert c.request_cancel() is False, "Escape se nesmí spolknout, když se nic neruší"
+    assert c.model_notice_hidden is True
+
+
+def test_new_dictation_shows_the_model_notice_again():
+    import inspect
+
+    from spillway.app import Controller
+
+    # Kdyby schování platilo napořád, další pokusy o diktát by mizely mlčky.
+    assert "self.model_notice_hidden = False" in inspect.getsource(Controller.on_press)
+
+
+def test_hud_is_wide_enough_for_its_longest_label():
+    from spillway.hud import StatusHUD
+
+    # ZMĚŘENO ve WebKitu (`getBoundingClientRect` nad skutečným HTML okénka):
+    #   Ruším 112 · Nahrávám 137 · Zpracovávám 159 · Připraveno k vložení 243
+    #   · Chybí model — klikni a stáhni 301
+    # Plus 2×8 px odsazení těla. Okno kartu ořízne na svoji šířku, takže při
+    # dřívějších 240 px byla useknutá nejen výzva ke stažení, ale i lístek
+    # „Připraveno k vložení".
+    assert StatusHUD.W >= 317, (
+        f"okénko {StatusHUD.W} px uřízne nejdelší stav (změřeno 301 px + odsazení)"
+    )
+
+
+# --- Jeden zdroj pravdy o připravenosti --------------------------------------
+def test_readiness_snapshot_is_cheap_enough_for_the_timer(monkeypatch):
+    from spillway import models, status
+
+    # Snímek čte časovač lišty 6,7×/s a je za ním sahání na disk — hlavně
+    # `size_bytes()`, které prochází celou složku modelu (1,6 GB, stovky MB
+    # na soubor). Bez cache by to znamenalo čtení disku několikrát za sekundu.
+    walks, finds = [], []
+    monkeypatch.setattr(models, "size_bytes", lambda: walks.append(1) or 0)
+    monkeypatch.setattr(models, "find_local", lambda: finds.append(1) or None)
+    status.invalidate()
+    for _ in range(50):
+        status.snapshot()
+    assert len(finds) == 1, f"stav se přepočítal {len(finds)}× místo jednou"
+    assert not walks, "velikost složky se u chybějícího modelu nemá počítat vůbec"
+
+
+def test_readiness_snapshot_refreshes_after_invalidate(monkeypatch):
+    from spillway import models, status
+
+    # Cache nesmí zamrznout: po stažení, smazání modelu nebo uložení klíče
+    # musí okna dostat nový stav hned, ne až po vypršení TTL.
+    ready = [False]
+    monkeypatch.setattr(models, "find_local",
+                        lambda: ("/m", "složka Spillway") if ready[0] else None)
+    monkeypatch.setattr(models, "size_bytes", lambda: 1_600_000_000)
+    status.invalidate()
+    assert status.snapshot()["ready"] is False
+    ready[0] = True
+    assert status.snapshot()["ready"] is False, "bez invalidace se drží cache"
+    status.invalidate()
+    snap = status.snapshot()
+    assert snap["ready"] is True and snap["where"] == "složka Spillway"
+
+
+def test_notice_is_not_a_child_window_of_its_parent():
+    import inspect
+
+    from spillway.notice import NoticePanel
+
+    # REGRESE: kartička byla připnutá jako `addChildWindow_` k oknu popoveru
+    # a tím rozbila jeho `Transient` chování — popover se přestal zavírat
+    # klikem mimo. O viditelnost se stará `tray._update_notice`.
+    code = [ln for ln in inspect.getsource(NoticePanel).splitlines()
+            if not ln.lstrip().startswith("#")]
+    assert not [ln for ln in code if "addChildWindow_" in ln], (
+        "připnutý potomek drží transientní popover otevřený"
+    )

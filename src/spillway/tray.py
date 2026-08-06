@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import rumps
 
-from . import config, models, settings
+from . import config, models, settings, status
 from .app import IDLE, PROCESSING, RECORDING
 
 _BAR_ICON = "🎙️"  # placeholder; Spillway logo přijde s .app bundlem (ikonové assety)
@@ -55,17 +55,10 @@ class SpillwayTray(rumps.App):
         except Exception as exc:  # noqa: BLE001
             print(f"(HUD nedostupný: {exc})")
 
-        # Po dokončení stahování musí stav dojít do VŠECH oken, ne jen do toho,
-        # ze kterého se klikalo — jinak by menu ukazovalo starý stav, dokud
-        # ho uživatel nezavře a neotevře.
-        try:
-            models.add_download_listener(self._on_download_anywhere)
-        except Exception:  # noqa: BLE001
-            pass
         # Kartička s upozorněním vedle popoveru/nastavení (chybí model nebo klíč).
         self._notice = None
-        self._notice_checked_at = 0.0
-        self._notice_state = (True, True)
+        # Poslední rozeslaný stav připravenosti — rozesílá se jen při změně.
+        self._status_last: dict | None = None
 
         # Okno nastavení (Domovoy design) — vytvoří se líně při prvním otevření.
         self._settings = None
@@ -126,68 +119,32 @@ class SpillwayTray(rumps.App):
         except Exception:  # noqa: BLE001 — uvítání nesmí shodit start
             pass
 
-    def _on_download_anywhere(self, st: dict) -> None:
-        """Stav stahování se změnil — přetlač ho do otevřených oken.
+    def _broadcast_status(self) -> None:
+        """Rozešle stav připravenosti do všech otevřených oken — jen při změně.
 
-        Během stahování se posílá JEN karta modelu. Plný přepočet stavu čte
-        Klíčenku, autostart i statistiky, a několikrát za sekundu to znatelně
-        sekalo UI — proto se dělá až po doběhnutí, kdy se opravdu změnilo víc.
+        JEDINÁ cesta, kterou se okna dozvídají o modelu, stahování a klíči.
+        Dřív měl každý povrch vlastní odběr `models.add_download_listener` a
+        skládal si stav po svém, takže popover hlásil „Chybí model", nastavení
+        zároveň „Stahuji 40 %" a kartička nabízela stažení, které už běželo.
+
+        Posílá se z tiku (6,7×/s), ale jen když se stav opravdu změnil —
+        `snapshot()` je cachovaný, takže srovnání nic nestojí.
         """
-        from Foundation import NSOperationQueue
+        snap = status.snapshot()
+        if snap == self._status_last:
+            return
+        self._status_last = snap
+        win = self._settings
+        if win is not None and win.is_visible():
+            win.bridge.apply_status(snap)
+        pop = getattr(self, "_popover", None)
+        if pop is not None and pop.is_shown():
+            pop.bridge.apply_status(snap)
 
-        running = bool(st.get("downloading"))
-
-        def apply() -> None:
-            self._notice_checked_at = 0.0     # ať se stav přepočítá hned
-            win = self._settings
-            try:
-                if win is not None and win.is_visible():
-                    if running:
-                        win.bridge._push_model(st)     # lehké
-                    else:
-                        win.refresh()                  # doběhlo → přepočítat vše
-            except Exception:  # noqa: BLE001
-                pass
-            if running:
-                return
-            try:
-                pop = getattr(self, "_popover", None)
-                if pop is not None and pop.is_shown():
-                    pop.bridge.push_state()
-            except Exception:  # noqa: BLE001
-                pass
-
-        NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
-
-    def _setup_state(self) -> tuple[bool, bool]:
-        """(je model?, je klíč v pořádku?) — přepočítává se nejvýš jednou za 2 s.
-
-        Druhá hodnota je `True` i tehdy, když klíč chybí, ale upozornění je
-        odložené — nebo když se ho ještě nepodařilo přečíst. Kartička se řídí
-        jí, takže „nevím" znamená „neotravuj".
-
-        Čte se z časovače 6,7×/s; bez tlumení by to při každém tiku zbytečně
-        sahalo na disk (`models.is_ready()`). Klíčenka se neptá — `config` si
-        klíč cachuje na celý běh procesu.
-        """
-        import time as _t
-
-        now = _t.monotonic()
-        if now - self._notice_checked_at < 2.0:
-            return self._notice_state
-        self._notice_checked_at = now
-        try:
-            # Dokud čtení Klíčenky nedoběhlo, tvař se, že klíč je: ptát se
-            # odsud (hlavní vlákno, časovač) by se při otevřeném dialogu
-            # Klíčenky zaseklo a s ním celé UI.
-            key_ok = bool(config.get_api_key()) if config.api_key_known() else True
-            if not key_ok:
-                snooze = float(settings.get("key_notice_snooze_until", 0) or 0)
-                key_ok = _t.time() < snooze
-            self._notice_state = (models.is_ready(), key_ok)
-        except Exception:  # noqa: BLE001
-            self._notice_state = (True, True)   # při chybě neotravovat
-        return self._notice_state
+    def _notice_windows(self) -> list:
+        """Okna kartičky, která k popoveru patří (viz `popover._own_window`)."""
+        n = self._notice
+        return [n.panel] if n is not None and n.is_visible() else []
 
     def _notice_target(self):  # noqa: ANN201
         """Okno, ke kterému se má kartička připnout — nebo None."""
@@ -208,15 +165,15 @@ class SpillwayTray(rumps.App):
         return None
 
     def _update_notice(self) -> None:
-        """Kartička visí vedle otevřeného popoveru nebo nastavení; jinak je pryč."""
-        parent = self._notice_target()
-        if parent is None:
-            if self._notice is not None:
-                self._notice.hide()
-            return
+        """Kartička visí vedle otevřeného popoveru nebo nastavení; jinak je pryč.
 
-        model_ok, key_ok = self._setup_state()
-        if model_ok and key_ok:
+        Tohle je JEDINÉ místo, které rozhoduje o její viditelnosti — kartička
+        není potomek rodičovského okna, protože připnutý potomek rozbíjí
+        zavírání popoveru klikem mimo (viz `notice.show_beside`).
+        """
+        snap = status.snapshot()
+        parent = self._notice_target()
+        if parent is None or (snap["ready"] and snap["key_ok"]):
             if self._notice is not None:
                 self._notice.hide()
             return
@@ -227,14 +184,10 @@ class SpillwayTray(rumps.App):
 
                 self._notice = NoticePanel()
                 self._notice.on_key = self._notice_key_action
-                # Odběr postupu NASTÁLE — stahování se dá spustit i odjinud
-                # (Nastavení) a kartička se musí dozvědět tak jako tak.
-                models.add_download_listener(self._notice.on_download_state)
             except Exception as exc:  # noqa: BLE001 — bez kartičky se dá žít
                 print(f"(upozornění nedostupné: {exc})")
-                self._notice_state = (True, True)
                 return
-        self._notice.show_beside(parent, model_ready=model_ok, has_key=key_ok)
+        self._notice.show_beside(parent, snap)
 
     def _notice_key_action(self, what: str) -> None:
         """Tlačítka u hlášky o API klíči."""
@@ -242,7 +195,7 @@ class SpillwayTray(rumps.App):
 
         if what == "key_snooze":
             settings.set("key_notice_snooze_until", _t.time() + 7 * 24 * 3600)
-            self._notice_checked_at = 0.0     # projeví se hned, ne za 2 s
+            status.invalidate()               # projeví se hned, ne až po TTL
             print("🔕 upozornění na API klíč odloženo o týden")
             return
         self.open_settings(None)
@@ -251,11 +204,10 @@ class SpillwayTray(rumps.App):
         """Klik na okénko: chybí-li model, otevře Nastavení u karty K provozu;
         jinak jen schová lístek „Připraveno k vložení"."""
         if getattr(self.controller, "model_missing", False):
-            # Stav pipeline se tu NEPŘEPISUJE. Dřív se `model_missing` shodilo
-            # na False, jen aby kartička zmizela — jenže během nahrávání to
-            # znamenalo, že po puštění klávesy vyjela plná pipeline bez modelu
-            # a skončila hláškou „Chyba při vkládání". Kartička zmizí sama,
-            # jakmile `models.is_ready()` řekne, že model je.
+            # Okénko schovat a rovnou nabídnout, kde se model stáhne. Stav
+            # pipeline se NEPŘEPISUJE — `model_missing` říká, že se opravdu
+            # nedá přepisovat, kdežto `clear_model_notice()` jen zhasne okénko.
+            self.controller.clear_model_notice()
             self.open_settings(None)
             return
         self.controller.clear_awaiting_paste()
@@ -405,6 +357,10 @@ class SpillwayTray(rumps.App):
                 on_open_help=lambda: self.open_settings(None, page="help"),
                 on_quit=lambda: self.quit_app(None),
             )
+            # Kartička s upozorněním visí vedle popoveru ve vlastním okně.
+            # Bez tohohle by ji hlídač kliků bral jako „venku" a klik na její
+            # tlačítko Stáhnout by popover zavřel uprostřed stahování.
+            self._popover.extra_windows = self._notice_windows
             self._popover.attach_to_button(button)
             item.setMenu_(None)  # klik teď otevře popover, ne menu
             print("🪟 Popover v liště připraven.")
@@ -453,6 +409,10 @@ class SpillwayTray(rumps.App):
         if not getattr(self, "_welcome_checked", True):
             self._maybe_welcome()
         try:
+            self._broadcast_status()
+        except Exception:  # noqa: BLE001 — rozesílání nesmí rozbít zbytek tiku
+            pass
+        try:
             self._update_notice()
         except Exception:  # noqa: BLE001 — kartička nesmí rozbít zbytek tiku
             pass
@@ -487,7 +447,8 @@ class SpillwayTray(rumps.App):
             # Výzva ke stažení drží, dokud na ni uživatel neklikne — i po
             # návratu do klidu. Přeskočit ji na „Zpracovávám" nedává smysl,
             # protože bez modelu se nic nezpracovává.
-            if getattr(self.controller, "model_missing", False):
+            if (getattr(self.controller, "model_missing", False)
+                    and not getattr(self.controller, "model_notice_hidden", False)):
                 self.hud.show("nomodel")
             elif state == RECORDING:
                 self.hud.show("rec", at_icon=at_icon)

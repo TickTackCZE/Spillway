@@ -85,6 +85,23 @@ nová data nebo změněné zadání, ne opakování téhož nápadu.
 - **„Bezpečná" pojistka umí být ta nejdražší operace.** Zrušení stahování mazalo celou
   složku i kopii v cache HuggingFace, takže každé Zrušit stálo při dalším pokusu znovu
   1,6 GB — a komentář nad tím tvrdil pravý opak.
+- **Připnutý potomek okna umlčí `NSPopoverBehaviorTransient`.** Kartička vedle
+  popoveru byla `addChildWindow_` a popover se přestal zavírat klikem mimo. Bez
+  připnutí se zase zavře i klikem na kartičku. Řešení je zavírat si popover sám
+  (`ApplicationDefined`) a mít jeden hlídač, který ví o obou oknech i o ikoně
+  v liště — bez ikony by se popover zavřel dřív, než doběhne přepnutí, a klik
+  na ikonu by ho místo zavření pořád jen otevíral.
+- **Stav, který si každé okno skládá samo, se rozejde.** Připravenost (model,
+  stahování, klíč) skládala čtyři místa; popover pak hlásil „Chybí model",
+  nastavení zároveň „Stahuji 40 %". Jeden `status.snapshot()` a jedno rozesílání.
+- **Do často se opakujícího pushe nepatří čtení celé historie.** Postup stahování
+  překresloval popover přes `push_state()`, a ten čte `history.jsonl`: při plné
+  historii (5000 záznamů) 25 ms na jedno volání, 4×/s ≈ 99 ms hlavního vlákna
+  za sekundu. Na časté aktualizace patří úzká cesta, co překreslí jen to, co se
+  změnilo.
+- **Šířku okénka je potřeba změřit, ne odhadnout.** Karta má `width:fit-content`,
+  ale okno ji ořízne na svoji šířku. Při 240 px byla useknutá výzva ke stažení
+  (změřeno 301 px) i lístek „Připraveno k vložení" (243 px).
 - **Test, který grepuje zdroják, přežije i rozbitou funkci.** Uvítání po instalaci mělo
   zelený test na existenci HTML, zatímco příznak, který ho zobrazuje, byl vždy `False`.
   Testovat chování, ne přítomnost řetězce.
