@@ -701,6 +701,7 @@ def _controller_stub(state):
     c._pasting = False
     c.model_missing = False
     c.model_notice_hidden = False
+    c.awaiting_paste = False
     return c
 
 
@@ -2388,9 +2389,16 @@ def test_model_notice_can_be_dismissed_without_breaking_the_pipeline():
     c = Controller.__new__(Controller)
     c.model_missing = True
     c.model_notice_hidden = False
-    c.clear_model_notice()
+    c.awaiting_paste = False
+    assert c.dismiss_notice() is True
     assert c.model_notice_hidden is True
     assert c.model_missing is True, "schování okénka nesmí sáhnout na stav pipeline"
+    assert c.dismiss_notice() is False, "podruhé už není co zavírat"
+
+    # Totéž okénko o vložení — jedna cesta pro obojí.
+    c.awaiting_paste = True
+    assert c.dismiss_notice() is True
+    assert c.awaiting_paste is False
 
 
 def test_cancel_key_hides_the_model_notice_but_is_not_swallowed():
@@ -2407,8 +2415,10 @@ def test_cancel_key_hides_the_model_notice_but_is_not_swallowed():
     c.state = IDLE
     c.model_missing = True
     c.model_notice_hidden = False
+    c.awaiting_paste = True
     assert c.request_cancel() is False, "Escape se nesmí spolknout, když se nic neruší"
     assert c.model_notice_hidden is True
+    assert c.awaiting_paste is False, "Escape má zavřít i lístek o vložení"
 
 
 def test_new_dictation_shows_the_model_notice_again():
@@ -2482,3 +2492,81 @@ def test_notice_is_not_a_child_window_of_its_parent():
     assert not [ln for ln in code if "addChildWindow_" in ln], (
         "připnutý potomek drží transientní popover otevřený"
     )
+
+
+def test_clicking_the_hud_never_opens_settings():
+    import inspect
+
+    from spillway.tray import SpillwayTray
+
+    # Okénko visí přesně pod ikonou v liště. Dokud klik otevíral Nastavení,
+    # spadl sem i druhý klik z dvojkliku na ikonu (popover se ještě animoval)
+    # a Nastavení se otevíralo samo od sebe.
+    src = inspect.getsource(SpillwayTray._hud_clicked)
+    assert "open_settings" not in src, "klik na okénko nesmí otevírat Nastavení"
+    assert "dismiss_notice" in src
+
+
+def test_both_hud_notices_close_the_same_two_ways():
+    import inspect
+
+    from spillway.app import Controller
+    from spillway.tray import SpillwayTray
+
+    # Klik i rušicí klávesa musí vést do JEDNÉ funkce — dřív měl každý stav
+    # vlastní metodu a Escapem šlo zavřít jen jedno z okének.
+    assert "dismiss_notice" in inspect.getsource(SpillwayTray._hud_clicked)
+    assert "dismiss_notice" in inspect.getsource(Controller.request_cancel)
+    body = inspect.getsource(Controller.dismiss_notice)
+    assert "model_notice_hidden" in body and "awaiting_paste" in body
+
+
+def test_hud_does_not_advertise_the_cancel_key():
+    from spillway.hud import _HTML
+
+    # Odznak s klávesou u výzvy ke stažení uživatel nechtěl.
+    assert "'esc'" not in _HTML and '"esc"' not in _HTML
+
+
+def test_hud_click_area_shrinks_to_the_visible_card():
+    import inspect
+
+    from spillway.hud import StatusHUD
+
+    # ZMĚŘENO ve WebKitu: karta je podle stavu 112–242 px v okně širokém 330 px
+    # a je v něm vycentrovaná; ve skrytém stavu má 0×0. Dokud klikací vrstva
+    # pokrývala celé okno, polykal kliknutí i průhledný okraj kolem.
+    src = inspect.getsource(StatusHUD._fit_click_area)
+    assert "getBoundingClientRect" in src
+    assert "_click.setFrame_" in src
+    assert "JSON.stringify" in src, (
+        "pole čísel se z evaluateJavaScript nevrátí spolehlivě (ověřeno: None)"
+    )
+
+
+def test_popover_closes_when_user_switches_apps():
+    import inspect
+
+    from spillway.popover import PopoverController
+
+    # `ApplicationDefined` popover se sám nezavře ani při ⌘Tab — hlídač kliků
+    # zabere jen na kliknutí. `Transient` to uměl, takže se to musí doplnit.
+    src = inspect.getsource(PopoverController.close_if_app_inactive)
+    assert "NSApp.isActive()" in src and "self.close()" in src
+
+
+def test_notice_hides_even_when_its_flag_is_out_of_sync():
+    from spillway.notice import NoticePanel
+
+    # Kdyby se `_visible` rozešel se skutečností, zůstala by kartička viset na
+    # obrazovce bez rodiče a nešla by zavřít ničím.
+    ordered = []
+    panel = NoticePanel.__new__(NoticePanel)
+    panel._visible = False                     # příznak lže
+    panel._parent = object()
+    panel._pos = (1.0, 2.0)
+    panel.panel = type("W", (), {"isVisible": lambda s: True,
+                                 "orderOut_": lambda s, x: ordered.append(1)})()
+    NoticePanel.hide(panel)
+    assert ordered == [1], "kartička se musí schovat i s rozejitým příznakem"
+    assert panel._visible is False and panel._parent is None

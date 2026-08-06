@@ -16,6 +16,8 @@ vytvořit, tray ho tiše přeskočí.
 
 from __future__ import annotations
 
+import json
+
 import objc
 from AppKit import (
     NSBackingStoreBuffered,
@@ -99,8 +101,7 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
         l.textContent='Připraveno k vložení';
         k.textContent='⌘V';k.style.display='inline-block';}
       else if(s==='nomodel'){c.style.display='inline-flex';d.className='dot nomodel';
-        l.textContent='Chybí model — klikni a stáhni';
-        k.textContent='esc';k.style.display='inline-block';}
+        l.textContent='Chybí model pro přepis';}
       else {c.style.display='none';}
     }
     // `off` = vzdálenost středu ikony od levého okraje okénka (v px), nebo null
@@ -204,6 +205,40 @@ class StatusHUD:
                 run_js(self.web, f"setState('{state}')", "hud")
             except Exception:  # noqa: BLE001
                 pass
+            self._fit_click_area()
+
+    @objc.python_method
+    def _fit_click_area(self) -> None:
+        """Zúží klikací vrstvu na skutečnou kartu.
+
+        Okno je široké 330 px, ale karta je podle stavu 112–301 px a je v něm
+        vycentrovaná. Dokud vrstva pokrývala celé okno, polykal kliknutí i
+        průhledný okraj kolem — a protože okénko visí přesně pod ikonou v liště,
+        druhý klik z dvojkliku na ikonu spadl sem a otevřel Nastavení.
+        """
+        def done(value, err) -> None:
+            if err is not None or not value:
+                return
+            try:
+                r = json.loads(str(value))
+            except ValueError:
+                return
+            w, h = float(r["width"]), float(r["height"])
+            if w <= 0 or h <= 0:          # skrytá karta → nemá co chytat
+                self._click.setFrame_(NSMakeRect(0, 0, 0, 0))
+                return
+            # Web měří odshora, NSView odspoda.
+            self._click.setFrame_(
+                NSMakeRect(float(r["left"]), self.H - float(r["bottom"]), w, h))
+
+        # Přes JSON řetězec: pole čísel se z `evaluateJavaScript` nevrátí
+        # spolehlivě (ověřeno — přišlo None), skalár a řetězec ano.
+        try:
+            self.web.evaluateJavaScript_completionHandler_(
+                "JSON.stringify(document.getElementById('card').getBoundingClientRect())",
+                done)
+        except Exception:  # noqa: BLE001 — bez zúžení zůstane vrstva přes celé okno
+            pass
 
     def _caret_rect(self) -> tuple | None:
         """Poloha kurzoru, přepočítaná nejvýš 3×/s.

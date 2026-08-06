@@ -41,7 +41,12 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   @media (prefers-color-scheme: light){ :root{
     --surface:#FFFFFF;--text:#1E293B;--muted:#64748B;--accent:#3B82F6;
     --border:rgba(59,130,246,0.18);} }
-  html,body{background:transparent;}
+  /* Šipka kartičky vyčnívá 6 px za pravý okraj (`.arrow{right:-6px}`), takže
+     obsah přetéká a WKWebView pod ním vykreslí vodorovný posuvník — ta šedá
+     tlustá čára pod kartičkou. Okno je plovoucí panel bez rolování, posuvník
+     tu nemá co dělat. */
+  html,body{background:transparent;overflow:hidden;}
+  ::-webkit-scrollbar{width:0;height:0;display:none;}
   body{font-family:-apple-system,'Raleway',sans-serif;padding:8px;}
   .wrap{position:relative;}
   .card{background:var(--surface);border:0.5px solid var(--border);border-radius:12px;
@@ -167,6 +172,8 @@ class _NoticeBridge(objc.lookUpClass("NSObject")):
 class NoticePanel:
     """Kartička s upozorněním vedle jiného okna."""
 
+    # Výška je jen VÝCHOZÍ — `_fit_to_content` ji po každém vykreslení srovná
+    # s obsahem (jedno sdělení, nebo dvě).
     W, H = 288, 300
 
     def __init__(self) -> None:
@@ -202,10 +209,40 @@ class NoticePanel:
 
     @objc.python_method
     def _render(self, state: dict) -> bool:
-        """Překreslí kartičku. O nenačtenou stránku se stará `_run_js` — volání
-        odloží, dokud se stránka nedonačte, místo aby ho zahodil."""
+        """Překreslí kartičku a srovná výšku okna s obsahem.
+
+        O nenačtenou stránku se stará `run_js` — volání odloží, dokud se
+        stránka nedonačte, místo aby ho zahodil.
+
+        Výška se dopočítává, protože obsah je jednou o jednom sdělení a jindy
+        o dvou. Pevná výška by pod kartičkou nechala průhledný pruh, který
+        polyká kliknutí, aniž by na něm cokoliv bylo.
+        """
         run_js(self.web, "render(" + json.dumps(state, ensure_ascii=False) + ")", "notice")
+        self._fit_to_content()
         return True
+
+    @objc.python_method
+    def _fit_to_content(self) -> None:
+        def done(value, err) -> None:
+            if err is not None or not value:
+                return
+            h = float(value) + 16          # + odsazení těla nahoře i dole
+            if abs(h - self.panel.frame().size.height) < 1.0:
+                return
+            frame = self.panel.frame()
+            # Panel roste dolů: horní hrana musí zůstat u okna vedle.
+            top = float(frame.origin.y) + float(frame.size.height)
+            self.panel.setFrame_display_(
+                NSMakeRect(float(frame.origin.x), top - h, self.W, h), True)
+            self.web.setFrame_(NSMakeRect(0, 0, self.W, h))
+            self._pos = None               # ať `show_beside` polohu přepočítá
+
+        try:
+            self.web.evaluateJavaScript_completionHandler_(
+                "document.querySelector('.wrap').getBoundingClientRect().height", done)
+        except Exception:  # noqa: BLE001 — bez dopočtu zůstane výchozí výška
+            pass
 
     @objc.python_method
     def _apply(self, state: dict) -> None:
@@ -250,8 +287,11 @@ class NoticePanel:
 
         pf = parent.frame()
         gap = 8.0
+        # Skutečná výška panelu, ne `self.H` — `_fit_to_content` ji mění podle
+        # toho, jestli se hlásí jedno sdělení nebo dvě.
+        h = float(self.panel.frame().size.height)
         x = float(pf.origin.x) - self.W - gap
-        y = float(pf.origin.y) + float(pf.size.height) - self.H
+        y = float(pf.origin.y) + float(pf.size.height) - h
 
         screens = NSScreen.screens()
         if screens:
@@ -288,7 +328,15 @@ class NoticePanel:
 
     @objc.python_method
     def hide(self) -> None:
+        """Kartičku pryč. Řídí se skutečným stavem okna, ne jen příznakem —
+        kdyby se `_visible` s realitou rozešel, zůstala by viset na obrazovce
+        bez rodiče a nešla by zavřít ničím."""
         self._parent = None
-        if self._visible:
+        self._pos = None
+        try:
+            showing = bool(self.panel.isVisible())
+        except Exception:  # noqa: BLE001
+            showing = self._visible
+        if self._visible or showing:
             self.panel.orderOut_(None)
-            self._visible = False
+        self._visible = False

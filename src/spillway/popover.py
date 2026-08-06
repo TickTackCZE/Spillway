@@ -560,6 +560,19 @@ class PopoverController:
                     pass
         self._monitors = []
 
+    def close_if_app_inactive(self) -> None:
+        """Zavře popover, když uživatel odešel do jiné aplikace bez kliknutí.
+
+        `Transient` to uměl sám; když si zavírání řídíme (viz `__init__`), musí
+        se doplnit — hlídač kliků zabere jen na kliknutí, ne na ⌘Tab. Volá se
+        z tiku lišty, takže to nepotřebuje vlastní pozorovatele notifikací.
+        """
+        try:
+            if self.popover.isShown() and not NSApp.isActive():
+                self.close()
+        except Exception:  # noqa: BLE001
+            pass
+
     def close(self) -> None:
         """Zavře popover a odhlásí hlídač. Jediná cesta ven."""
         self._unwatch_clicks()

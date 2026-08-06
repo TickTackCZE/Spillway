@@ -246,11 +246,10 @@ class Controller:
         """Zruší běžící nahrávání/zpracování. Vrací True, když bylo co rušit —
         podle toho tap pozná, jestli má klávesu spolknout (jinde musí Escape
         fungovat normálně). Volá se z vlákna tapu → drž to triviální."""
-        # Výzva „Chybí model" i lístek „Připraveno k vložení" jdou schovat
-        # rušicí klávesou. Klávesa se přesto NEspolkne — schování okénka není
-        # důvod, aby Escape přestal fungovat ve zbytku systému.
-        if self.model_missing:
-            self.model_notice_hidden = True
+        # Obě plovoucí okénka jdou zavřít rušicí klávesou. Klávesa se přesto
+        # NEspolkne — schování okénka není důvod, aby Escape přestal fungovat
+        # ve zbytku systému.
+        self.dismiss_notice()
         with self._lock:
             # [F5] Už se vkládá → pozdě. Vrátit False, ať Escape projde do
             # systému normálně a diktát se nezapíše jako zrušený.
@@ -274,19 +273,31 @@ class Controller:
             threading.Thread(target=self._process, daemon=True).start()
         return True
 
-    def clear_model_notice(self) -> None:
-        """Schová výzvu „Chybí model" — klik na ni, nebo rušicí klávesa.
+    def dismiss_notice(self) -> bool:
+        """Schová plovoucí okénko, které zrovna visí. Vrací True, když bylo co.
+
+        JEDNO místo pro obě okénka („Chybí model" i „Připraveno k vložení") a
+        pro oba způsoby, jak je zavřít — klik na ně i rušicí klávesa. Dřív měl
+        každý stav vlastní metodu a každá cesta si vybírala jinou, takže se
+        Escapem dal zavřít jen jeden z nich.
 
         Nesahá na `model_missing`: to je stav pipeline (bez modelu se opravdu
-        nedá přepisovat) a přepsat ho jen kvůli tomu, aby okénko zmizelo, dřív
+        nedá přepisovat). Přepsat ho jen kvůli tomu, aby okénko zmizelo, dřív
         znamenalo, že se po puštění klávesy rozjela pipeline bez modelu a
         skončila hláškou „Chyba při vkládání".
         """
-        self.model_notice_hidden = True
+        hidden = False
+        if self.model_missing and not self.model_notice_hidden:
+            self.model_notice_hidden = True
+            hidden = True
+        if self.awaiting_paste:
+            self.awaiting_paste = False
+            hidden = True
+        return hidden
 
     def clear_awaiting_paste(self) -> None:
-        """Lístek „Připraveno k vložení" pryč — uživatel text vložil (⌘V), klikl
-        na lístek, nebo začal nový diktát."""
+        """Lístek „Připraveno k vložení" pryč, protože uživatel text sám vložil
+        (⌘V) nebo začal nový diktát. Zavírání uživatelem řeší `dismiss_notice`."""
         self.awaiting_paste = False
 
     def mic_level(self) -> float:

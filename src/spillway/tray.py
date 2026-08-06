@@ -201,16 +201,14 @@ class SpillwayTray(rumps.App):
         self.open_settings(None)
 
     def _hud_clicked(self) -> None:
-        """Klik na okénko: chybí-li model, otevře Nastavení u karty K provozu;
-        jinak jen schová lístek „Připraveno k vložení"."""
-        if getattr(self.controller, "model_missing", False):
-            # Okénko schovat a rovnou nabídnout, kde se model stáhne. Stav
-            # pipeline se NEPŘEPISUJE — `model_missing` říká, že se opravdu
-            # nedá přepisovat, kdežto `clear_model_notice()` jen zhasne okénko.
-            self.controller.clear_model_notice()
-            self.open_settings(None)
-            return
-        self.controller.clear_awaiting_paste()
+        """Klik na okénko ho zavře — u obou stavů stejně, jako rušicí klávesa.
+
+        Nastavení se odsud NEOTEVÍRÁ. Okénko visí přesně pod ikonou v liště,
+        takže na něj spadl i druhý klik z dvojkliku na ikonu a Nastavení se
+        otevíralo samo od sebe. Model se stahuje z popoveru (jeden klik na
+        ikonu) nebo z Nastavení, kde je vidět průběh.
+        """
+        self.controller.dismiss_notice()
 
     def _check_tap(self, _sender) -> None:  # noqa: ANN001
         listener = getattr(self.controller, "hotkey_listener", None)
@@ -408,6 +406,9 @@ class SpillwayTray(rumps.App):
                 self._popover_ready = True  # nezkoušet donekonečna
         if not getattr(self, "_welcome_checked", True):
             self._maybe_welcome()
+        pop = getattr(self, "_popover", None)
+        if pop is not None:
+            pop.close_if_app_inactive()   # ⌘Tab pryč → popover taky
         try:
             self._broadcast_status()
         except Exception:  # noqa: BLE001 — rozesílání nesmí rozbít zbytek tiku
