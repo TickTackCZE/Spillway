@@ -430,6 +430,10 @@ class SpillwayTray(rumps.App):
         except Exception:  # noqa: BLE001 — nesmí utnout zbytek tiku
             pass
         try:
+            self.controller.check_key_released()
+        except Exception:  # noqa: BLE001 — nesmí utnout zbytek tiku
+            pass
+        try:
             self._broadcast_status()
         except Exception:  # noqa: BLE001 — rozesílání nesmí rozbít zbytek tiku
             pass

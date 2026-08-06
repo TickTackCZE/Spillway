@@ -2724,3 +2724,101 @@ def test_only_named_user_actions_open_settings():
     calls = re.findall(r"open_settings\((?!self)[^)]*\)", src)
     missing = [c for c in calls if "why=" not in c]
     assert not missing, f"otevření bez důvodu: {missing}"
+
+
+# --- Ztracený pětiminutový diktát -------------------------------------------
+def _clip(total_s, speech_s, level=0.05, floor=0.001, at_start=True):
+    import numpy as np
+
+    sr = 16000
+    a = np.random.normal(0, floor, int(total_s * sr)).astype("float32")
+    n = int(speech_s * sr)
+    if n:
+        block = np.random.normal(0, level, n).astype("float32")
+        a[:n] = block if at_start else a[:n]
+        if not at_start:
+            a[-n:] = block
+    return a
+
+
+def test_silence_gate_does_not_scale_with_recording_length():
+    from spillway.transcribe import _is_silence
+
+    # SKUTEČNÁ CHYBA: brána počítala PODÍL řeči (práh 1 %), takže u 300s
+    # nahrávky bylo potřeba 3 s řeči, kdežto u 10s jen 0,1 s. Uživatel přišel
+    # o pětiminutový diktát — měl v něm 1,7 s řeči, tedy 0,57 %.
+    for total in (5, 30, 60, 300, 600):
+        clip = _clip(total, 1.7)
+        assert not _is_silence(clip), (
+            f"{total}s nahrávka s 1,7 s řeči se nesmí zahodit jako ticho"
+        )
+
+
+def test_silence_gate_survives_a_quiet_microphone():
+    from spillway.transcribe import _is_silence, voiced_seconds
+
+    # Pevný práh 0,01 RMS znamenal, že nahrávka z tiššího vstupu (jiné
+    # zařízení, dál od úst) se CELÁ tvářila jako ticho, i když se v ní mluvilo.
+    quiet = _clip(30, 30, level=0.005, floor=0.0008)
+    assert not _is_silence(quiet)
+    assert voiced_seconds(quiet) > 5.0, "tichá řeč se musí počítat jako řeč"
+
+
+def test_real_silence_is_still_thrown_away():
+    from spillway.transcribe import _is_silence
+
+    # Brána pořád musí chránit mlx před halucinací na tichu („Titulky vytvořil…").
+    assert _is_silence(_clip(300, 0, floor=0.0008))
+    assert _is_silence(_clip(0.05, 0))
+
+
+def test_long_recording_is_trimmed_to_the_speech():
+    from spillway.transcribe import trim_to_speech
+
+    # Když se ztratí puštění klávesy, nahrává se až do stropu. Posílat 300 s,
+    # kde je řeč jen na začátku, je pomalé a svádí to k halucinacím na tichu.
+    clip = _clip(300, 1.7)
+    out = trim_to_speech(clip)
+    assert out.size / 16000 < 4.0, "ticho okolo se má uříznout"
+    assert out.size / 16000 > 1.7, "řeč se uříznout nesmí"
+    # Nahrávka bez řeči se nekrátí naslepo.
+    quiet = _clip(5, 0, floor=0.0008)
+    assert trim_to_speech(quiet).size == quiet.size
+
+
+def test_key_state_watch_needs_calibration_at_press():
+    import threading
+
+    from spillway.app import RECORDING, Controller
+
+    # Stav klávesy umí `CGEventSourceKeyState` přečíst jen u některých kláves.
+    # Kdyby se hlídalo i tam, kde vrací pořád „není držená", usekl by se každý
+    # diktát hned po prvním tiku — proto se zapíná jen po úspěšné kalibraci.
+    c = Controller.__new__(Controller)
+    c._lock = threading.Lock()
+    c.state = RECORDING
+    released = []
+    c.on_release = lambda: released.append(1)
+
+    c._keystate_watch = False                 # kalibrace neprošla
+    for _ in range(5):
+        c.check_key_released()
+    assert not released, "bez kalibrace se nesmí hlídat vůbec"
+
+    # S kalibrací: dvě čtení „není držená" po sobě → ukončit.
+    c._keystate_watch = True
+    c._keystate_up_ticks = 0
+    c._keystate_keycode = 176
+    c._keystate_src = 0
+    c._keystate_fn = lambda src, kc: False
+    c.check_key_released()
+    assert not released, "jedno čtení nestačí (přechodný výpadek)"
+    c.check_key_released()
+    assert released == [1], "ztracené puštění se musí odchytit"
+
+    # Držená klávesa čítač nuluje.
+    c._keystate_watch = True
+    c._keystate_up_ticks = 1
+    c._keystate_fn = lambda src, kc: True
+    c.check_key_released()
+    assert c._keystate_up_ticks == 0
