@@ -147,19 +147,27 @@ class SpillwayTray(rumps.App):
         return [n.panel] if n is not None and n.is_visible() else []
 
     def _notice_target(self):  # noqa: ANN201
-        """Okno, ke kterému se má kartička připnout — nebo None."""
+        """(okno, jeho VIDITELNÝ obdélník na obrazovce) pro kartičku — nebo None.
+
+        Vrací obdélník obsahu, ne rám okna. Okno popoveru je kolem obsahu větší
+        o šipku a o místo na stín, takže zarovnání podle rámu posadilo kartičku
+        výš a dál od popoveru, než vypadá správně.
+        """
         pop = getattr(self, "_popover", None)
         if pop is not None and pop.is_shown():
             try:
-                win = pop.popover.contentViewController().view().window()
+                view = pop.popover.contentViewController().view()
+                win = view.window()
                 if win is not None and win.isVisible():
-                    return win
+                    in_window = view.convertRect_toView_(view.bounds(), None)
+                    return (win, win.convertRectToScreen_(in_window))
             except Exception:  # noqa: BLE001
                 return None
         win = self._settings
         if win is not None and win.is_visible():
             try:
-                return win.window
+                # Běžné okno průhledný okraj nemá — rám JE viditelný obdélník.
+                return (win.window, win.window.frame())
             except Exception:  # noqa: BLE001
                 return None
         return None
@@ -172,8 +180,8 @@ class SpillwayTray(rumps.App):
         zavírání popoveru klikem mimo (viz `notice.show_beside`).
         """
         snap = status.snapshot()
-        parent = self._notice_target()
-        if parent is None or (snap["ready"] and snap["key_ok"]):
+        target = self._notice_target()
+        if target is None or (snap["ready"] and snap["key_ok"]):
             if self._notice is not None:
                 self._notice.hide()
             return
@@ -187,7 +195,7 @@ class SpillwayTray(rumps.App):
             except Exception as exc:  # noqa: BLE001 — bez kartičky se dá žít
                 print(f"(upozornění nedostupné: {exc})")
                 return
-        self._notice.show_beside(parent, snap)
+        self._notice.show_beside(*target, snap)
 
     def _notice_key_action(self, what: str) -> None:
         """Tlačítka u hlášky o API klíči."""

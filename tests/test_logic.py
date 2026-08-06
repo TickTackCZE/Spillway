@@ -1897,11 +1897,11 @@ def test_notice_hides_when_there_is_no_window_or_nothing_missing():
 
     missing = {"ready": False, "key_ok": False}
     fine = {"ready": True, "key_ok": True}
-    NoticePanel.show_beside(panel, None, missing)
+    NoticePanel.show_beside(panel, None, None, missing)
     assert calls == ["hide"], "bez okna se kartička musí schovat"
 
     calls.clear()
-    NoticePanel.show_beside(panel, object(), fine)
+    NoticePanel.show_beside(panel, object(), object(), fine)
     assert calls == ["hide"], "když nic nechybí, kartička nemá co ukazovat"
 
 
@@ -2570,3 +2570,49 @@ def test_notice_hides_even_when_its_flag_is_out_of_sync():
     NoticePanel.hide(panel)
     assert ordered == [1], "kartička se musí schovat i s rozejitým příznakem"
     assert panel._visible is False and panel._parent is None
+
+
+def test_notice_aligns_its_visible_card_with_the_window_beside_it(monkeypatch):
+    from spillway import notice
+    from spillway.notice import NoticePanel
+
+    # Uživatel viděl mezeru navíc a kartičku posazenou VÝŠ než popover.
+    # Obojí dělaly průhledné okraje: kartička má kolem karty `_PAD` px a okno
+    # popoveru je kolem obsahu ještě větší o šipku a místo na stín. Zarovnávat
+    # se proto musí VIDITELNÁ karta k VIDITELNÉMU obsahu.
+    class Rect:
+        def __init__(s, x, y, w, h):
+            s.origin = type("P", (), {"x": x, "y": y})()
+            s.size = type("S", (), {"width": w, "height": h})()
+
+    placed = {}
+    panel = NoticePanel.__new__(NoticePanel)
+    panel._pos = None
+    panel._parent = None
+    panel._visible = True
+    panel._apply = lambda snap: None
+    panel.panel = type("W", (), {
+        "frame": lambda s: Rect(0, 0, NoticePanel.W, 172),
+        "setFrameOrigin_": lambda s, pt: placed.update(x=pt.x, y=pt.y),
+        "setLevel_": lambda s, lv: None,
+        "orderFrontRegardless": lambda s: None,
+    })()
+    monkeypatch.setattr(notice, "NSMakePoint",
+                        lambda x, y: type("P", (), {"x": x, "y": y})())
+    monkeypatch.setattr(notice, "NSScreen", type("S", (), {
+        "screens": staticmethod(lambda: [type("Scr", (), {
+            "visibleFrame": lambda s: Rect(0, 0, 1800, 1100)})()])}))
+
+    anchor = Rect(1400, 500, 320, 560)          # viditelný obsah popoveru
+    NoticePanel.show_beside(panel, object(), anchor,
+                            {"ready": False, "key_ok": True})
+
+    pad, h = notice._PAD, 172.0
+    card_right = placed["x"] + NoticePanel.W - pad
+    card_top = placed["y"] + h - pad
+    assert card_right == anchor.origin.x - 8.0, (
+        f"mezi kartou a popoverem má být 8 px, je {anchor.origin.x - card_right}"
+    )
+    assert card_top == anchor.origin.y + anchor.size.height, (
+        "horní hrana karty musí sedět s horní hranou popoveru"
+    )

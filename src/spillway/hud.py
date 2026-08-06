@@ -51,9 +51,11 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
          display:flex; justify-content:center; }
   .card {
     display:none; align-items:center; gap:10px;
+    /* Stín kreslí macOS (`setHasShadow_`), ne CSS — ten se ořezával na hraně
+       okna a dělal kolem karty šedý obdélník s ostrými rohy. */
     background:rgba(38,38,40,0.96); border:0.5px solid rgba(255,255,255,0.15);
     border-radius:12px; padding:9px 15px 9px 12px;
-    box-shadow:0 8px 22px rgba(0,0,0,0.4); width:fit-content;
+    width:fit-content;
   }
   /* Ukotvení pod ikonu v liště: špička míří nahoru na ikonu (jako u menu). */
   .card.anchored { margin-top:6px; }
@@ -157,7 +159,7 @@ class StatusHUD:
         self.panel.setBackgroundColor_(NSColor.clearColor())
         self.panel.setLevel_(_STATUS_LEVEL)
         self.panel.setIgnoresMouseEvents_(True)
-        self.panel.setHasShadow_(False)  # stín dělá CSS
+        self.panel.setHasShadow_(True)   # tvarovaný stín kreslí macOS
         self.panel.setFloatingPanel_(True)
         self.panel.setHidesOnDeactivate_(False)
         try:
@@ -206,6 +208,12 @@ class StatusHUD:
             except Exception:  # noqa: BLE001
                 pass
             self._fit_click_area()
+            # Nativní stín se počítá z průhlednosti okna — po změně karty
+            # (jiný stav = jiná šířka) se musí přepočítat.
+            try:
+                self.panel.invalidateShadow()
+            except Exception:  # noqa: BLE001
+                pass
 
     @objc.python_method
     def _fit_click_area(self) -> None:

@@ -31,6 +31,10 @@ from .webview import run_js
 _BORDERLESS = 0
 _NONACTIVATING = 1 << 7
 _STATUS_LEVEL = 25
+# Průhledné odsazení kolem karty uvnitř okna (musí sedět s `body{padding}`
+# v CSS). Počítá se s ním při umisťování, aby se zarovnávala viditelná karta,
+# ne okno kolem ní.
+_PAD = 8.0
 
 _LOGO = design.logo_svg(color="#818CF8", width=15, height=15)
 
@@ -49,8 +53,12 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   ::-webkit-scrollbar{width:0;height:0;display:none;}
   body{font-family:-apple-system,'Raleway',sans-serif;padding:8px;}
   .wrap{position:relative;}
+  /* Stín kreslí macOS (`setHasShadow_`), ne CSS. CSS stín se ořezával na
+     hraně okna a dělal kolem kartičky šedý obdélník s ostrými rohy; nativní
+     se kreslí VEN z okna a tvaruje se podle viditelného obsahu, takže sedí
+     přesně na zaoblený tvar. */
   .card{background:var(--surface);border:0.5px solid var(--border);border-radius:12px;
-    padding:12px 13px;box-shadow:0 8px 26px rgba(0,0,0,0.42);}
+    padding:12px 13px;}
   /* Šipka míří doprava, na okno vedle. */
   .arrow{position:absolute;right:-6px;top:26px;width:12px;height:12px;
     background:var(--surface);border-right:0.5px solid var(--border);
@@ -184,7 +192,7 @@ class NoticePanel:
         self.panel.setOpaque_(False)
         self.panel.setBackgroundColor_(NSColor.clearColor())
         self.panel.setLevel_(_STATUS_LEVEL)
-        self.panel.setHasShadow_(False)      # stín dělá CSS
+        self.panel.setHasShadow_(True)       # tvarovaný stín kreslí macOS
         self.panel.setFloatingPanel_(True)
         self.panel.setHidesOnDeactivate_(False)
 
@@ -223,6 +231,15 @@ class NoticePanel:
         return True
 
     @objc.python_method
+    def _refresh_shadow(self) -> None:
+        """Nativní stín se počítá z průhlednosti okna — po změně obsahu nebo
+        velikosti se musí přepočítat, jinak zůstane viset podle staré podoby."""
+        try:
+            self.panel.invalidateShadow()
+        except Exception:  # noqa: BLE001
+            pass
+
+    @objc.python_method
     def _fit_to_content(self) -> None:
         def done(value, err) -> None:
             if err is not None or not value:
@@ -237,6 +254,7 @@ class NoticePanel:
                 NSMakeRect(float(frame.origin.x), top - h, self.W, h), True)
             self.web.setFrame_(NSMakeRect(0, 0, self.W, h))
             self._pos = None               # ať `show_beside` polohu přepočítá
+            self._refresh_shadow()
 
         try:
             self.web.evaluateJavaScript_completionHandler_(
@@ -268,16 +286,18 @@ class NoticePanel:
     # --- poloha a viditelnost -------------------------------------------------
 
     @objc.python_method
-    def show_beside(self, parent, snap: dict) -> None:
-        """Pověsí kartičku vlevo od okna `parent` (NSWindow).
+    def show_beside(self, parent, anchor, snap: dict) -> None:
+        """Posadí kartičku vlevo od okna `parent`, zarovnanou k jeho obsahu.
 
-        Kartička se připojí jako **potomek okna**, ne jen posadí na souřadnice.
-        Díky tomu zmizí spolu s rodičem — když se popover zavře klikem jinam,
-        odejde i ona. Dřív to hlídal jen časovač a kartička uměla zůstat viset.
+        `anchor` je VIDITELNÝ obdélník rodiče na obrazovce (u popoveru bez
+        šipky a bez místa na stín) — podle něj se zarovnává, ne podle rámu okna.
 
         Nikdy rodiče nepřekrývá: kdyby vlevo nebylo místo, jde doprava od něj.
         Překryv byl nebezpečný — klik na její tlačítko vypadal jako klik do
         popoveru a otevíral Nastavení „samo od sebe".
+
+        Viditelnost NEŘEŠÍ tahle metoda: o tom, kdy kartička zmizí, rozhoduje
+        jedno místo, `tray._update_notice` (viz poznámka níž u připínání).
         """
         if parent is None or (snap["ready"] and snap["key_ok"]):
             self.hide()
@@ -285,21 +305,26 @@ class NoticePanel:
 
         self._apply(snap)
 
-        pf = parent.frame()
+        # Poloha se počítá z VIDITELNÉ karty a z VIDITELNÉHO obsahu okna vedle,
+        # ne z rámů oken. Obojí má kolem sebe průhledný okraj (u nás `_PAD`
+        # z CSS, u popoveru navíc šipka a místo na stín), takže zarovnání podle
+        # rámů posadilo kartičku výš a dál, než vypadalo správně.
         gap = 8.0
+        ax, ay = float(anchor.origin.x), float(anchor.origin.y)
+        aw, ah = float(anchor.size.width), float(anchor.size.height)
         # Skutečná výška panelu, ne `self.H` — `_fit_to_content` ji mění podle
         # toho, jestli se hlásí jedno sdělení nebo dvě.
         h = float(self.panel.frame().size.height)
-        x = float(pf.origin.x) - self.W - gap
-        y = float(pf.origin.y) + float(pf.size.height) - h
+        x = ax - gap - self.W + _PAD            # pravá hrana KARTY `gap` od obsahu
+        y = ay + ah - h + _PAD                  # horní hrany karet zarovnané
 
         screens = NSScreen.screens()
         if screens:
             vf = screens[0].visibleFrame()
             left, bottom = float(vf.origin.x), float(vf.origin.y)
-            if x < left + 4.0:                      # vlevo se nevejde → doprava
-                x = float(pf.origin.x) + float(pf.size.width) + gap
-            y = max(bottom + 4.0, y)
+            if x + _PAD < left + 4.0:               # vlevo se nevejde → doprava
+                x = ax + aw + gap - _PAD
+            y = max(bottom + 4.0 - _PAD, y)
 
         if (x, y) != self._pos:
             self._pos = (x, y)
