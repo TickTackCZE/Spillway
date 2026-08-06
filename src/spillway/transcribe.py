@@ -78,93 +78,32 @@ def _pick_backend() -> str:
     return "faster"
 
 
-_SPEECH_MIN_S = 0.25      # míň řeči než tohle = opravdu není co přepisovat
-_FRAME_MS = 30
-
-
-def _frame_rms(audio: np.ndarray, frame_ms: int = _FRAME_MS) -> np.ndarray:
-    """Hlasitost po 30ms rámcích (RMS). Prázdné pole, když je audio kratší."""
-    n = int(SAMPLE_RATE * frame_ms / 1000)
-    if audio is None or n <= 0 or audio.size < n:
-        return np.zeros(0, dtype=np.float32)
-    usable = audio.size - (audio.size % n)
-    frames = audio[:usable].astype(np.float32).reshape(-1, n)
-    return np.sqrt(np.mean(frames ** 2, axis=1))
-
-
-def _speech_threshold(rms: np.ndarray) -> float:
-    """Práh „tohle je řeč" odvozený od TÉHLE nahrávky, ne pevné číslo.
-
-    Pevných 0,01 RMS stačilo, dokud se měřily krátké diktáty z ruky. Jenže
-    hlasitost mikrofonu se liší o řád (jiné zařízení, dál od úst, ztlumený
-    vstup) a nahrávka tišší než práh se pak CELÁ tvářila jako ticho — i když
-    se v ní mluvilo. Práh se proto počítá ze šumového pozadí a shora ho drží
-    špička, aby při hlasité nahrávce nevyšplhal do řeči.
-    """
-    if rms.size == 0:
-        return 0.004
-    floor = float(np.percentile(rms, 10))     # pauzy = pozadí místnosti
-    peak = float(rms.max())
-    return max(0.004, min(floor * 3.0, peak * 0.25))
-
-
-def voiced_seconds(audio: np.ndarray, frame_ms: int = _FRAME_MS,
-                   thresh: float | None = None) -> float:
-    """Odhad délky SKUTEČNÉ řeči (bez ticha a pauz) — pro „tempo řeči".
-
-    `thresh=None` znamená práh odvozený z nahrávky (viz `_speech_threshold`).
-    """
-    rms = _frame_rms(audio, frame_ms)
-    if rms.size == 0:
-        return 0.0 if audio is None or audio.size == 0 else float(audio.size) / SAMPLE_RATE
-    t = _speech_threshold(rms) if thresh is None else thresh
-    return int(np.count_nonzero(rms > t)) * frame_ms / 1000.0
-
-
-def level_summary(audio: np.ndarray) -> str:
-    """Krátký popis hlasitosti do logu — bez něj se nepozná, jestli mikrofon
-    nezachytil nic, nebo jen tiše. Přesně to chybělo u ztraceného diktátu."""
-    rms = _frame_rms(audio)
-    if rms.size == 0:
-        return "bez signálu"
-    return (f"špička {float(rms.max()):.4f} · pozadí "
-            f"{float(np.percentile(rms, 10)):.4f} · práh {_speech_threshold(rms):.4f}")
-
-
-def trim_to_speech(audio: np.ndarray, margin_s: float = 0.4) -> np.ndarray:
-    """Ořízne ticho před první a po poslední řeči (s rezervou).
-
-    Když se ztratí puštění klávesy, nahrává se dál — u ztraceného diktátu to
-    bylo 300 s zvuku kvůli pár sekundám řeči na začátku. Posílat to celé do
-    Whisperu je pomalé a hlavně to svádí k halucinacím na tichu.
-    """
-    rms = _frame_rms(audio)
-    if rms.size == 0:
-        return audio
-    voiced = np.nonzero(rms > _speech_threshold(rms))[0]
-    if voiced.size == 0:
-        return audio
-    n = int(SAMPLE_RATE * _FRAME_MS / 1000)
-    margin = int(SAMPLE_RATE * margin_s)
-    start = max(0, int(voiced[0]) * n - margin)
-    end = min(audio.size, (int(voiced[-1]) + 1) * n + margin)
-    return audio[start:end]
-
-
 def _is_silence(audio: np.ndarray) -> bool:
-    """Je v nahrávce vůbec něco k přepsání? Brána proti halucinaci mlx na tichu.
-
-    Rozhoduje ABSOLUTNÍ délka řeči, ne její podíl na nahrávce. Podíl byl chyba,
-    která stála uživatele pětiminutový diktát: práh 1 % znamenal, že u 300s
-    nahrávky bylo potřeba 3 s řeči, kdežto u 10s nahrávky jen 0,1 s. Čím déle
-    člověk nahrával, tím spíš mu appka všechno zahodila.
-
-    Při pochybnosti se PŘEPISUJE — Whisper si s tichem poradí líp než tahle
-    brána a případný nesmysl zachytí `_drop_hallucination`.
-    """
-    if audio is None or audio.size < 1600:  # < 0,1 s → nic k přepisu
+    """Levná brána proti tichu pro mlx (které vlastní VAD nemá) — než by mlx na
+    tichu halucinovalo („Titulky vytvořil…"). Ověřeno: ticho/šum má „voiced"
+    podíl ≤ 0,1 %, i tichá řeč ≥ 59 %, takže práh 1 % bezpečně odděluje.
+    Silero VAD se sem záměrně nedává — na CPU by ukusoval z GPU zrychlení."""
+    if audio.size < 1600:  # < 0,1 s → nic k přepisu
         return True
-    return voiced_seconds(audio) < _SPEECH_MIN_S
+    voiced = float(np.mean(np.abs(audio) > 0.01))
+    return voiced < 0.01
+
+
+def voiced_seconds(audio: np.ndarray, frame_ms: int = 30, thresh: float = 0.01) -> float:
+    """Odhad délky SKUTEČNÉ řeči (bez ticha a pauz) — pro „tempo řeči". Sečte
+    30ms rámce, jejichž RMS překročí práh; levné, bez VAD modelu. Ticho/pauzy
+    (RMS pod prahem) se nezapočítají, takže tempo = slova / minuty MLUVENÍ."""
+    if audio is None or audio.size == 0:
+        return 0.0
+    n = int(SAMPLE_RATE * frame_ms / 1000)
+    if n <= 0:
+        return 0.0
+    usable = audio.size - (audio.size % n)
+    if usable <= 0:
+        return float(audio.size) / SAMPLE_RATE
+    frames = audio[:usable].astype(np.float32).reshape(-1, n)
+    rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    return int(np.count_nonzero(rms > thresh)) * frame_ms / 1000.0
 
 
 def next_segment_boundary(
@@ -173,8 +112,8 @@ def next_segment_boundary(
     *,
     min_speech_s: float = 2.0,
     min_silence_s: float = 0.45,
-    thresh: float | None = None,
-    frame_ms: int = _FRAME_MS,
+    thresh: float = 0.01,
+    frame_ms: int = 30,
 ) -> int | None:
     """Řez segmentu pro streaming přepis: index vzorku > `start` **uprostřed
     dostatečně dlouhého ticha**, které přišlo po dostatečné řeči. `None`, když
@@ -190,10 +129,7 @@ def next_segment_boundary(
     if usable < n:
         return None
     rms = np.sqrt(np.mean(tail[:usable].astype(np.float32).reshape(-1, n) ** 2, axis=1))
-    # Stejný odvozený práh jako všude jinde. S pevnou hodnotou by tichý
-    # mikrofon nikdy nenašel řez, takže by se dlouhý diktát nesegmentoval
-    # a přepisoval by se celý až po puštění klávesy.
-    voiced = rms > (_speech_threshold(rms) if thresh is None else thresh)
+    voiced = rms > thresh
     min_speech_frames = max(1, int(min_speech_s * 1000 / frame_ms))
     min_silence_frames = max(1, int(min_silence_s * 1000 / frame_ms))
     voiced_count = 0
@@ -473,14 +409,6 @@ class Transcriber:
     def _transcribe_mlx(self, audio: np.ndarray, lang: str) -> str:
         if _is_silence(audio):  # brána proti halucinaci na tichu
             return ""
-        # Ticho okolo řeči uříznout. Když se ztratí puštění klávesy, nahrává se
-        # dál — u ztraceného pětiminutového diktátu šlo o pár sekund řeči a 298 s
-        # ticha. Whisper by to zpracovával celé a na tichu rád halucinuje.
-        trimmed = trim_to_speech(audio)
-        if trimmed.size < audio.size:
-            print(f"✂️  ticho okolo uříznuto: {audio.size / SAMPLE_RATE:.1f} s → "
-                  f"{trimmed.size / SAMPLE_RATE:.1f} s")
-            audio = trimmed
 
         # Přepis běží na mlx vlákně (stejném, kde je načtený model) — jinak
         # „There is no Stream(gpu, N) in current thread" a spadlý (ztracený) diktát.

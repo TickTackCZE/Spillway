@@ -139,15 +139,6 @@ class HotkeyListener:
 
     def _callback(self, proxy, type_, event, refcon):  # noqa: ANN001
         if type_ in (kCGEventTapDisabledByTimeout, kCGEventTapDisabledByUserInput):
-            # Do logu VŽDY. Dokud se tap zapínal potichu, nebylo poznat, že
-            # appka na chvíli přišla o klávesy — a přitom právě tehdy se ztratí
-            # puštění klávesy a nahrává se dál (uživatele to stálo pětiminutový
-            # diktát). „ByUserInput" hlásí i Secure Input, tedy Spotlight nebo
-            # pole na heslo.
-            why = ("timeout (obsluha trvala moc dlouho)"
-                   if type_ == kCGEventTapDisabledByTimeout
-                   else "systém (Secure Input — Spotlight, pole na heslo)")
-            print(f"⚠️  event tap vypnut: {why} → zapínám znovu")
             CGEventTapEnable(self._tap, True)
             return event
 

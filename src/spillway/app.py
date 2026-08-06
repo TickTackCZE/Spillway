@@ -23,12 +23,7 @@ from .audio import Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner, basic_cleanup
 from .paste import copy_to_clipboard, paste_text
-from .transcribe import (
-    Transcriber,
-    level_summary,
-    next_segment_boundary,
-    voiced_seconds,
-)
+from .transcribe import Transcriber, next_segment_boundary, voiced_seconds
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
 
@@ -397,7 +392,6 @@ class Controller:
         # [B7] Watchdog: kdyby se ztratil key-up (spánek, lock, Secure Input),
         # po max_seconds nahrávání vynuceně ukončíme, ať appka nezůstane v RECORDING.
         self._arm_watchdog()
-        self._watch_key_release()
 
     def _start_recording(self) -> None:
         """[F2] Otevření mikrofonu na worker vlákně (ne na tapu).
@@ -491,62 +485,6 @@ class Controller:
                         self._stream_committed = committed
         except Exception as exc:  # noqa: BLE001 — streaming nesmí shodit diktát
             print(f"(streaming loop error: {exc})")
-
-    def _watch_key_release(self) -> None:
-        """Zapne hlídání, jestli je klávesa pořád fyzicky držená.
-
-        Zapíná se JEN když se v tuhle chvíli — kdy klávesa prokazatelně držená
-        JE — podaří její stav přečíst. Bez téhle kalibrace by u klávesy, kterou
-        `CGEventSourceKeyState` neumí (jsou i takové), vycházelo pořád „není
-        držená" a každý diktát by se usekl po prvním tiku.
-        """
-        self._keystate_watch = False
-        try:
-            keycode, _label = config.get_hotkey()
-            from Quartz import (
-                CGEventSourceKeyState,
-                kCGEventSourceStateCombinedSessionState,
-            )
-
-            self._keystate_keycode = int(keycode)
-            self._keystate_fn = CGEventSourceKeyState
-            self._keystate_src = kCGEventSourceStateCombinedSessionState
-            self._keystate_watch = bool(
-                CGEventSourceKeyState(self._keystate_src, self._keystate_keycode))
-            self._keystate_up_ticks = 0
-        except Exception as exc:  # noqa: BLE001 — bez hlídání zbývá watchdog
-            diag.log("audio", f"stav klávesy nelze číst: {exc}")
-
-    def check_key_released(self) -> None:
-        """Klávesa už není držená, ale puštění nedorazilo → ukončit nahrávání.
-
-        Puštění se ztratí, když event tap přijde o události — typicky Secure
-        Input (Spotlight, pole na heslo) nebo když tap systém dočasně vypne.
-        Uživatele to stálo pětiminutový diktát: nahrávalo se dál až do stropu
-        a mikrofon mezitím přestal cokoliv zachytávat.
-
-        Volá se z časovače lišty. Vyžadují se DVA tiky po sobě, ať přechodné
-        přečtení „není držená" (přepnutí zařízení) diktát neusekne.
-        """
-        if not getattr(self, "_keystate_watch", False):
-            return
-        with self._lock:
-            if self.state != RECORDING:
-                return
-        try:
-            down = bool(self._keystate_fn(self._keystate_src, self._keystate_keycode))
-        except Exception:  # noqa: BLE001
-            self._keystate_watch = False
-            return
-        if down:
-            self._keystate_up_ticks = 0
-            return
-        self._keystate_up_ticks += 1
-        if self._keystate_up_ticks < 2:
-            return
-        self._keystate_watch = False
-        print("⚠️  klávesa už není držená, ale puštění nedorazilo → ukončuji nahrávku.")
-        self.on_release()
 
     def _arm_watchdog(self) -> None:
         self._cancel_watchdog()
@@ -948,15 +886,7 @@ class Controller:
             audio, streaming = self._collect_audio()
             audio_secs = len(audio) / 16000.0
             speech_secs = voiced_seconds(audio)  # bez ticha/pauz → tempo řeči
-            # Hlasitost do logu VŽDY. Bez ní se u ztraceného diktátu nepoznalo,
-            # jestli mikrofon nezachytil nic, nebo jen tiše — a to je rozdíl mezi
-            # „umřel vstup" a „špatně nastavená citlivost".
-            print(f"🎙️ audio {audio_secs:.1f} s ({len(audio)} vz.) · řeč {speech_secs:.1f} s"
-                  f" · {level_summary(audio)}")
-            if audio_secs > 3.0 and speech_secs < 0.25:
-                print("⚠️  v nahrávce není slyšet řeč — zkontroluj vstupní zařízení")
-                notify("Nahrávka je prázdná",
-                       "Mikrofon nic nezachytil. Zkontroluj vstupní zařízení.")
+            print(f"🎙️ audio {audio_secs:.1f} s ({len(audio)} vz.) · řeč {speech_secs:.1f} s")
             if audio.size == 0:
                 # Prázdné audio = nic se nenahrálo (stream se neotevřel včas /
                 # moc krátký stisk). Diagnostika bugu „diktát se ztratil".
