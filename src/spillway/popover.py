@@ -511,6 +511,7 @@ class PopoverController:
                 button.bounds(), button, NSMinYEdge
             )
             NSApp.activateIgnoringOtherApps_(True)
+            self._shown_at = _time.monotonic()
             self._watch_clicks_outside()
         except Exception:  # noqa: BLE001
             import traceback
@@ -535,13 +536,20 @@ class PopoverController:
 
     def _watch_clicks_outside(self) -> None:
         """Hlídač kliků mimo popover — náhrada za `Transient`, viz `__init__`."""
-        mask = (1 << 1) | (1 << 3)     # LeftMouseDown | RightMouseDown
+        mask = (1 << 1) | (1 << 3) | (1 << 10)   # Left/RightMouseDown | KeyDown
 
         def outside(_event) -> None:   # klik v CIZÍ aplikaci → vždycky zavřít
             self.close()
 
-        def inside(event):             # klik v naší → jen když nepatří nám
-            if not self._own_window(event.window()):
+        def inside(event):
+            # Escape zavře popover jako každé jiné vyskakovací okno. `Transient`
+            # to uměl sám, `ApplicationDefined` ne — klávesu nikdo neobsluhuje.
+            if event.type() == 10:                       # KeyDown
+                if event.keyCode() == 53:                # Escape
+                    self.close()
+                    return None                          # spolknout, ať nejde dál
+                return event
+            if not self._own_window(event.window()):     # klik v naší aplikaci
                 self.close()
             return event
 
@@ -568,7 +576,16 @@ class PopoverController:
         z tiku lišty, takže to nepotřebuje vlastní pozorovatele notifikací.
         """
         try:
-            if self.popover.isShown() and not NSApp.isActive():
+            if not self.popover.isShown():
+                return
+            # Krátká lhůta po otevření: `activateIgnoringOtherApps_` je
+            # asynchronní (a od macOS 14 navíc podléhá pravidlům aktivace),
+            # takže hned po kliku na ikonu ještě `isActive()` být nemusí.
+            # Bez téhle pojistky by tik, který se do té škvíry trefí, popover
+            # zavřel okamžitě po otevření — a hlavní UI by nešlo otevřít vůbec.
+            if _time.monotonic() - self._shown_at < 0.6:
+                return
+            if not NSApp.isActive():
                 self.close()
         except Exception:  # noqa: BLE001
             pass

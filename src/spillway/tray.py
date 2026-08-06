@@ -122,10 +122,12 @@ class SpillwayTray(rumps.App):
     def _broadcast_status(self) -> None:
         """Rozešle stav připravenosti do všech otevřených oken — jen při změně.
 
-        JEDINÁ cesta, kterou se okna dozvídají o modelu, stahování a klíči.
-        Dřív měl každý povrch vlastní odběr `models.add_download_listener` a
-        skládal si stav po svém, takže popover hlásil „Chybí model", nastavení
-        zároveň „Stahuji 40 %" a kartička nabízela stažení, které už běželo.
+        Jediné místo, které stav do oken TLAČÍ. Okna si ho můžou při otevření
+        vyzvednout sama (`status.snapshot()`), ale aktualizace za běhu chodí
+        odsud. Dřív měl každý povrch vlastní odběr `models.add_download_listener`
+        a skládal si stav po svém, takže popover hlásil „Chybí model",
+        nastavení zároveň „Stahuji 40 %" a kartička nabízela stažení, které
+        už běželo.
 
         Posílá se z tiku (6,7×/s), ale jen když se stav opravdu změnil —
         `snapshot()` je cachovaný, takže srovnání nic nestojí.

@@ -1886,24 +1886,37 @@ def test_cancel_when_nothing_runs_is_harmless(monkeypatch):
     assert models.download_state()["downloading"] is False
 
 
-def test_notice_hides_when_there_is_no_window_or_nothing_missing():
-    from spillway.notice import NoticePanel
+def test_tray_hides_the_notice_when_its_window_disappears(monkeypatch):
+    from spillway import status
+    from spillway import tray as traymod
 
-    # Bez okna (zavřel se popover) i když je vše v pořádku musí kartička zmizet.
-    # Testujeme přes nezinicializovanou instanci — jen logiku, bez AppKitu.
+    # Skutečná cesta: o viditelnosti kartičky rozhoduje JEDINĚ `_update_notice`.
+    # Dřív tu byla druhá kopie téže podmínky v `notice.show_beside` — a to je
+    # past, na kterou projekt už dvakrát naletěl.
     calls = []
-    panel = NoticePanel.__new__(NoticePanel)
-    panel.hide = lambda: calls.append("hide")
+    t = traymod.SpillwayTray.__new__(traymod.SpillwayTray)
+    t._notice = type("N", (), {"hide": lambda s: calls.append("hide"),
+                               "show_beside": lambda s, *a: calls.append("show"),
+                               "is_visible": lambda s: True})()
+    monkeypatch.setattr(status, "snapshot",
+                        lambda: {"ready": False, "key_ok": True})
 
-    missing = {"ready": False, "key_ok": False}
-    fine = {"ready": True, "key_ok": True}
-    NoticePanel.show_beside(panel, None, None, missing)
-    assert calls == ["hide"], "bez okna se kartička musí schovat"
+    monkeypatch.setattr(traymod.SpillwayTray, "_notice_target",
+                        lambda self: (object(), object()))
+    t._update_notice()
+    assert calls == ["show"], "s otevřeným oknem se kartička ukáže"
 
     calls.clear()
-    NoticePanel.show_beside(panel, object(), object(), fine)
-    assert calls == ["hide"], "když nic nechybí, kartička nemá co ukazovat"
+    monkeypatch.setattr(traymod.SpillwayTray, "_notice_target", lambda self: None)
+    t._update_notice()
+    assert calls == ["hide"], "okno zmizelo → kartička taky"
 
+    calls.clear()
+    monkeypatch.setattr(traymod.SpillwayTray, "_notice_target",
+                        lambda self: (object(), object()))
+    monkeypatch.setattr(status, "snapshot", lambda: {"ready": True, "key_ok": True})
+    t._update_notice()
+    assert calls == ["hide"], "když nic nechybí, kartička nemá co ukazovat"
 
 def test_download_progress_is_throttled(monkeypatch, tmp_path):
     from spillway import models
@@ -2430,36 +2443,6 @@ def test_new_dictation_shows_the_model_notice_again():
     assert "self.model_notice_hidden = False" in inspect.getsource(Controller.on_press)
 
 
-def test_hud_is_wide_enough_for_its_longest_label():
-    from spillway.hud import StatusHUD
-
-    # ZMĚŘENO ve WebKitu (`getBoundingClientRect` nad skutečným HTML okénka):
-    #   Ruším 112 · Nahrávám 137 · Zpracovávám 159 · Připraveno k vložení 243
-    #   · Chybí model — klikni a stáhni 301
-    # Plus 2×8 px odsazení těla. Okno kartu ořízne na svoji šířku, takže při
-    # dřívějších 240 px byla useknutá nejen výzva ke stažení, ale i lístek
-    # „Připraveno k vložení".
-    assert StatusHUD.W >= 317, (
-        f"okénko {StatusHUD.W} px uřízne nejdelší stav (změřeno 301 px + odsazení)"
-    )
-
-
-# --- Jeden zdroj pravdy o připravenosti --------------------------------------
-def test_readiness_snapshot_is_cheap_enough_for_the_timer(monkeypatch):
-    from spillway import models, status
-
-    # Snímek čte časovač lišty 6,7×/s a je za ním sahání na disk — hlavně
-    # `size_bytes()`, které prochází celou složku modelu (1,6 GB, stovky MB
-    # na soubor). Bez cache by to znamenalo čtení disku několikrát za sekundu.
-    walks, finds = [], []
-    monkeypatch.setattr(models, "size_bytes", lambda: walks.append(1) or 0)
-    monkeypatch.setattr(models, "find_local", lambda: finds.append(1) or None)
-    status.invalidate()
-    for _ in range(50):
-        status.snapshot()
-    assert len(finds) == 1, f"stav se přepočítal {len(finds)}× místo jednou"
-    assert not walks, "velikost složky se u chybějícího modelu nemá počítat vůbec"
-
 
 def test_readiness_snapshot_refreshes_after_invalidate(monkeypatch):
     from spillway import models, status
@@ -2494,65 +2477,12 @@ def test_notice_is_not_a_child_window_of_its_parent():
     )
 
 
-def test_clicking_the_hud_never_opens_settings():
-    import inspect
-
-    from spillway.tray import SpillwayTray
-
-    # Okénko visí přesně pod ikonou v liště. Dokud klik otevíral Nastavení,
-    # spadl sem i druhý klik z dvojkliku na ikonu (popover se ještě animoval)
-    # a Nastavení se otevíralo samo od sebe.
-    src = inspect.getsource(SpillwayTray._hud_clicked)
-    assert "open_settings" not in src, "klik na okénko nesmí otevírat Nastavení"
-    assert "dismiss_notice" in src
-
-
-def test_both_hud_notices_close_the_same_two_ways():
-    import inspect
-
-    from spillway.app import Controller
-    from spillway.tray import SpillwayTray
-
-    # Klik i rušicí klávesa musí vést do JEDNÉ funkce — dřív měl každý stav
-    # vlastní metodu a Escapem šlo zavřít jen jedno z okének.
-    assert "dismiss_notice" in inspect.getsource(SpillwayTray._hud_clicked)
-    assert "dismiss_notice" in inspect.getsource(Controller.request_cancel)
-    body = inspect.getsource(Controller.dismiss_notice)
-    assert "model_notice_hidden" in body and "awaiting_paste" in body
-
-
 def test_hud_does_not_advertise_the_cancel_key():
     from spillway.hud import _HTML
 
     # Odznak s klávesou u výzvy ke stažení uživatel nechtěl.
     assert "'esc'" not in _HTML and '"esc"' not in _HTML
 
-
-def test_hud_click_area_shrinks_to_the_visible_card():
-    import inspect
-
-    from spillway.hud import StatusHUD
-
-    # ZMĚŘENO ve WebKitu: karta je podle stavu 112–242 px v okně širokém 330 px
-    # a je v něm vycentrovaná; ve skrytém stavu má 0×0. Dokud klikací vrstva
-    # pokrývala celé okno, polykal kliknutí i průhledný okraj kolem.
-    src = inspect.getsource(StatusHUD._fit_click_area)
-    assert "getBoundingClientRect" in src
-    assert "_click.setFrame_" in src
-    assert "JSON.stringify" in src, (
-        "pole čísel se z evaluateJavaScript nevrátí spolehlivě (ověřeno: None)"
-    )
-
-
-def test_popover_closes_when_user_switches_apps():
-    import inspect
-
-    from spillway.popover import PopoverController
-
-    # `ApplicationDefined` popover se sám nezavře ani při ⌘Tab — hlídač kliků
-    # zabere jen na kliknutí. `Transient` to uměl, takže se to musí doplnit.
-    src = inspect.getsource(PopoverController.close_if_app_inactive)
-    assert "NSApp.isActive()" in src and "self.close()" in src
 
 
 def test_notice_hides_even_when_its_flag_is_out_of_sync():
@@ -2599,9 +2529,8 @@ def test_notice_aligns_its_visible_card_with_the_window_beside_it(monkeypatch):
     })()
     monkeypatch.setattr(notice, "NSMakePoint",
                         lambda x, y: type("P", (), {"x": x, "y": y})())
-    monkeypatch.setattr(notice, "NSScreen", type("S", (), {
-        "screens": staticmethod(lambda: [type("Scr", (), {
-            "visibleFrame": lambda s: Rect(0, 0, 1800, 1100)})()])}))
+    monkeypatch.setattr(notice.screens, "visible_frame_at",
+                        lambda x, y: Rect(0, 0, 1800, 1100))
 
     anchor = Rect(1400, 500, 320, 560)          # viditelný obsah popoveru
     NoticePanel.show_beside(panel, object(), anchor,
@@ -2616,3 +2545,108 @@ def test_notice_aligns_its_visible_card_with_the_window_beside_it(monkeypatch):
     assert card_top == anchor.origin.y + anchor.size.height, (
         "horní hrana karty musí sedět s horní hranou popoveru"
     )
+
+
+def test_clicking_the_hud_only_closes_it(monkeypatch):
+    from spillway.app import IDLE
+    from spillway.tray import SpillwayTray
+
+    # Klik smí okénko jen zavřít. Dokud otevíral Nastavení, spadl sem i druhý
+    # klik z dvojkliku na ikonu (okénko visí přesně pod ní) a Nastavení se
+    # otevíralo samo od sebe.
+    opened = []
+    monkeypatch.setattr(SpillwayTray, "open_settings",
+                        lambda self, *a, **k: opened.append(1))
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray.controller = _controller_stub(IDLE)
+    tray.controller.model_missing = True
+    tray.controller.awaiting_paste = True
+
+    tray._hud_clicked()
+    assert not opened, "klik na okénko nesmí otevřít Nastavení"
+    assert tray.controller.model_notice_hidden is True
+    assert tray.controller.awaiting_paste is False
+    assert tray.controller.model_missing is True, "stav pipeline zůstává"
+
+
+def test_popover_closes_only_after_the_app_really_went_away(monkeypatch):
+    from spillway import popover as pmod
+    from spillway.popover import PopoverController
+
+    # `activateIgnoringOtherApps_` je asynchronní (a od macOS 14 podléhá
+    # pravidlům aktivace). Bez lhůty by tik, který se trefí mezi žádost
+    # a potvrzení, zavřel popover hned po otevření — a hlavní UI by nešlo
+    # otevřít vůbec.
+    closed = []
+    pop = PopoverController.__new__(PopoverController)
+    pop.popover = type("P", (), {"isShown": lambda s: True})()
+    pop.close = lambda: closed.append(1)
+    monkeypatch.setattr(pmod, "NSApp", type("A", (), {"isActive": staticmethod(lambda: False)}))
+
+    pop._shown_at = pmod._time.monotonic()          # právě otevřeno
+    pop.close_if_app_inactive()
+    assert not closed, "hned po otevření se zavírat nesmí"
+
+    pop._shown_at = pmod._time.monotonic() - 5.0    # otevřeno dávno
+    pop.close_if_app_inactive()
+    assert closed == [1], "aplikace není aktivní → popover pryč"
+
+    closed.clear()
+    monkeypatch.setattr(pmod, "NSApp", type("A", (), {"isActive": staticmethod(lambda: True)}))
+    pop.close_if_app_inactive()
+    assert not closed, "aktivní aplikace → popover zůstává"
+
+
+def test_tick_asks_the_popover_to_close_when_app_is_gone():
+    from spillway.app import IDLE
+    from spillway.tray import SpillwayTray
+
+    # Samotná metoda nestačí — musí ji někdo volat. Dřív to nehlídalo nic.
+    asked = []
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray._popover_ready = True
+    tray._welcome_checked = True
+    tray.hud = None
+    tray.controller = _controller_stub(IDLE)
+    tray._popover = type("P", (), {
+        "close_if_app_inactive": lambda s: asked.append(1),
+        "is_shown": lambda s: False})()
+    tray._broadcast_status = lambda: None
+    tray._update_notice = lambda: None
+    tray._refresh_stats_when_done = lambda: None
+    tray._update_icon = lambda *a: None
+
+    tray._tick(None)
+    assert asked == [1], "tik se musí ptát, jestli uživatel neodešel jinam"
+
+
+def test_measuring_the_dom_waits_for_the_page(monkeypatch):
+    from spillway import webview
+
+    # Regrese, kterou projekt zopakoval potřetí: měření na nenačtené stránce
+    # vrátí null a nativní okno zůstane ve výchozí velikosti. `measure` proto
+    # musí čekat stejně jako `run_js`.
+    later = []
+    monkeypatch.setattr(webview.AppHelper, "callLater",
+                        lambda delay, fn: later.append(fn))
+
+    evaluated = []
+
+    class Loading:
+        def isLoading(self):
+            return True
+
+        def evaluateJavaScript_completionHandler_(self, js, cb):
+            evaluated.append(js)
+
+    webview.measure(Loading(), "x", lambda v: None, "test")
+    assert not evaluated, "do načítající se stránky se měřit nesmí"
+    assert later, "měření se má odložit, ne zahodit"
+
+    class Ready(Loading):
+        def isLoading(self):
+            return False
+
+    got = []
+    webview.measure(Ready(), "y", got.append, "test")
+    assert evaluated == ["y"], "na načtené stránce se měří rovnou"

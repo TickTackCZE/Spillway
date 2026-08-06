@@ -31,8 +31,8 @@ from AppKit import (
 )
 from WebKit import WKWebView, WKWebViewConfiguration
 
-from . import context, design, diag
-from .webview import run_js
+from . import context, design, diag, screens
+from .webview import measure, run_js
 
 _BORDERLESS = 0
 _NONACTIVATING = 1 << 7
@@ -144,11 +144,14 @@ class _ClickCatcher(NSView):
 
 
 class StatusHUD:
-    # Šířka musí pojmout NEJDELŠÍ stav („Chybí model — klikni a stáhni"),
-    # jinak se text uřízne: karta uvnitř má `width:fit-content`, ale okno ji
-    # ořízne na svoji šířku. Karta se v okně centruje, takže u kratších stavů
-    # nadbytečná šířka není vidět (okno je průhledné).
-    W, H = 330, 56
+    # Jen VÝCHOZÍ velikost. Okno se po každé změně stavu srovná s kartou
+    # (`_fit_to_card`), protože karta má `width:fit-content` a mezi stavy se
+    # liší skoro dvojnásobně (změřeno: „Ruším" 112 px, „Připraveno k vložení"
+    # 242 px). Pevné okno dělalo dvě potíže naráz: širší text se uřízl, a
+    # naopak průhledný okraj kolem kratší karty polykal kliknutí — okénko visí
+    # hned pod lištou, takže tam vznikla mrtvá zóna přes 300 px.
+    W, H = 260, 56
+    PAD = 8            # průhledné odsazení kolem karty (musí sedět s CSS)
 
     def __init__(self) -> None:
         rect = NSMakeRect(0, 0, self.W, self.H)
@@ -189,13 +192,14 @@ class StatusHUD:
         # Tlumení dotazů na polohu kurzoru — viz `_caret_rect`.
         self._rect_cache: tuple | None = None
         self._rect_at = 0.0
+        self._at_icon = True         # poslední režim umístění (u ikony / u kurzoru)
         self.status_button = None    # tlačítko ikony v liště (doplní tray)
         self.on_dismiss = None       # zavolá se, když uživatel klikne na lístek
 
-    @objc.python_method
     def _on_click(self) -> None:
-        # Klik má smysl jen u lístku „Připraveno k vložení" — jinak je vrstva
-        # vypnutá (panel ignoruje myš), takže se sem stejně nedostaneme.
+        # Klik chodí u OBOU stavů, na které se dá kliknout — u lístku
+        # „Připraveno k vložení" i u výzvy „Chybí model" (u ostatních panel myš
+        # ignoruje). Obojí vede na totéž: okénko zavřít.
         cb = self.on_dismiss
         if cb is not None:
             cb()
@@ -207,45 +211,48 @@ class StatusHUD:
                 run_js(self.web, f"setState('{state}')", "hud")
             except Exception:  # noqa: BLE001
                 pass
-            self._fit_click_area()
-            # Nativní stín se počítá z průhlednosti okna — po změně karty
-            # (jiný stav = jiná šířka) se musí přepočítat.
-            try:
-                self.panel.invalidateShadow()
-            except Exception:  # noqa: BLE001
-                pass
+            self._fit_to_card()
 
-    @objc.python_method
-    def _fit_click_area(self) -> None:
-        """Zúží klikací vrstvu na skutečnou kartu.
+    def _fit_to_card(self) -> None:
+        """Srovná velikost OKNA s kartou uvnitř.
 
-        Okno je široké 330 px, ale karta je podle stavu 112–301 px a je v něm
-        vycentrovaná. Dokud vrstva pokrývala celé okno, polykal kliknutí i
-        průhledný okraj kolem — a protože okénko visí přesně pod ikonou v liště,
-        druhý klik z dvojkliku na ikonu spadl sem a otevřel Nastavení.
+        Zmenšuje se samo okno, ne jen klikací vrstva. Vrstva by kliknutí sice
+        nepředala dál, ale okno si ho i tak vezme a do aplikace pod okénkem
+        nedojde — vzniká mrtvá zóna. A protože okénko visí hned pod lištou,
+        byla ta zóna přesně tam, kam se běžně kliká.
+
+        Měření jde přes `webview.measure`, aby počkalo na načtenou stránku:
+        na nenačtené vrátí `getBoundingClientRect` nesmysl a okno by zůstalo
+        ve výchozí velikosti.
         """
-        def done(value, err) -> None:
-            if err is not None or not value:
-                return
-            try:
-                r = json.loads(str(value))
-            except ValueError:
-                return
-            w, h = float(r["width"]), float(r["height"])
-            if w <= 0 or h <= 0:          # skrytá karta → nemá co chytat
-                self._click.setFrame_(NSMakeRect(0, 0, 0, 0))
-                return
-            # Web měří odshora, NSView odspoda.
-            self._click.setFrame_(
-                NSMakeRect(float(r["left"]), self.H - float(r["bottom"]), w, h))
+        def apply(value) -> None:
+            r = json.loads(str(value))
+            w, bottom = float(r["width"]), float(r["bottom"])
+            if w <= 0 or bottom <= 0:
+                return                     # skrytá karta — velikost neřešíme
+            # `bottom` (ne `height`) proto, že u ukotvené karty je nad ní ještě
+            # šipka a odsazení; okno musí pojmout obojí.
+            self._resize(w + 2 * self.PAD, bottom + self.PAD)
 
-        # Přes JSON řetězec: pole čísel se z `evaluateJavaScript` nevrátí
-        # spolehlivě (ověřeno — přišlo None), skalár a řetězec ano.
-        try:
-            self.web.evaluateJavaScript_completionHandler_(
+        measure(self.web,
                 "JSON.stringify(document.getElementById('card').getBoundingClientRect())",
-                done)
-        except Exception:  # noqa: BLE001 — bez zúžení zůstane vrstva přes celé okno
+                apply, "hud")
+
+    def _resize(self, w: float, h: float) -> None:
+        """Změní velikost okna a hned ho posadí znovu podle aktuálního režimu."""
+        frame = self.panel.frame()
+        if abs(w - frame.size.width) < 1.0 and abs(h - frame.size.height) < 1.0:
+            return
+        self.panel.setFrame_display_(
+            NSMakeRect(frame.origin.x, frame.origin.y, w, h), True)
+        self.web.setFrame_(NSMakeRect(0, 0, w, h))
+        self._click.setFrame_(NSMakeRect(0, 0, w, h))   # vrstva = celé (malé) okno
+        self._place()
+        try:
+            # Nativní stín se počítá z průhlednosti okna — po změně velikosti
+            # i obsahu se musí přepočítat, jinak zůstane podle staré podoby.
+            self.panel.invalidateShadow()
+        except Exception:  # noqa: BLE001
             pass
 
     def _caret_rect(self) -> tuple | None:
@@ -269,23 +276,40 @@ class StatusHUD:
         self._rect_cache = context.caret_screen_rect()
         return self._rect_cache
 
+    def _size(self) -> tuple:
+        """Skutečná velikost okna — `W`/`H` jsou jen výchozí, `_resize` je mění."""
+        f = self.panel.frame().size
+        return float(f.width), float(f.height)
+
+    def _place(self) -> None:
+        """Posadí okno podle naposledy použitého režimu (u ikony / u kurzoru)."""
+        if self._at_icon:
+            self._anchor_to_status_item()
+        else:
+            self._reposition()
+
     def _reposition(self) -> None:
         gap = 10.0
+        win_w, win_h = self._size()
         rect = self._caret_rect()
-        screens = NSScreen.screens()
-        primary_h = float(screens[0].frame().size.height) if screens else 0.0
-        screen_w = float(screens[0].frame().size.width) if screens else 99999.0
+        # Převod z AX (odshora, od primární) na Cocoa (odspoda) se dělá VŽDY
+        # vůči primární obrazovce — i když kurzor je na jiné.
+        primary_h = screens.primary_height()
 
         if rect is not None:
             cx, cy, cw, ch = rect  # AX: počátek vlevo NAHOŘE
             # karta má 8px odsazení uvnitř okna → posun, aby seděla nad kurzorem
-            x = cx + cw / 2.0 - self.W / 2.0
-            x = max(4.0, min(x, screen_w - self.W - 4.0))
+            x = cx + cw / 2.0 - win_w / 2.0
+            # Ořez podle obrazovky, na které kurzor JE.
+            vf = screens.visible_frame_at(x, primary_h - cy)
+            if vf is not None:
+                left = float(vf.origin.x)
+                x = max(left + 4.0, min(x, left + float(vf.size.width) - win_w - 4.0))
             caret_top = primary_h - cy
             caret_bottom = primary_h - (cy + ch)
             y = caret_top + gap - 8.0
-            if y + self.H > primary_h - 4.0:
-                y = caret_bottom - self.H - gap
+            if y + win_h > primary_h - 4.0:
+                y = caret_bottom - win_h - gap
             diag.log("hud", f"caret AX=({cx:.0f},{cy:.0f},{cw:.0f},{ch:.0f}) → panel=({x:.0f},{y:.0f})")
             self.panel.setFrameOrigin_(NSMakePoint(x, y))
         else:
@@ -321,10 +345,11 @@ class StatusHUD:
             top_y = float(vf.origin.y) + float(vf.size.height) - 24.0
             diag.log("hud", "ikona v liště neznámá → pravý horní roh")
 
-        x = icon_center_x - self.W / 2.0
+        win_w, win_h = self._size()
+        x = icon_center_x - win_w / 2.0
         x = max(float(vf.origin.x) + 4.0,
-                min(x, float(vf.origin.x) + float(vf.size.width) - self.W - 4.0))
-        y = top_y - self.H
+                min(x, float(vf.origin.x) + float(vf.size.width) - win_w - 4.0))
+        y = top_y - win_h
         diag.log("hud", f"ukotveno k ikoně: icon_x={icon_center_x:.0f} → panel=({x:.0f},{y:.0f})")
         self.panel.setFrameOrigin_(NSMakePoint(x, y))
         self._set_anchor(icon_center_x - x)  # kam v okénku patří špička
@@ -344,13 +369,11 @@ class StatusHUD:
         — používá se, když uživatel odejde z cílové aplikace (jinak by okénko
         zůstalo viset u kurzoru v cizí appce, kam se nic vkládat nebude)."""
         self._set_state(state)
-        if state in ("ready", "nomodel") or at_icon:
-            # Lístek „Připraveno k vložení" visí u ikony a dá se na něj kliknout.
-            # Panel je neaktivační, takže klik NEPŘEPNE aplikaci a tvoje pole
-            # nepřijde o kurzor (jinak by následné ⌘V vložilo text jinam).
-            self._anchor_to_status_item()
-        else:
-            self._reposition()
+        # Lístek „Připraveno k vložení" i výzva ke stažení visí u ikony a dá se
+        # na ně kliknout. Panel je neaktivační, takže klik NEPŘEPNE aplikaci a
+        # tvoje pole nepřijde o kurzor (jinak by následné ⌘V vložilo text jinam).
+        self._at_icon = state in ("ready", "nomodel") or at_icon
+        self._place()
         self.panel.setIgnoresMouseEvents_(state not in ("ready", "nomodel"))  # jinde ať myš propadává
         if not self._visible:
             self.panel.orderFrontRegardless()

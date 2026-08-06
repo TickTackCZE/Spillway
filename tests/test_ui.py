@@ -278,26 +278,37 @@ def test_model_card_offers_download_and_removal():
     assert "applyModel" in html and "percent" in html
 
 
-def test_hud_offers_download_when_model_missing():
+def test_hud_tells_the_user_the_model_is_missing():
     from spillway import hud
 
-    # Bez modelu nemá okénko mlčet — přepis by spustil tiché stahování 1,5 GB
-    # a vypadalo by to jako zamrznutí.
-    html = hud._HTML if hasattr(hud, "_HTML") else hud.HTML
+    # Bez modelu nemá okénko mlčet — jinak vypadá zamrznutí jako by se nic
+    # nedělo. Stahování odsud NEnabízíme: klik okénko jen zavře (viz
+    # `tray._hud_clicked`), protože otevírání Nastavení chytalo i cizí kliky.
+    html = hud._HTML
     assert "nomodel" in html and "Chybí model" in html
     assert ".dot.nomodel" in html, "výzva musí mít vlastní barvu tečky"
 
 
 def test_clickable_hud_states_are_not_transparent_to_mouse():
-    import inspect
-
-    from spillway import hud
+    from spillway.hud import StatusHUD
 
     # Na lístek i na výzvu se musí dát kliknout; u ostatních stavů má myš
-    # propadávat do aplikace pod okénkem.
-    src = inspect.getsource(hud)
-    assert 'setIgnoresMouseEvents_(state not in ("ready", "nomodel"))' in src
-    assert 'if state in ("ready", "nomodel") or at_icon:' in src
+    # propadávat do aplikace pod okénkem. Testováno CHOVÁNÍM — dřív to byl
+    # doslovný řetězec ze zdrojáku, který rozbilo i pouhé přeformátování.
+    ignored = {}
+    hud = StatusHUD.__new__(StatusHUD)
+    hud._state = None
+    hud._visible = True
+    hud._at_icon = False
+    hud._set_state = lambda s: None
+    hud._place = lambda: None
+    hud.panel = type("P", (), {
+        "setIgnoresMouseEvents_": lambda s, v: ignored.__setitem__("v", bool(v)),
+        "orderFrontRegardless": lambda s: None})()
+    for state, clickable in (("ready", True), ("nomodel", True),
+                             ("rec", False), ("proc", False), ("cancel", False)):
+        StatusHUD.show(hud, state)
+        assert ignored["v"] is not clickable, f"stav {state}: myš má být {clickable}"
 
 
 def test_setup_card_groups_key_and_model_together():

@@ -21,12 +21,11 @@ from AppKit import (
     NSMakePoint,
     NSMakeRect,
     NSPanel,
-    NSScreen,
 )
 from WebKit import WKWebView, WKWebViewConfiguration
 
-from . import design, models
-from .webview import run_js
+from . import design, models, screens
+from .webview import measure, run_js
 
 _BORDERLESS = 0
 _NONACTIVATING = 1 << 7
@@ -35,6 +34,9 @@ _STATUS_LEVEL = 25
 # v CSS). Počítá se s ním při umisťování, aby se zarovnávala viditelná karta,
 # ne okno kolem ní.
 _PAD = 8.0
+_ALL_SPACES = 1 << 0
+_STATIONARY = 1 << 4
+_FS_AUX = 1 << 8
 
 _LOGO = design.logo_svg(color="#818CF8", width=15, height=15)
 
@@ -165,9 +167,9 @@ class _NoticeBridge(objc.lookUpClass("NSObject")):
             body = dict(message.body()) if hasattr(message.body(), "keys") else {}
             action = str(body.get("action", ""))
             if action == "download":
-                # Odběr postupu tu NEREGISTRUJEME — tray ho zapisuje natrvalo
-                # při vytvoření kartičky (stahování se dá spustit i z Nastavení,
-                # takže se o něm musí dozvědět tak jako tak).
+                # Odběr postupu tu NEREGISTRUJEME. Stav stahování má jediný
+                # zdroj (`status.snapshot()`) a do oken ho rozesílá jedno místo
+                # v `tray`; odsud se jen spouští.
                 models.download_async()
             elif action == "cancel":
                 models.cancel_download()
@@ -195,6 +197,12 @@ class NoticePanel:
         self.panel.setHasShadow_(True)       # tvarovaný stín kreslí macOS
         self.panel.setFloatingPanel_(True)
         self.panel.setHidesOnDeactivate_(False)
+        try:
+            # Stejně jako okénko u kurzoru: popover jde z lišty otevřít i nad
+            # aplikací na celé obrazovce a kartička tam musí být vidět taky.
+            self.panel.setCollectionBehavior_(_ALL_SPACES | _STATIONARY | _FS_AUX)
+        except Exception:  # noqa: BLE001
+            pass
 
         cfg = WKWebViewConfiguration.alloc().init()
         self._bridge = _NoticeBridge.alloc().initWithOwner_(self)
@@ -215,7 +223,6 @@ class NoticePanel:
 
     # --- vzhled ---------------------------------------------------------------
 
-    @objc.python_method
     def _render(self, state: dict) -> bool:
         """Překreslí kartičku a srovná výšku okna s obsahem.
 
@@ -230,7 +237,6 @@ class NoticePanel:
         self._fit_to_content()
         return True
 
-    @objc.python_method
     def _refresh_shadow(self) -> None:
         """Nativní stín se počítá z průhlednosti okna — po změně obsahu nebo
         velikosti se musí přepočítat, jinak zůstane viset podle staré podoby."""
@@ -239,15 +245,20 @@ class NoticePanel:
         except Exception:  # noqa: BLE001
             pass
 
-    @objc.python_method
     def _fit_to_content(self) -> None:
-        def done(value, err) -> None:
-            if err is not None or not value:
-                return
-            h = float(value) + 16          # + odsazení těla nahoře i dole
-            if abs(h - self.panel.frame().size.height) < 1.0:
-                return
+        """Srovná výšku okna s obsahem.
+
+        Měření jde přes `webview.measure`, aby počkalo na načtenou stránku.
+        Dřív šlo přímo do `evaluateJavaScript` — a protože tray kartičku vytvoří
+        a v témže tiku ukáže, stránka se ještě načítala, `querySelector` vrátil
+        `null` a okno zůstalo na výchozí výšce. Pod kartičkou pak visel
+        průhledný pruh, který polykal kliknutí.
+        """
+        def apply(value) -> None:
+            h = float(value) + 2 * _PAD    # + odsazení těla nahoře i dole
             frame = self.panel.frame()
+            if abs(h - float(frame.size.height)) < 1.0:
+                return
             # Panel roste dolů: horní hrana musí zůstat u okna vedle.
             top = float(frame.origin.y) + float(frame.size.height)
             self.panel.setFrame_display_(
@@ -256,25 +267,21 @@ class NoticePanel:
             self._pos = None               # ať `show_beside` polohu přepočítá
             self._refresh_shadow()
 
-        try:
-            self.web.evaluateJavaScript_completionHandler_(
-                "document.querySelector('.wrap').getBoundingClientRect().height", done)
-        except Exception:  # noqa: BLE001 — bez dopočtu zůstane výchozí výška
-            pass
+        measure(self.web,
+                "document.querySelector('.wrap').getBoundingClientRect().height",
+                apply, "notice")
 
-    @objc.python_method
     def _apply(self, state: dict) -> None:
         """Překreslí, JEN když se stav změnil.
 
         Volá se z časovače 6,7×/s a každé `evaluateJavaScript` je práce navíc
         na hlavním vlákně — bez téhle podmínky se UI během stahování znatelně
-        seká. `_last` se zapamatuje jen po úspěšném vykreslení, jinak by se
-        stav u nenačtené stránky označil za hotový a už nikdy nepřekreslil.
+        seká. O nenačtenou stránku se stará `run_js` uvnitř `_render`: volání
+        odloží, dokud se stránka nedonačte, místo aby ho zahodil.
         """
         if state != self._last and self._render(state):
             self._last = state
 
-    @objc.python_method
     def on_key_action(self, what: str) -> None:
         cb = self.on_key
         if cb is not None:
@@ -285,7 +292,6 @@ class NoticePanel:
 
     # --- poloha a viditelnost -------------------------------------------------
 
-    @objc.python_method
     def show_beside(self, parent, anchor, snap: dict) -> None:
         """Posadí kartičku vlevo od okna `parent`, zarovnanou k jeho obsahu.
 
@@ -296,13 +302,10 @@ class NoticePanel:
         Překryv byl nebezpečný — klik na její tlačítko vypadal jako klik do
         popoveru a otevíral Nastavení „samo od sebe".
 
-        Viditelnost NEŘEŠÍ tahle metoda: o tom, kdy kartička zmizí, rozhoduje
-        jedno místo, `tray._update_notice` (viz poznámka níž u připínání).
+        Viditelnost NEŘEŠÍ tahle metoda — o tom, kdy se kartička ukazuje a kdy
+        mizí, rozhoduje výhradně `tray._update_notice`. Dokud tu byla kopie té
+        podmínky, byla to tatáž past, na kterou projekt už dvakrát naletěl.
         """
-        if parent is None or (snap["ready"] and snap["key_ok"]):
-            self.hide()
-            return
-
         self._apply(snap)
 
         # Poloha se počítá z VIDITELNÉ karty a z VIDITELNÉHO obsahu okna vedle,
@@ -318,9 +321,10 @@ class NoticePanel:
         x = ax - gap - self.W + _PAD            # pravá hrana KARTY `gap` od obsahu
         y = ay + ah - h + _PAD                  # horní hrany karet zarovnané
 
-        screens = NSScreen.screens()
-        if screens:
-            vf = screens[0].visibleFrame()
+        # Obrazovka, na které je okno vedle — ne primární. Na sestavě s víc
+        # monitory by se kartička jinak přehazovala podle špatného displeje.
+        vf = screens.visible_frame_at(ax, ay)
+        if vf is not None:
             left, bottom = float(vf.origin.x), float(vf.origin.y)
             if x + _PAD < left + 4.0:               # vlevo se nevejde → doprava
                 x = ax + aw + gap - _PAD
@@ -347,11 +351,9 @@ class NoticePanel:
             self.panel.orderFrontRegardless()
         self._visible = True
 
-    @objc.python_method
     def is_visible(self) -> bool:
         return self._visible
 
-    @objc.python_method
     def hide(self) -> None:
         """Kartičku pryč. Řídí se skutečným stavem okna, ne jen příznakem —
         kdyby se `_visible` s realitou rozešel, zůstala by viset na obrazovce
