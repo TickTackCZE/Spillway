@@ -300,6 +300,7 @@ def test_clickable_hud_states_are_not_transparent_to_mouse():
     hud._state = None
     hud._visible = True
     hud._at_icon = False
+    hud._measured = True          # okno už sedí na kartě
     hud._set_state = lambda s: None
     hud._place = lambda: None
     hud.panel = type("P", (), {
@@ -309,6 +310,13 @@ def test_clickable_hud_states_are_not_transparent_to_mouse():
                              ("rec", False), ("proc", False), ("cancel", False)):
         StatusHUD.show(hud, state)
         assert ignored["v"] is not clickable, f"stav {state}: myš má být {clickable}"
+
+    # Dokud okno nesedí na kartě, nesmí brát kliky ani u klikatelných stavů —
+    # klik by mohl trefit průhledný okraj kolem menší karty.
+    hud._measured = False
+    hud._state = None
+    StatusHUD.show(hud, "nomodel")
+    assert ignored["v"] is True, "nezměřené okno musí myš propouštět"
 
 
 def test_setup_card_groups_key_and_model_together():

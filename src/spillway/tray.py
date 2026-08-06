@@ -86,6 +86,8 @@ class SpillwayTray(rumps.App):
         # Po instalaci ukázat jednou nastavení — bez modelu appka nediktuje
         # a uživatel by to jinak zjistil až prvním nefunkčním stiskem klávesy.
         self._welcome_checked = False
+        # Ukázat uvítací blok, až uživatel Nastavení sám otevře (viz `_maybe_welcome`).
+        self._show_welcome_next_time = False
         self._tap_checked = False
         self._tapcheck_timer = rumps.Timer(self._check_tap, 1.0)
         self._tapcheck_timer.start()
@@ -101,21 +103,19 @@ class SpillwayTray(rumps.App):
         self._stuck_timer.start()
 
     def _maybe_welcome(self) -> None:
-        """Jednorázově po instalaci: když chybí model nebo klíč, otevřít nastavení."""
+        """Po instalaci si poznamená, že uvítání ještě neproběhlo.
+
+        Okno samo NEOTEVÍRÁ. Dřív ho po instalaci bez modelu vyvolalo z tiku —
+        a okno, které vyskočí bez kliknutí, je přesně to, co uživatel nechce.
+        Že chybí model, řekne kartička vedle popoveru i okénko při prvním
+        pokusu o diktát; uvítací blok se ukáže, až Nastavení otevře sám.
+        """
         self._welcome_checked = True
         try:
             if settings.get("seen_setup", False):
                 return
-            # Otevřít samo od sebe jen kvůli MODELU — bez něj se nedá diktovat.
-            # Chybějící klíč je volitelný a řekne to kartička; kvůli němu okno
-            # vyskakovat nemá, působí to jako by se otevíralo bez důvodu.
             settings.set("seen_setup", True)
-            if models.is_ready():
-                return
-            # `welcome=True` výslovně: okno se plní až po načtení stránky a
-            # `seen_setup` je v tu chvíli už True, takže odvozený příznak by
-            # uvítání nikdy neukázal.
-            self.open_settings(None, page="settings", welcome=True)
+            self._show_welcome_next_time = not models.is_ready()
         except Exception:  # noqa: BLE001 — uvítání nesmí shodit start
             pass
 
@@ -208,17 +208,23 @@ class SpillwayTray(rumps.App):
             status.invalidate()               # projeví se hned, ne až po TTL
             print("🔕 upozornění na API klíč odloženo o týden")
             return
-        self.open_settings(None)
+        self.open_settings(None, why="kartička · Zadat klíč")
 
     def _hud_clicked(self) -> None:
-        """Klik na okénko ho zavře — u obou stavů stejně, jako rušicí klávesa.
+        """Klik na okénko: vždycky ho zavře, a u výzvy ke stažení otevře Nastavení.
 
-        Nastavení se odsud NEOTEVÍRÁ. Okénko visí přesně pod ikonou v liště,
-        takže na něj spadl i druhý klik z dvojkliku na ikonu a Nastavení se
-        otevíralo samo od sebe. Model se stahuje z popoveru (jeden klik na
-        ikonu) nebo z Nastavení, kde je vidět průběh.
+        Že klik sem vede do Nastavení, je v pořádku — okno se ale smí otevřít
+        JEN když klik opravdu trefil kartu. Dřív bylo okno o 100 px širší než
+        karta a průhledný okraj kolem ní bral kliknutí taky; okénko visí přesně
+        pod ikonou, takže se do něj trefil i druhý klik z dvojkliku na ikonu.
+        Okno teď kartu obepíná (`_fit_to_card`) a než se doměří, myš propadává
+        (`_measured`).
         """
+        wanted_model = (getattr(self.controller, "model_missing", False)
+                        and not getattr(self.controller, "model_notice_hidden", False))
         self.controller.dismiss_notice()
+        if wanted_model:
+            self.open_settings(None, why="okénko · Chybí model")
 
     def _check_tap(self, _sender) -> None:  # noqa: ANN001
         listener = getattr(self.controller, "hotkey_listener", None)
@@ -361,8 +367,9 @@ class SpillwayTray(rumps.App):
 
             self._popover = PopoverController(
                 self.controller,
-                on_open_settings=lambda: self.open_settings(None),
-                on_open_help=lambda: self.open_settings(None, page="help"),
+                on_open_settings=lambda: self.open_settings(None, why="popover · Nastavení"),
+                on_open_help=lambda: self.open_settings(None, page="help",
+                                                        why="popover · Nápověda"),
                 on_quit=lambda: self.quit_app(None),
             )
             # Kartička s upozorněním visí vedle popoveru ve vlastním okně.
@@ -416,9 +423,12 @@ class SpillwayTray(rumps.App):
                 self._popover_ready = True  # nezkoušet donekonečna
         if not getattr(self, "_welcome_checked", True):
             self._maybe_welcome()
-        pop = getattr(self, "_popover", None)
-        if pop is not None:
-            pop.close_if_app_inactive()   # ⌘Tab pryč → popover taky
+        try:
+            pop = getattr(self, "_popover", None)
+            if pop is not None:
+                pop.close_if_app_inactive()   # ⌘Tab pryč → popover taky
+        except Exception:  # noqa: BLE001 — nesmí utnout zbytek tiku
+            pass
         try:
             self._broadcast_status()
         except Exception:  # noqa: BLE001 — rozesílání nesmí rozbít zbytek tiku
@@ -475,12 +485,23 @@ class SpillwayTray(rumps.App):
             pass
 
     def open_settings(self, _sender, page: str = "settings", *,
-                      welcome: bool = False) -> None:  # noqa: ANN001
+                      welcome: bool = False, why: str = "menu") -> None:  # noqa: ANN001
+        """Otevře Nastavení. Volat JEN z akce, kterou uživatel opravdu udělal.
+
+        `why` říká, odkud se kliklo, a zapíše se do logu. Okno vyskakující samo
+        od sebe je nejotravnější chyba, jakou tahle aplikace uměla — a bez
+        záznamu se hledá špatně, protože se to děje nahodile. Tenhle řádek
+        v logu příště ukáže viníka na první pokus.
+        """
+        print(f"⚙️  otevírám Nastavení ({why})")
         try:
             if self._settings is None:
                 from .settings_window import SettingsWindow
 
                 self._settings = SettingsWindow(self.controller)
+            if self._show_welcome_next_time:
+                welcome = True
+                self._show_welcome_next_time = False
             self._settings.show(page, welcome=welcome)
         except Exception as exc:  # noqa: BLE001
             rumps.alert("Nastavení nelze otevřít", str(exc))

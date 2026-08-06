@@ -55,12 +55,15 @@ _HTML = r"""<!DOCTYPE html><html lang="cs"><head><meta charset="UTF-8"><style>
   ::-webkit-scrollbar{width:0;height:0;display:none;}
   body{font-family:-apple-system,'Raleway',sans-serif;padding:8px;}
   .wrap{position:relative;}
-  /* Stín kreslí macOS (`setHasShadow_`), ne CSS. CSS stín se ořezával na
-     hraně okna a dělal kolem kartičky šedý obdélník s ostrými rohy; nativní
-     se kreslí VEN z okna a tvaruje se podle viditelného obsahu, takže sedí
-     přesně na zaoblený tvar. */
+  /* Stín se musí vejít do průhledného odsazení kolem karty (`_PAD` = 8 px),
+     jinak ho okno ořízne na ostrý šedý obdélník. Rozostření 6 px + posun 2 px
+     = dosah 8 px, přesně na hranu.
+     Nativní stín okna (`setHasShadow_`) tu NEPOUŽÍVÁME: počítá se z
+     průhlednosti okna, jenže obsah WKWebView se překresluje v jiném procesu,
+     takže po zmenšení okna zachytí ještě STARÝ, větší tvar — a kolem karty
+     zůstane viset duch v podobě většího zaobleného obrysu. */
   .card{background:var(--surface);border:0.5px solid var(--border);border-radius:12px;
-    padding:12px 13px;}
+    padding:12px 13px;box-shadow:0 2px 6px rgba(0,0,0,0.5);}
   /* Šipka míří doprava, na okno vedle. */
   .arrow{position:absolute;right:-6px;top:26px;width:12px;height:12px;
     background:var(--surface);border-right:0.5px solid var(--border);
@@ -194,7 +197,7 @@ class NoticePanel:
         self.panel.setOpaque_(False)
         self.panel.setBackgroundColor_(NSColor.clearColor())
         self.panel.setLevel_(_STATUS_LEVEL)
-        self.panel.setHasShadow_(True)       # tvarovaný stín kreslí macOS
+        self.panel.setHasShadow_(False)      # stín kreslí CSS — viz poznámka v _HTML
         self.panel.setFloatingPanel_(True)
         self.panel.setHidesOnDeactivate_(False)
         try:
@@ -237,14 +240,6 @@ class NoticePanel:
         self._fit_to_content()
         return True
 
-    def _refresh_shadow(self) -> None:
-        """Nativní stín se počítá z průhlednosti okna — po změně obsahu nebo
-        velikosti se musí přepočítat, jinak zůstane viset podle staré podoby."""
-        try:
-            self.panel.invalidateShadow()
-        except Exception:  # noqa: BLE001
-            pass
-
     def _fit_to_content(self) -> None:
         """Srovná výšku okna s obsahem.
 
@@ -265,7 +260,6 @@ class NoticePanel:
                 NSMakeRect(float(frame.origin.x), top - h, self.W, h), True)
             self.web.setFrame_(NSMakeRect(0, 0, self.W, h))
             self._pos = None               # ať `show_beside` polohu přepočítá
-            self._refresh_shadow()
 
         measure(self.web,
                 "document.querySelector('.wrap').getBoundingClientRect().height",

@@ -2139,16 +2139,30 @@ def test_welcome_actually_reaches_the_window(monkeypatch, tmp_path):
     monkeypatch.setattr(models, "is_ready", lambda: False)
 
     tray = SpillwayTray.__new__(SpillwayTray)
+    tray._show_welcome_next_time = False
     opened = {}
     monkeypatch.setattr(SpillwayTray, "open_settings",
-                        lambda self, s, page="settings", welcome=False:
+                        lambda self, s, page="settings", welcome=False, why="":
                         opened.update(page=page, welcome=welcome))
+
     tray._maybe_welcome()
+    assert opened == {}, "okno se po instalaci NESMÍ otevřít samo"
+    assert tray._show_welcome_next_time is True, "uvítání se má schovat na příště"
+
+    # Až uživatel Nastavení sám otevře, dostane uvítací blok — a jen jednou.
+    tray._settings = type("W", (), {"show": lambda s, page, welcome=False:
+                                    opened.update(page=page, welcome=welcome)})()
+    monkeypatch.undo()
+    tray.open_settings(None)
     assert opened == {"page": "settings", "welcome": True}
-    # Podruhé už ne.
     opened.clear()
+    tray.open_settings(None)
+    assert opened == {"page": "settings", "welcome": False}
+
+    # Podruhé po startu se `seen_setup` už nepřepíná.
+    tray._show_welcome_next_time = False
     tray._maybe_welcome()
-    assert opened == {}
+    assert tray._show_welcome_next_time is False
 
 
 def test_welcome_flag_comes_from_caller_not_from_settings():
@@ -2547,7 +2561,7 @@ def test_notice_aligns_its_visible_card_with_the_window_beside_it(monkeypatch):
     )
 
 
-def test_clicking_the_hud_only_closes_it(monkeypatch):
+def test_clicking_the_hud_opens_settings_only_for_the_model_prompt(monkeypatch):
     from spillway.app import IDLE
     from spillway.tray import SpillwayTray
 
@@ -2559,14 +2573,23 @@ def test_clicking_the_hud_only_closes_it(monkeypatch):
                         lambda self, *a, **k: opened.append(1))
     tray = SpillwayTray.__new__(SpillwayTray)
     tray.controller = _controller_stub(IDLE)
+    tray.controller.model_notice_hidden = False
     tray.controller.model_missing = True
     tray.controller.awaiting_paste = True
 
     tray._hud_clicked()
-    assert not opened, "klik na okénko nesmí otevřít Nastavení"
+    assert opened == [1], "klik na výzvu ke stažení Nastavení otevřít má"
     assert tray.controller.model_notice_hidden is True
     assert tray.controller.awaiting_paste is False
     assert tray.controller.model_missing is True, "stav pipeline zůstává"
+
+    # Lístek „Připraveno k vložení" Nastavení NEotevírá — jen zmizí.
+    opened.clear()
+    tray.controller.model_missing = False
+    tray.controller.awaiting_paste = True
+    tray._hud_clicked()
+    assert not opened, "lístek o vložení nemá s Nastavením nic společného"
+    assert tray.controller.awaiting_paste is False
 
 
 def test_popover_closes_only_after_the_app_really_went_away(monkeypatch):
@@ -2650,3 +2673,54 @@ def test_measuring_the_dom_waits_for_the_page(monkeypatch):
     got = []
     webview.measure(Ready(), "y", got.append, "test")
     assert evaluated == ["y"], "na načtené stránce se měří rovnou"
+
+
+def test_a_plain_tick_never_opens_settings(monkeypatch):
+    from spillway import status
+    from spillway.app import PROCESSING
+    from spillway.tray import SpillwayTray
+
+    # Hlavní stížnost: „nastavení se náhodně otevírají sama, když začnu
+    # diktovat". Tik běží 6,7×/s po celou dobu diktátu a nesmí z něj vzejít
+    # ŽÁDNÉ otevření okna — ani když chybí model, ani když visí okénko.
+    opened = []
+    monkeypatch.setattr(SpillwayTray, "open_settings",
+                        lambda self, *a, **k: opened.append(k.get("why", "?")))
+    monkeypatch.setattr(status, "snapshot",
+                        lambda: {"ready": False, "key_ok": False})
+
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray._popover_ready = True
+    tray._welcome_checked = False        # i s nevyřízeným uvítáním
+    tray._show_welcome_next_time = False
+    tray._popover = None
+    tray._settings = None
+    tray._notice = None
+    tray._status_last = None
+    tray._icon_ok = False
+    tray._prev_state = PROCESSING
+    tray.controller = _controller_stub(PROCESSING)
+    tray.controller.model_missing = True
+    shown = []
+    tray.hud = type("H", (), {"show": lambda s, st, at_icon=False: shown.append(st),
+                              "hide": lambda s: None})()
+    tray._left_target_app = lambda: False
+
+    for _ in range(20):                  # ~3 s diktátu
+        tray._tick(None)
+
+    assert not opened, f"tik otevřel Nastavení: {opened}"
+    assert shown, "okénko se přitom ukazovat má"
+
+
+def test_only_named_user_actions_open_settings():
+    import pathlib
+    import re
+
+    # Každé otevření musí říct, odkud přišlo — bez toho se nahodile vyskakující
+    # okno hledá špatně. Výjimka je jediná: položka v menu, kterou registruje
+    # rumps jako `callback=` (důvod se doplní výchozí hodnotou).
+    src = pathlib.Path("src/spillway/tray.py").read_text(encoding="utf-8")
+    calls = re.findall(r"open_settings\((?!self)[^)]*\)", src)
+    missing = [c for c in calls if "why=" not in c]
+    assert not missing, f"otevření bez důvodu: {missing}"

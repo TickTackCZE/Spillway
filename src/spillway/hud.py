@@ -51,11 +51,16 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
          display:flex; justify-content:center; }
   .card {
     display:none; align-items:center; gap:10px;
-    /* Stín kreslí macOS (`setHasShadow_`), ne CSS — ten se ořezával na hraně
-       okna a dělal kolem karty šedý obdélník s ostrými rohy. */
+  /* Stín se musí vejít do průhledného odsazení kolem karty (`_PAD` = 8 px),
+     jinak ho okno ořízne na ostrý šedý obdélník. Rozostření 6 px + posun 2 px
+     = dosah 8 px, přesně na hranu.
+     Nativní stín okna (`setHasShadow_`) tu NEPOUŽÍVÁME: počítá se z
+     průhlednosti okna, jenže obsah WKWebView se překresluje v jiném procesu,
+     takže po zmenšení okna zachytí ještě STARÝ, větší tvar — a kolem karty
+     zůstane viset duch v podobě většího zaobleného obrysu. */
     background:rgba(38,38,40,0.96); border:0.5px solid rgba(255,255,255,0.15);
     border-radius:12px; padding:9px 15px 9px 12px;
-    width:fit-content;
+    box-shadow:0 2px 6px rgba(0,0,0,0.5); width:fit-content;
   }
   /* Ukotvení pod ikonu v liště: špička míří nahoru na ikonu (jako u menu). */
   .card.anchored { margin-top:6px; }
@@ -162,7 +167,7 @@ class StatusHUD:
         self.panel.setBackgroundColor_(NSColor.clearColor())
         self.panel.setLevel_(_STATUS_LEVEL)
         self.panel.setIgnoresMouseEvents_(True)
-        self.panel.setHasShadow_(True)   # tvarovaný stín kreslí macOS
+        self.panel.setHasShadow_(False)  # stín kreslí CSS — viz poznámka v _HTML
         self.panel.setFloatingPanel_(True)
         self.panel.setHidesOnDeactivate_(False)
         try:
@@ -193,6 +198,10 @@ class StatusHUD:
         self._rect_cache: tuple | None = None
         self._rect_at = 0.0
         self._at_icon = True         # poslední režim umístění (u ikony / u kurzoru)
+        # Je okno už srovnané s kartou? Dokud ne, myš propadává — jinak by klik
+        # mohl trefit průhledný okraj kolem menší karty a chovat se, jako by
+        # uživatel klikl na okénko (u výzvy ke stažení to otevírá Nastavení).
+        self._measured = False
         self.status_button = None    # tlačítko ikony v liště (doplní tray)
         self.on_dismiss = None       # zavolá se, když uživatel klikne na lístek
 
@@ -211,6 +220,7 @@ class StatusHUD:
                 run_js(self.web, f"setState('{state}')", "hud")
             except Exception:  # noqa: BLE001
                 pass
+            self._measured = False   # jiný stav = jiná šířka, doměří se znovu
             self._fit_to_card()
 
     def _fit_to_card(self) -> None:
@@ -233,6 +243,7 @@ class StatusHUD:
             # `bottom` (ne `height`) proto, že u ukotvené karty je nad ní ještě
             # šipka a odsazení; okno musí pojmout obojí.
             self._resize(w + 2 * self.PAD, bottom + self.PAD)
+            self._measured = True    # i když se velikost nezměnila
 
         measure(self.web,
                 "JSON.stringify(document.getElementById('card').getBoundingClientRect())",
@@ -248,12 +259,6 @@ class StatusHUD:
         self.web.setFrame_(NSMakeRect(0, 0, w, h))
         self._click.setFrame_(NSMakeRect(0, 0, w, h))   # vrstva = celé (malé) okno
         self._place()
-        try:
-            # Nativní stín se počítá z průhlednosti okna — po změně velikosti
-            # i obsahu se musí přepočítat, jinak zůstane podle staré podoby.
-            self.panel.invalidateShadow()
-        except Exception:  # noqa: BLE001
-            pass
 
     def _caret_rect(self) -> tuple | None:
         """Poloha kurzoru, přepočítaná nejvýš 3×/s.
@@ -374,7 +379,9 @@ class StatusHUD:
         # tvoje pole nepřijde o kurzor (jinak by následné ⌘V vložilo text jinam).
         self._at_icon = state in ("ready", "nomodel") or at_icon
         self._place()
-        self.panel.setIgnoresMouseEvents_(state not in ("ready", "nomodel"))  # jinde ať myš propadává
+        # Klikat jde jen na lístek a na výzvu — a teprve až okno sedí na kartě.
+        clickable = state in ("ready", "nomodel") and self._measured
+        self.panel.setIgnoresMouseEvents_(not clickable)
         if not self._visible:
             self.panel.orderFrontRegardless()
             self._visible = True
