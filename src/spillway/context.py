@@ -69,8 +69,11 @@ _FALLBACK_KEYWORDS = {
 }
 
 # Aplikace, ve kterých je cílem vzdálená/virtuální WINDOWS plocha (RDP/VDI/VM).
-# Vkládání v nich musí použít Ctrl+V, ne ⌘+V — klient nepřeloží ⌘ na Ctrl a do
-# session dorazí holé „V" (napíše se „v" místo vložení). Viz `paste.paste_text`.
+# Ani Ctrl+V tu nefunguje spolehlivě — `_paste_keystroke` posílá modifikátor
+# jen jako bit ve `flags` na události „V", nikdy jako vlastní keyDown/keyUp
+# klávesy ⌘/⌃. Klient, který do session přeposílá klávesy (ne bity příznaků),
+# tak modifikátor vůbec nezaznamená. Vkládání proto jede přes `paste._type_unicode`
+# — text se „naťuká" znak po znaku, bez schránky a bez klávesové zkratky.
 _WINDOWS_TARGET_BUNDLES = {
     "com.microsoft.rdc.macos",       # Windows App (dřív Microsoft Remote Desktop) / AVD
     "com.microsoft.rdc.osx",         # starší Microsoft Remote Desktop

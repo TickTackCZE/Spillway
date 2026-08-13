@@ -254,7 +254,7 @@ def test_glossary_terms_are_protected_from_deletion():
     assert "NEZAZNĚL" in system
 
 
-# --- Vzdálená Windows plocha (RDP/AVD): Ctrl+V místo ⌘+V ---------------------
+# --- Vzdálená Windows plocha (RDP/AVD): naťukání znak po znaku --------------
 
 
 def test_windows_target_detects_rdp_clients():
@@ -319,10 +319,47 @@ def test_windows_target_never_types_a_real_newline(monkeypatch):
     ai_formatted = "Úkoly na zítra:\n- zavolat Janovi\n- poslat report\n\nDíky!"
     paste.paste_text(ai_formatted, windows_target=True)
     sent = "".join(typed[::2])
-    assert "\n" not in sent, "do AVD nesmí projít žádné zalomení řádku"
-    assert "zavolat Janovi" in sent and "poslat report" in sent, (
-        "obsah se nesmí ztratit, jen se zalomení nahradí mezerou"
-    )
+    # Přesný řetězec, ne jen substringy — jinak by mezerování mohlo tiše
+    # zmutovat a test by si toho nevšiml.
+    assert sent == "Úkoly na zítra: - zavolat Janovi - poslat report Díky!"
+
+
+def test_windows_target_strips_every_kind_of_line_break(monkeypatch):
+    # REGRESE vlastní opravy: první verze hlídala jen holé „\n". Prošlo jí
+    # samotné „\r" (bez „\n") a Unicode U+2028/U+2029 (line/paragraph
+    # separator) — znaky, které textové kontroly běžně čtou jako zalomení
+    # stejně jako „\n", takže by tou samou dírou prošel i Enter v RDP session.
+    from spillway import paste
+
+    monkeypatch.setattr(paste, "CGEventPost", lambda *a, **k: None)
+    monkeypatch.setattr(paste, "_paste_keystroke", lambda *a, **k: None)
+    for bad in ("\r", "\r\n", "\n\n\n", " ", " ", "\x0b", "\x0c"):
+        typed = []
+        monkeypatch.setattr(paste, "CGEventKeyboardSetUnicodeString",
+                            lambda ev, n, s, _t=typed: _t.append(s))
+        paste.paste_text(f"a{bad}b", windows_target=True)
+        sent = "".join(typed[::2])
+        assert sent == "a b", f"znak {bad!r} prošel do AVD beze změny: {sent!r}"
+
+
+def test_native_paste_keeps_line_breaks_intact(monkeypatch):
+    # Doplněk k oběma testům výš: sanitizace se týká VÝHRADNĚ cesty do AVD.
+    # Nativní macOS vkládání (schránka + ⌘V) zalomení zachovává — to je přesně
+    # to, na co je potřeba mít jistotu, aby se oprava netýkala i běžného vkládání.
+    from spillway import paste
+
+    written = []
+    monkeypatch.setattr(paste, "_write", lambda pb, t, transient: (written.append(t), 1)[1])
+    monkeypatch.setattr(paste, "_backup", lambda pb: [])
+    monkeypatch.setattr(paste, "_paste_keystroke", lambda *a, **k: None)
+    monkeypatch.setattr(paste.time, "sleep", lambda s: None)
+    monkeypatch.setattr(paste, "NSPasteboard", type(
+        "PB", (), {"generalPasteboard": staticmethod(lambda: type(
+            "P", (), {"changeCount": lambda self: 1})())}))
+
+    multiline = "Ahoj,\n\nposílám shrnutí:\n1. bod jedna\n2. bod dva"
+    paste.paste_text(multiline, windows_target=False)
+    assert written == [multiline], "nativní vkládání nesmí měnit obsah"
 
 
 # --- Slovník → Whisper hotwords (biasuje samotný přepis) ---------------------

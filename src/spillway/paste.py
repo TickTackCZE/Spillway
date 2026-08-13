@@ -38,8 +38,15 @@ DEFAULT_SETTLE_S = 0.25
 # Vzdálená Windows plocha (RDP/AVD): text se „naťuká" po chunkech (viz _type_unicode).
 _TYPE_CHUNK = 20
 _TYPE_CHUNK_DELAY_S = 0.012
-# Zalomení řádku (i s okolními mezerami/odsazením) → JEDNA mezera.
-_NEWLINE_RE = re.compile(r"\s*\n\s*")
+# Cokoli, co by v RDP session mohlo dorazit jako Enter/nový odstavec —
+# i s okolními mezerami/odsazením — → JEDNA mezera. Nestačí holé „\n": první
+# verze pouštěla beze změny samotné „\r" (bez „\n"), a stejně tak by prošlo
+# U+2028/U+2029 (Unicode line/paragraph separator) a U+000B/U+000C (vertical/
+# form feed) — znaky, které textové kontroly běžně čtou jako zalomení.
+# Escapy schválně \uXXXX, ne literální znaky — ty se ve zdroji špatně
+# rozeznají a editor/git je umí neviditelně poškodit.
+_LINEBREAK_CHARS = "\r\n\x0b\x0c\u2028\u2029"
+_NEWLINE_RE = re.compile(rf"[ \t]*[{_LINEBREAK_CHARS}]+[ \t]*")
 
 
 def _write(pb: NSPasteboard, text: str, transient: bool) -> int:
@@ -75,16 +82,27 @@ def _type_unicode(text: str) -> None:
     (Connections → Keyboard Mode). Ve „Scancode" režimu klient unicode řetězec
     ignoruje a použije virtuální keycode události (0 = „a") → napsalo by se „aaa".
 
-    [B-AVD1] `\\n` uvnitř textu se nahrazuje mezerou. Ze session není vidět,
-    jaká appka je uvnitř zaměřená (proto se ani nedá rozhodnout podle appky) —
-    a `\\n` v ní typicky projede jako SKUTEČNÝ Enter, ne jako zalomení řádku.
-    U chatovacích appek (Teams…) to zprávu rovnou odešle uprostřed ťukání.
-    Dřív se to hlídalo jen u oddělovače PŘED textem (`context.leading_separator`,
-    `allow_newline`), ale ne uvnitř samotného těla — a to AI úprava (`llm.py`)
-    běžně formátuje do odstavců/odrážek se skutečnými zalomeními. Tohle je
-    jediné místo, kudy text do AVD vůbec chodí, takže se hlídá tady, univerzálně.
+    [B-AVD1] Zalomení řádku uvnitř textu (`\\n` a příbuzné — viz `_NEWLINE_RE`)
+    se nahrazují mezerou. Ze session není vidět, jaká appka je uvnitř zaměřená
+    (proto se ani nedá rozhodnout podle appky) — a zalomení v ní typicky
+    projede jako SKUTEČNÝ Enter, ne jako nový řádek. U chatovacích appek
+    (Teams…) to zprávu rovnou odešle uprostřed ťukání. Dřív se to hlídalo jen
+    u oddělovače PŘED textem (`context.leading_separator`, `allow_newline`),
+    ale ne uvnitř samotného těla — a to AI úprava (`llm.py`) běžně formátuje
+    do odstavců/odrážek se skutečnými zalomeními. Tohle je jediné místo, kudy
+    text do AVD vůbec chodí, takže se hlídá tady, univerzálně.
+
+    NEOVĚŘENO na živé RDP session, jestli je `\\n` opravdu příčinou odesílání —
+    diagnóza vychází ze čtení kódu (žádná jiná cesta v appce neposílá klávesu
+    Enter) a z jediného dochovaného záznamu v historii se zalomeními. Proto se
+    do logu píše, KOLIK zalomení se odstranilo — bez toho není jak z historie
+    poznat, že se do session naťukalo něco jiného, než co se opravdu řeklo.
     """
-    text = _NEWLINE_RE.sub(" ", text)
+    flattened = _NEWLINE_RE.sub(" ", text)
+    if flattened != text:
+        n = len(_NEWLINE_RE.findall(text))
+        print(f"⌨️  AVD: {n}× zalomení nahrazeno mezerou (Enter by odeslal/potvrdil)")
+    text = flattened
     for i in range(0, len(text), _TYPE_CHUNK):
         part = text[i:i + _TYPE_CHUNK]
         for pressed in (True, False):
