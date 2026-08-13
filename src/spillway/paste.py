@@ -10,6 +10,7 @@ Ověřeno ve Spike A. Klíčové detaily:
 
 from __future__ import annotations
 
+import re
 import time
 
 from AppKit import NSPasteboard, NSPasteboardItem, NSPasteboardTypeString
@@ -37,6 +38,8 @@ DEFAULT_SETTLE_S = 0.25
 # Vzdálená Windows plocha (RDP/AVD): text se „naťuká" po chunkech (viz _type_unicode).
 _TYPE_CHUNK = 20
 _TYPE_CHUNK_DELAY_S = 0.012
+# Zalomení řádku (i s okolními mezerami/odsazením) → JEDNA mezera.
+_NEWLINE_RE = re.compile(r"\s*\n\s*")
 
 
 def _write(pb: NSPasteboard, text: str, transient: bool) -> int:
@@ -71,7 +74,17 @@ def _type_unicode(text: str) -> None:
     POZOR: funguje jen když má „Windows App" nastavený Keyboard Mode = **Unicode**
     (Connections → Keyboard Mode). Ve „Scancode" režimu klient unicode řetězec
     ignoruje a použije virtuální keycode události (0 = „a") → napsalo by se „aaa".
+
+    [B-AVD1] `\\n` uvnitř textu se nahrazuje mezerou. Ze session není vidět,
+    jaká appka je uvnitř zaměřená (proto se ani nedá rozhodnout podle appky) —
+    a `\\n` v ní typicky projede jako SKUTEČNÝ Enter, ne jako zalomení řádku.
+    U chatovacích appek (Teams…) to zprávu rovnou odešle uprostřed ťukání.
+    Dřív se to hlídalo jen u oddělovače PŘED textem (`context.leading_separator`,
+    `allow_newline`), ale ne uvnitř samotného těla — a to AI úprava (`llm.py`)
+    běžně formátuje do odstavců/odrážek se skutečnými zalomeními. Tohle je
+    jediné místo, kudy text do AVD vůbec chodí, takže se hlídá tady, univerzálně.
     """
+    text = _NEWLINE_RE.sub(" ", text)
     for i in range(0, len(text), _TYPE_CHUNK):
         part = text[i:i + _TYPE_CHUNK]
         for pressed in (True, False):

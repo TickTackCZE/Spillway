@@ -300,6 +300,31 @@ def test_windows_target_types_unicode_native_uses_cmd_v(monkeypatch):
     assert "".join(typed[::2]) == "Ahoj světe"
 
 
+def test_windows_target_never_types_a_real_newline(monkeypatch):
+    # SKUTEČNÁ CHYBA z provozu: v AVD/RDP se text ťuká znak po znaku a „\n"
+    # projede jako SKUTEČNÝ Enter — v Teams to zprávu odešle uprostřed psaní.
+    # Ze session není vidět, jaká appka je zaměřená (nejde to řešit rozpoznáním
+    # appky), takže se to musí hlídat univerzálně pro VŠECHEN text do AVD —
+    # ne jen pro oddělovač před ním.
+    from spillway import paste
+
+    monkeypatch.setattr(paste, "CGEventPost", lambda *a, **k: None)
+    monkeypatch.setattr(paste, "_paste_keystroke",
+                        lambda *a, **k: pytest.fail("Windows cíl nemá spouštět _paste_keystroke"))
+    typed = []
+    monkeypatch.setattr(paste, "CGEventKeyboardSetUnicodeString", lambda ev, n, s: typed.append(s))
+
+    # Přesně to, co AI úprava (llm.py FORMÁT) běžně vyprodukuje: odrážky/
+    # odstavce se skutečnými zalomeními.
+    ai_formatted = "Úkoly na zítra:\n- zavolat Janovi\n- poslat report\n\nDíky!"
+    paste.paste_text(ai_formatted, windows_target=True)
+    sent = "".join(typed[::2])
+    assert "\n" not in sent, "do AVD nesmí projít žádné zalomení řádku"
+    assert "zavolat Janovi" in sent and "poslat report" in sent, (
+        "obsah se nesmí ztratit, jen se zalomení nahradí mezerou"
+    )
+
+
 # --- Slovník → Whisper hotwords (biasuje samotný přepis) ---------------------
 
 
