@@ -1,9 +1,16 @@
+---
+title: Spillway — Rozvoj a nápady
+created: 2026-08-05
+tags:
+  - spillway
+---
+
 # Spillway — rozvoj a nápady
 
 > **Jen aktivní věci a další kroky.** Hotové funkce, odmítnuté nápady a poučení z provozu
 > jsou v [logu rozhodnutí](spillway-log.md) — do návrhů se nevracejí.
 > Co aplikace **dnes umí**, je v [plánu implementace](spillway-plan-implementace.md)
-> a v [README](../README.md) — tady se to nezdvojuje.
+> a v README (`../README.md`, mimo tuhle `_doc/` složku) — tady se to nezdvojuje.
 > Stav aplikace: **v1.2** · Aktualizováno: 5. 8. 2026
 
 **Rozhodnuto:** aplikace se bude prodávat jako **roční licence (~1 000 Kč) s vlastním API

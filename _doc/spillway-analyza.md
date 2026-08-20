@@ -1,3 +1,10 @@
+---
+title: Spillway — Analýza
+created: 2026-08-05
+tags:
+  - spillway
+---
+
 # Spillway — analýza
 
 > Osobní diktovací nástroj pro macOS: lokální přepis (Whisper na Apple GPU) + AI úprava (Claude API) + univerzální vložení do libovolné aplikace.
@@ -52,7 +59,7 @@ Haiku je volitelný (levnější/rychlejší). Náklady na AI úpravu se počít
 ## 6. Známá omezení
 
 - **Secure-input pole** (hesla, Terminal secure entry): event tap nedostává eventy → hotkey je tam dočasně mrtvý, vložení může selhat (~1 %).
-- **RDP/AVD (vzdálená Windows plocha):** Accessibility vidí vzdálenou plochu jen jako obrázek → žádný kontext pole, žádná chytrá mezera, HUD u myši. Vkládání funguje (naťukání znaků; vyžaduje v „Windows App" nastavit **Keyboard Mode = Unicode**).
+- **RDP/AVD (vzdálená Windows plocha):** Accessibility vidí vzdálenou plochu jen jako obrázek → žádný kontext pole, žádná chytrá mezera, HUD u myši. Vkládání funguje (naťukání znaků; vyžaduje v „Windows App" nastavit **Keyboard Mode = Unicode**). Dřívější riziko — zalomení v naťukaném textu se přeneslo jako skutečný Enter a odeslalo rozepsanou zprávu — opravené 13. 8. (viz log vývoje).
 - **HUD ve web/Electron appkách** sedí nad polem, ne přesně u kurzoru (Chromium neposkytuje pozici kurzoru přes AX).
 - **`.app` je self-signed, ne notarizovaná** → první spuštění: pravý klik → Otevřít.
 
