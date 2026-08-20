@@ -14,15 +14,16 @@ Přepnutí: `SPILLWAY_WHISPER_BACKEND=mlx|faster`. Model uvolnitelný po nečinn
 
 from __future__ import annotations
 
+import importlib.util
+import multiprocessing
 import os
 import platform
-import queue
 import threading
 import time
 
 import numpy as np
 
-from . import models
+from . import gpuworker, models
 
 # Známé halucinace na tichu/krátkém audiu (R10). [B8] filtr smí zahodit jen
 # KRÁTKÝ výstup (jinak zahodí legitimní diktát začínající „Titulky…"/„Překlad…").
@@ -63,18 +64,19 @@ def _hotwords_str(terms: list[str] | None) -> str | None:
 
 
 def _pick_backend() -> str:
-    """mlx na Apple Silicon (když jde importnout), jinak faster-whisper.
-    Přebitelné přes SPILLWAY_WHISPER_BACKEND."""
+    """mlx na Apple Silicon (když je k dispozici), jinak faster-whisper.
+    Přebitelné přes SPILLWAY_WHISPER_BACKEND.
+
+    Jen `find_spec`, nikdy skutečný import: ten stojí 1,57 s (měřeno) a natáhl by
+    do HLAVNÍHO procesu celý mlx/Metal stack, který od téhle chvíle patří výhradně
+    do podprocesu (`gpuworker`). Jestli mlx opravdu počítá na GPU, se pozná až
+    tam — při startu workeru, ne tady.
+    """
     forced = (os.environ.get("SPILLWAY_WHISPER_BACKEND") or "").strip().lower()
     if forced in ("mlx", "faster"):
         return forced
     if platform.system() == "Darwin" and platform.machine() == "arm64":
-        try:
-            import mlx_whisper  # noqa: F401
-
-            return "mlx"
-        except Exception:  # noqa: BLE001 — mlx nedostupné (nezabalené, chyba) → CPU
-            return "faster"
+        return "mlx" if importlib.util.find_spec("mlx_whisper") is not None else "faster"
     return "faster"
 
 
@@ -179,72 +181,75 @@ def next_segment_boundary(
     return None
 
 
-class _MlxWorker:
-    """Jedno vyhrazené vlákno pro VŠECHNY mlx GPU operace.
+class TranscribeFailed(RuntimeError):
+    """Přepis se nepovedl (zásek → zabitý worker, nebo rozbitý pool).
 
-    mlx drží GPU stream per-vlákno, takže model načtený na jednom vlákně nejde
-    použít na jiném („There is no Stream(gpu, N) in current thread" → spadlý přepis
-    = ztracený diktát). Každý `_process` je navíc jiné vlákno. Řešení: načtení,
-    přepis i uvolnění posíláme sem a běží serializovaně na jednom stálém vlákně.
+    Vlastní typ, ne holý `RuntimeError`: pipeline podle něj pozná, že má smysl
+    zkusit to ještě jednou na čerstvém workeru, a odliší to od chyby v datech.
     """
 
-    def __init__(self) -> None:
-        self._q: queue.Queue = queue.Queue()
-        # Počet právě běžících prací. Sama fronta to neví: jakmile si vlákno
-        # položku vyzvedne, `qsize()` je 0, i když se na GPU pořád počítá.
-        self._running = 0
-        self._n_lock = threading.Lock()
-        self._t = threading.Thread(target=self._run, name="mlx-gpu", daemon=True)
-        self._t.start()
 
-    def _run(self) -> None:
-        while True:
-            fn, box, ev = self._q.get()
-            with self._n_lock:
-                self._running += 1
+# Po kolika DIKTÁTECH vyměnit worker i bez zaseknutí. mlx roste ~10 MB na volání
+# (mlx-examples#1254) a při souvislém používání se appka na klidovou pauzu — a tím
+# na uvolnění workeru — nemusí dostat celé hodiny.
+# Záměrně se počítají diktáty, ne úlohy: `max_tasks` z pebble počítá úlohy, jenže
+# streaming pošle za JEDEN dlouhý diktát klidně 100 úseků — worker by se tak
+# vyměnil několikrát uprostřed diktátu, pokaždé s novým načtením modelu.
+_RECYCLE_AFTER_DICTATIONS = 25
+
+# Kolik nechat na start workeru + načtení modelu (~1,9 s měřeno, s velkou rezervou
+# na studený disk). Musí to hlídat volající: `pool.schedule(timeout=)` z pebble
+# běží až od chvíle, kdy úlohu převezme worker, takže zaseklé NAČÍTÁNÍ modelu by
+# jinak nehlídal nikdo — a přitom je to přesně ta operace, co se zasekává.
+_WARMUP_DEADLINE_S = 35.0
+
+# Pebble posílá zaseklému workeru nejdřív SIGTERM a čeká `term_timeout` (3 s), než
+# sáhne po SIGKILL. Nativně zaseklý proces se k obsluze SIGTERMu nedostane, takže
+# se zabití reálně opozdí o tuhle dobu — měřeno 4,15 s u limitu 1 s. Připočítává
+# se k limitům, ať appka nehlásí zásek dřív, než ho pebble stihne uklidit.
+_KILL_GRACE_S = 5.0
+
+
+def transcribe_deadline(audio_secs: float, backend: str) -> float:
+    """Kolik sekund nechat přepisu, než se prohlásí za zaseknutý.
+
+    Úměrně délce zvuku, ne pevně: jedno číslo nemůže sedět krátkému „zbytku" po
+    streamování (2–11 s) i celé 300s nahrávce bez jediné pauzy. Vychází ze
+    změřené rychlosti (RTF ~0,08 na mlx, ~0,22 na CPU) s ~4× rezervou, ať se
+    pomalý-ale-zdravý přepis nikdy nezabije jen proto, že je dlouhý.
+
+    JEDNO místo pravdy: tutéž hodnotu si bere i strop kroku ve watchdogu
+    (`app.Controller.watchdog_check`), aby si dva nezávislé limity neodporovaly.
+    """
+    # mlx 0,35 = ~4,4× rezerva nad měřeným RTF 0,08; CPU 0,6 = ~2,7× nad měřeným
+    # RTF 0,219 (a ~1,7× nad 0,36, které plyne z dokumentovaného poměru 4,5×).
+    rate = 0.35 if backend == "mlx" else 0.6
+    return max(30.0, 8.0 + audio_secs * rate)
+
+
+def _kill_stray_workers() -> None:
+    """Pojistka: dorazit procesy poolu, které nezemřely při jeho zavírání.
+
+    `pool.join()` umí zatuhnout (čeká na vlákno, které samo může viset v zápisu),
+    takže na něj nikdy nespoléháme jako na jedinou cestu. Tohle je levné a jisté.
+    """
+    for child in multiprocessing.active_children():
+        if "pebble" in (child.name or "").lower():
             try:
-                box["r"] = fn()
-            except BaseException as exc:  # noqa: BLE001 — přenést na volajícího
-                box["e"] = exc
-            finally:
-                with self._n_lock:
-                    self._running -= 1
-                ev.set()
-
-    def submit(self, fn, timeout: float | None = None):
-        """Spustí `fn` na mlx vlákně a počká na výsledek (výjimku propaguje).
-
-        `timeout` je pojistka proti zatuhnutí: když práce nedoběhne včas, vyhodí
-        TimeoutError místo nekonečného čekání (volající se rozhodne, co dál).
-        NIKDY nevolat bez timeoutu z hlavního vlákna — zablokovalo by celé UI.
-        """
-        box: dict = {}
-        ev = threading.Event()
-        self._q.put((fn, box, ev))
-        if not ev.wait(timeout):
-            raise TimeoutError("mlx worker neodpověděl včas")
-        if "e" in box:
-            raise box["e"]
-        return box.get("r")
-
-    def submit_async(self, fn) -> None:
-        """Zařadí práci a NEČEKÁ na ni — pro volání z hlavního vlákna (UI timery),
-        kde by čekání na vytížené GPU vlákno zmrazilo celou aplikaci."""
-        self._q.put((fn, {}, threading.Event()))
-
-    def pending(self) -> int:
-        """Kolik práce je rozdělané — ve frontě I právě běžící.
-
-        Běžící položku je nutné počítat: `qsize()` je nula od chvíle, kdy si ji
-        vlákno vyzvedne, takže sám o sobě by tvrdil „nic se neděje" i uprostřed
-        dlouhého přepisu — a streaming by dál sypal segmenty do fronty za ním.
-        """
-        with self._n_lock:
-            return self._q.qsize() + self._running
+                child.kill()
+            except Exception:  # noqa: BLE001 — úklid nikdy nesmí nic shodit
+                pass
 
 
 class Transcriber:
-    """[R5] Model (~1,5–2 GB) jde uvolnit po nečinnosti a znovu lazy-loadnout."""
+    """Přepis v samostatném, zabitelném procesu (viz `gpuworker`).
+
+    Navenek se chová stejně jako dřív (`transcribe`, `preload`, `is_loaded`,
+    `busy`, `unload_if_idle`) — jen se práce nedělá na vlákně uvnitř appky, ale
+    v podprocesu, který jde při zaseknutí zabít. Vlastní frontu ani vlákna už
+    nedržíme: životní cyklus workeru, zabití po vypršení limitu i restart řeší
+    `pebble.ProcessPool`.
+    """
 
     def __init__(
         self,
@@ -256,159 +261,210 @@ class Transcriber:
         self.compute_type = compute_type
         self.language = language
         self.backend = _pick_backend()
-        self._model = None  # faster: WhisperModel; mlx: sentinel True po warmu
+        self._pool = None
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
-        # Vyhrazené vlákno pro VŠECHNY mlx GPU operace (viz _MlxWorker) — mlx drží
-        # stream per-vlákno, takže načtení/přepis/unload musí běžet na jednom vlákně.
-        self._mlx = _MlxWorker() if self.backend == "mlx" else None
-        # V zabalené .app se mlx Metal shadery (mlx.metallib) můžou nezabalit —
-        # ověř, že mlx reálně počítá na GPU, jinak spadni na CPU (žádná regrese).
-        # Chybějící model NENÍ porucha mlx — fallback na CPU by tu nepomohl,
-        # naopak: `WhisperModel` si tiše stáhne JINÝ model (~1,5 GB) a to při
-        # startu na hlavním vlákně. Bez modelu se prostě nic nenačítá a čeká se,
-        # až si ho uživatel stáhne z UI.
-        self._weights_absent = not models.is_ready()
-        # Kontrola proběhla? Bez modelu ji nelze udělat, tak se odloží na dobu,
-        # kdy model přibude — jinak by se na rozbité mlx přišlo až prvním
-        # diktátem po stažení.
-        self._mlx_checked = False
-        if self.backend == "mlx" and not self._weights_absent and not self._mlx_ok():
-            print("⚠️  mlx nefunguje (shadery?) → fallback na faster-whisper (CPU).")
-            self.backend = "faster"
-            self._mlx = None
-        self._mlx_checked = not self._weights_absent
+        self._ready = False          # worker doopravdy načetl model
+        self._starting = False       # pool se právě zakládá / zahřívá
+        self._inflight = 0           # kolik přepisů zrovna běží
+        self._dictations = 0         # pro obměnu po N diktátech
+        self._recycle_due = False
+        # Zavolá se, když je appka po zaseknutí v takovém stavu, že jí prospěje
+        # restart (viz `app.Controller._needs_restart`). Nastavuje `Controller`.
+        self.on_needs_restart = None
         print(f"🗣️  Whisper backend: {self.backend}"
               f"{' (' + models.REPO + ')' if self.backend == 'mlx' else ' (CPU large-v3-turbo)'}")
-        self._load_model()
 
-    def _mlx_ok(self) -> bool:
-        """Skutečně proženeme mlx přes GPU na drobném klipu — odhalí chybějící
-        shadery/knihovny v bundlu ještě před prvním diktátem. Běží na mlx vlákně."""
-        def _check() -> bool:
-            import mlx_whisper
+    # --- životní cyklus workeru ----------------------------------------------
 
-            mlx_whisper.transcribe(
-                np.full(4800, 0.02, dtype="float32"),
-                path_or_hf_repo=models.path_for_transcribe(), language="cs",
-            )
-            return True
-
-        try:
-            # Timeout: `__init__` běží na hlavním vlákně, takže zatuhlé GPU
-            # vlákno by zabránilo startu celé aplikace.
-            return bool(self._mlx.submit(_check, timeout=60.0))
-        except TimeoutError:
-            print("⚠️  mlx health-check neodpověděl do 60 s → fallback na CPU.")
-            return False
-        except models.ModelMissing:
-            return False   # není co kontrolovat; stáhne ho uživatel z UI
-        except Exception as exc:  # noqa: BLE001
-            print(f"mlx health-check selhal: {exc}")
-            return False
-
-    # --- životní cyklus modelu ------------------------------------------------
-
-    def _load_model(self) -> None:
-        # Bez modelu nemá co načítat a hlavně: ani jeden backend ho nesmí začít
-        # stahovat sám. mlx by sáhl na HF hub, faster-whisper by stáhl dokonce
-        # JINÝ model — obojí tiše a na vlákně, které pak nereaguje.
-        if not models.is_ready():
-            self._weights_absent = True
-            self._model = None
-            return
-        self._weights_absent = False
-        if self.backend == "mlx" and not self._mlx_checked:
-            # Odložená kontrola: model mezitím přibyl.
-            self._mlx_checked = True
-            if not self._mlx_ok():
-                print("⚠️  mlx nefunguje (shadery?) → fallback na faster-whisper (CPU).")
-                self.backend = "faster"
-                self._mlx = None
+    def _model_path(self) -> str:
+        """Odkud vzít váhy. Pro CPU backend je to jméno modelu (faster-whisper si
+        ho najde ve své cache), pro mlx lokální složka, kterou spravuje `models`."""
         if self.backend == "mlx":
-            # Načtení běží na mlx vlákně (přes worker) a plní ModelHolder — tam ho
-            # hledá i mlx_whisper.transcribe, takže se model načte JEDNOU a přepis ho
-            # (na stejném vlákně) jen převezme. dtype=float16 musí sedět s `transcribe`
-            # (fp16=True). Přes load_models.load_model, ne ModelHolder.get_model (ta
-            # v zabalené .app deadlockovala, ctypes/GIL).
-            def _load() -> None:
-                import mlx.core as mx
-                import mlx_whisper
-                from mlx_whisper.transcribe import ModelHolder
+            return models.path_for_transcribe()
+        return self.model_name
 
-                # Zjistit cestu JEDNOU — kdyby se model mezi voláními dostáhl,
-                # načetlo by se z jednoho místa a do holderu zapsalo jiné.
-                path = models.path_for_transcribe()
-                if ModelHolder.model is None or ModelHolder.model_path != path:
-                    ModelHolder.model = mlx_whisper.load_models.load_model(
-                        path, dtype=mx.float16
-                    )
-                    ModelHolder.model_path = path
+    def _new_pool(self):  # noqa: ANN201 — pebble typy až za importem
+        from pebble import ProcessPool
 
-            self._mlx.submit(_load)
-            self._model = True
-        else:
-            from faster_whisper import WhisperModel
+        # „spawn" natvrdo: po `fork` Apple u vyšších frameworků negarantuje nic
+        # (a zděděné file descriptory by navíc rozbily poznání, že worker umřel).
+        return ProcessPool(
+            max_workers=1,
+            context=multiprocessing.get_context("spawn"),
+            initializer=gpuworker.init_worker,
+            initargs=(self.backend, self._model_path()),
+        )
 
-            self._model = WhisperModel(self.model_name, device="cpu",
-                                       compute_type=self.compute_type)
+    def _discard_pool(self, pool) -> None:  # noqa: ANN001
+        """Zahodit pool i s workerem. Zavírání běží na vlákně na pozadí.
+
+        Pebble po nečistém úmrtí workeru označí pool za rozbitý a už ho nikdy
+        neoživí — proto se nikdy „neopravuje", vždycky se zakládá nový. Zavírání
+        nesmí blokovat volajícího: `join()` na zavřeném poolu nemá účinný limit
+        a čeká i na vlákno, které samo může viset v odesílání dat.
+        """
+        if pool is None:
+            return
+
+        def _close() -> None:
+            try:
+                pool.stop()
+                pool.join(timeout=3.0)
+            except Exception:  # noqa: BLE001
+                pass
+            _kill_stray_workers()
+
+        threading.Thread(target=_close, name="spillway-pool-close", daemon=True).start()
+
+    def _ensure_pool(self):  # noqa: ANN201
+        """Vrátí živý pool; založí ho, když chybí nebo je na výměnu. Pod zámkem."""
+        with self._lock:
+            if self._pool is not None and not self._recycle_due:
+                return self._pool
+            old, self._pool = self._pool, None
+            self._ready = False
+            if self._recycle_due and old is not None:
+                print(f"♻️  worker vyměněn po {self._dictations} diktátech")
+            self._recycle_due = False
+            self._dictations = 0
+            self._starting = True
+        self._discard_pool(old)
+        pool = self._new_pool()
+        with self._lock:
+            self._pool = pool
+        return pool
+
+    def _drop_pool(self, reason: str) -> None:
+        """Zahodit pool po chybě a říct appce, že se stalo něco nedobrého."""
+        with self._lock:
+            old, self._pool = self._pool, None
+            self._ready = False
+            self._starting = False
+        self._discard_pool(old)
+        print(f"💥 worker zahozen ({reason}) — příští diktát startuje čerstvý")
+        cb = self.on_needs_restart
+        if cb is not None:
+            try:
+                cb(reason)
+            except Exception:  # noqa: BLE001 — hlášení nikdy nesmí shodit přepis
+                pass
 
     @property
     def is_loaded(self) -> bool:
-        return self._model is not None
+        """Je model připravený k okamžitému použití?
 
-    def preload(self) -> None:
-        """Načte model dopředu (volá se při stisku klávesy — reload se schová do
-        doby, kdy uživatel mluví)."""
-        with self._lock:
-            if self._model is None:
-                self._load_model()
-
-    def unload_if_idle(self, idle_seconds: float) -> bool:
-        """Uvolní model po nečinnosti. Volá se z UI časovače na HLAVNÍM vlákně."""
-        if idle_seconds <= 0:
-            return False
-        # Zámek se bere BEZ ČEKÁNÍ. Tentýž zámek drží `preload()` po celou dobu
-        # načítání modelu, a to je synchronní čekání na GPU vlákno — změřeno
-        # 1,45 s. Když se tik časovače (á 5 s) trefí do načítání po stisku
-        # klávesy, zamrzne na tu dobu celé UI: ikona přestane animovat, okénko
-        # se nepřekreslí. A není proč čekat: model se zrovna načítá, takže se
-        # stejně nemá co uvolňovat — příští tik to zkusí znovu.
-        if not self._lock.acquire(blocking=False):
+        Ptá se i na to, jestli proces vůbec žije — jinak by `on_press` přeskočil
+        předehřátí a studený start (~1,9 s) by spadl doprostřed diktátu.
+        """
+        pool = self._pool
+        if pool is None or not self._ready:
             return False
         try:
-            if self._model is None:
-                return False
-            if time.monotonic() - self._last_used < idle_seconds:
-                return False
-            self._model = None
-        finally:
-            self._lock.release()
-        # Uvolnění GPU paměti taky na mlx vlákně (tam, kde byl model načten), ale
-        # BEZ ČEKÁNÍ: tohle volá UI timer na hlavním vlákně a čekání na vytížené
-        # GPU vlákno by zmrazilo celou appku (bug „appka se sekne, nutno vypnout").
-        if self.backend == "mlx" and self._mlx is not None:
-            self._mlx.submit_async(self._unload_mlx_gpu)
-        return True
+            return bool(pool.active)
+        except Exception:  # noqa: BLE001
+            return False
 
     @property
     def busy(self) -> bool:
-        """Čeká něco ve frontě GPU vlákna? (streaming se podle toho přiškrtí)."""
-        return self._mlx is not None and self._mlx.pending() > 0
+        """Dělá se na GPU zrovna něco? Streaming se podle toho přiškrtí.
 
-    @staticmethod
-    def _unload_mlx_gpu() -> None:
-        """Skutečně uvolní GPU paměť mlx (ověřeno: ~2 GB → 0). mlx drží model
-        na `ModelHolder.model` a k tomu má vlastní GPU cache pool — obojí zahodit."""
+        Musí být `True` i během startu workeru a načítání modelu — ne jen když
+        běží přepis. Bez toho by streamovací smyčka během načítání sypala úseky
+        do fronty a nahromadila práci, kterou GPU nestíhá (přesně to, čemu má
+        brzdění zabránit).
+        """
+        return self._inflight > 0 or self._starting
+
+    def preload(self) -> None:
+        """Nastartovat worker a načíst model dopředu (volá se při stisku klávesy,
+        aby se čekání schovalo do doby, kdy uživatel ještě mluví)."""
+        if self.is_loaded:
+            return
         try:
-            import mlx.core as mx
-            from mlx_whisper.transcribe import ModelHolder
+            self._warmup()
+        except Exception as exc:  # noqa: BLE001 — předehřátí nikdy neshodí diktát
+            print(f"⚠️  předehřátí selhalo: {exc}")
 
-            ModelHolder.model = None
-            ModelHolder.model_path = None
-            mx.clear_cache()
-        except Exception:  # noqa: BLE001
-            pass
+    def _warmup(self) -> None:
+        """Počká, až worker doopravdy načte model (nebo to vzdá a pool zahodí).
+
+        Limit hlídáme MY přes `result(timeout=)`, ne `schedule(timeout=)`: ten
+        z pebble začíná běžet až ve chvíli, kdy úlohu převezme worker, takže
+        zaseklé načítání modelu by nehlídal vůbec nikdo.
+        """
+        from concurrent.futures import TimeoutError as _FutureTimeout
+
+        pool = self._ensure_pool()
+        # Prázdné pole → `transcribe_chunk` se vůbec nedostane k modelu; úloha tu
+        # slouží jen k tomu, aby se počkalo na dokončený `init_worker`.
+        future = pool.schedule(
+            gpuworker.transcribe_chunk,
+            args=(np.zeros(0, dtype=np.float32), self.language),
+            timeout=_WARMUP_DEADLINE_S + _KILL_GRACE_S,
+        )
+        try:
+            future.result(timeout=_WARMUP_DEADLINE_S)
+        except _FutureTimeout:
+            self._drop_pool(f"načítání modelu nedoběhlo do {_WARMUP_DEADLINE_S:.0f} s")
+            raise TranscribeFailed("worker se nestihl připravit") from None
+        except gpuworker.WorkerInitError:
+            pass  # prázdné audio → model JE načtený, jen nebylo co přepisovat
+        except Exception as exc:
+            self._drop_pool(f"worker se nepodařilo připravit: {exc}")
+            raise TranscribeFailed(str(exc)) from exc
+        with self._lock:
+            self._ready = True
+            self._starting = False
+            self._last_used = time.monotonic()
+
+    def unload_if_idle(self, idle_seconds: float) -> bool:
+        """Uvolnit model po nečinnosti = ukončit celý worker.
+
+        Proti dřívějšímu `mx.clear_cache()` je to zaručené (změřeno: SIGKILL vrátí
+        ~1 GB za 43 ms), ne „nejlepší snaha". Volá se z časovače na hlavním vlákně,
+        takže se tu nesmí na nic čekat — zavírání si `_discard_pool` odnese na
+        vlastní vlákno.
+
+        Tohle zároveň dělá obměnu workeru při delší pauze: další diktát dostane
+        čerstvý proces. Samostatná „obnova po N minutách klidu" by proto nedělala
+        nic navíc a v kódu není.
+        """
+        if idle_seconds <= 0:
+            return False
+        with self._lock:
+            if self._pool is None or self._inflight > 0 or self._starting:
+                return False
+            if time.monotonic() - self._last_used < idle_seconds:
+                return False
+            pool, self._pool = self._pool, None
+            self._ready = False
+        self._discard_pool(pool)
+        return True
+
+    def note_dictation_done(self) -> None:
+        """Diktát doběhl — po N diktátech si řekne o výměnu workeru.
+
+        Výměna se NEDĚLÁ hned: proběhne až při zakládání dalšího diktátu, ať se
+        načítání modelu (~1,9 s) schová do doby, kdy uživatel teprve mluví.
+        """
+        with self._lock:
+            self._dictations += 1
+            if self._dictations >= _RECYCLE_AFTER_DICTATIONS:
+                self._recycle_due = True
+
+    def shutdown(self) -> None:
+        """Ukončit worker při zavírání appky.
+
+        Musí to udělat appka sama: `rumps.quit_application()` ukončí proces mimo
+        běžný úklid Pythonu, takže `atexit` v multiprocessing nikdy neproběhne a
+        worker by osiřel i s celým modelem v paměti.
+        """
+        with self._lock:
+            pool, self._pool = self._pool, None
+            self._ready = False
+        self._discard_pool(pool)
+        _kill_stray_workers()
 
     # --- přepis ---------------------------------------------------------------
 
@@ -418,53 +474,47 @@ class Transcriber:
         language: str | None = None,
         hotwords: list[str] | None = None,
     ) -> str:
+        """Audio → text. Zaseklý worker se zabije a přepis skončí `TranscribeFailed`.
+
+        Opakování se tu ZÁMĚRNĚ nedělá: jestli má smysl zkusit to ještě jednou,
+        ví jen pipeline (`app._transcribe_audio`) — ta jediná zná zbývající
+        rozpočet celého diktátu. Kdyby se opakovalo tady, dva limity by si
+        odporovaly a diktát by přerostl vlastní watchdog appky.
+        """
+        from concurrent.futures import TimeoutError as _FutureTimeout
+
         if audio is None or audio.size == 0:
             return ""
-        with self._lock:
-            if self._model is None:
-                self._load_model()
-            self._last_used = time.monotonic()
-        lang = language or self.language
-
-        if self.backend == "mlx":
-            text = self._transcribe_mlx(audio, lang)
-        else:
-            text = self._transcribe_faster(audio, lang, hotwords)
-
-        with self._lock:
-            self._last_used = time.monotonic()  # dokončení, ne jen start
-        return _drop_hallucination(text)
-
-    def _transcribe_mlx(self, audio: np.ndarray, lang: str) -> str:
-        if _is_silence(audio):  # brána proti halucinaci na tichu
+        if _is_silence(audio):  # brána proti halucinaci na tichu; levné, bez IPC
             return ""
+        lang = language or self.language
+        if not self.is_loaded:
+            self._warmup()  # vyhodí TranscribeFailed, když se nepovede
 
-        # Přepis běží na mlx vlákně (stejném, kde je načtený model) — jinak
-        # „There is no Stream(gpu, N) in current thread" a spadlý (ztracený) diktát.
-        def _do() -> str:
-            import mlx_whisper
-
-            res = mlx_whisper.transcribe(
-                audio,
-                path_or_hf_repo=models.path_for_transcribe(),
-                language=lang,
-                condition_on_previous_text=False,  # bez přenosu halucinací mezi okny
+        deadline = transcribe_deadline(audio.size / SAMPLE_RATE, self.backend)
+        pool = self._ensure_pool()
+        with self._lock:
+            self._inflight += 1
+            self._last_used = time.monotonic()
+        try:
+            future = pool.schedule(
+                gpuworker.transcribe_chunk,
+                args=(audio, lang, _hotwords_str(hotwords), BEAM_SIZE),
+                timeout=deadline + _KILL_GRACE_S,
             )
-            return (res.get("text") or "").strip()
-
-        return self._mlx.submit(_do)
-
-    def _transcribe_faster(self, audio: np.ndarray, lang: str,
-                           hotwords: list[str] | None) -> str:
-        model = self._model
-        segments, _info = model.transcribe(
-            audio,
-            language=lang,
-            vad_filter=True,
-            beam_size=BEAM_SIZE,
-            hotwords=_hotwords_str(hotwords),
-        )
-        return " ".join(seg.text.strip() for seg in segments).strip()
+            try:
+                text = future.result(timeout=deadline + _KILL_GRACE_S * 2)
+            except _FutureTimeout:
+                self._drop_pool(f"přepis nedoběhl do {deadline:.0f} s")
+                raise TranscribeFailed("přepis se zasekl") from None
+            except Exception as exc:  # i pád workeru je pro nás zásek
+                self._drop_pool(f"worker spadl: {exc}")
+                raise TranscribeFailed(str(exc)) from exc
+        finally:
+            with self._lock:
+                self._inflight = max(0, self._inflight - 1)
+                self._last_used = time.monotonic()
+        return _drop_hallucination(text or "")
 
 
 def _drop_hallucination(text: str) -> str:

@@ -20,6 +20,9 @@ dependencies = [
     "keyring>=25.0",        # API klíč v macOS Keychain
     # F3 menu bar
     "rumps>=0.4",           # menu bar ikona se stavem
+    # Přepis běží v zabitelném podprocesu — pebble řeší jeho životní cyklus,
+    # zabití po vypršení limitu i restart (zaseklé vlákno zabít nejde, proces ano).
+    "pebble>=5.0",
 ]
 
 # Fáze F3+ přidají: pydantic (validace configu).

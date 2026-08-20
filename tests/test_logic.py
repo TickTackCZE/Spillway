@@ -393,62 +393,6 @@ def test_same_field_detects_leaving_the_field():
     assert same_field(field, None) is None
 
 
-def test_unload_never_blocks_main_thread_when_gpu_busy():
-    # Regrese k zamrznutí appky: unload_if_idle volá UI timer na HLAVNÍM vlákně.
-    # Když GPU vlákno zrovna dělá dlouhý přepis, nesmí se na něj čekat — jinak
-    # ztuhne celé UI a appka jde jen vypnout natvrdo.
-    import threading
-    import time
-
-    from spillway.transcribe import Transcriber
-
-    t = Transcriber.__new__(Transcriber)  # bez načítání modelu
-    t.backend = "mlx"
-    t._lock = threading.Lock()
-    t._model = True
-    t._last_used = time.monotonic() - 999
-
-    submitted, released = [], threading.Event()
-
-    class _BusyWorker:
-        def submit(self, fn, timeout=None):        # tudy by to zatuhlo
-            released.wait()
-            return fn()
-
-        def submit_async(self, fn):                # správná cesta — nečeká
-            submitted.append(fn)
-
-        def pending(self):
-            return 1
-
-    t._mlx = _BusyWorker()
-
-    t0 = time.monotonic()
-    assert t.unload_if_idle(0.001) is True
-    elapsed = time.monotonic() - t0
-    released.set()
-
-    assert elapsed < 0.5, f"unload blokoval hlavní vlákno ({elapsed:.1f}s)"
-    assert len(submitted) == 1        # uvolnění se zařadilo asynchronně
-    assert t._model is None           # a model je označený jako uvolněný
-    assert t.busy is True             # rozpoznáme vytížené GPU (streaming se přiškrtí)
-
-
-def test_mlx_worker_submit_timeout_does_not_hang():
-    # Pojistka: zaseklá GPU práce nesmí držet volajícího navěky.
-    import threading
-
-    from spillway.transcribe import _MlxWorker
-
-    w = _MlxWorker()
-    block = threading.Event()
-    try:
-        with pytest.raises(TimeoutError):
-            w.submit(lambda: block.wait(30), timeout=0.2)
-    finally:
-        block.set()
-
-
 def test_prompt_has_self_repair_rule_and_resolves_conflict():
     # Oprava přeřeknutí („ve 4 nebo teda v 5" → „v 5") stojí a padá s promptem:
     # musí mít spouštěč (opravné vsuvky), protipříklad (holé „nebo" = volba, nechat
@@ -2011,40 +1955,6 @@ def test_download_progress_is_throttled(monkeypatch, tmp_path):
     assert len(reports) <= 110, f"průběh se nehlásí škrceně: {len(reports)}× z {blocks}"
 
 
-def test_no_backend_downloads_a_model_on_its_own():
-    import pathlib
-    import re
-
-    src = pathlib.Path("src/spillway/transcribe.py").read_text(encoding="utf-8")
-
-    # REGRESE (dvakrát): bez modelu si ho oba backendy uměly tiše stáhnout —
-    # mlx z HF hubu, faster-whisper dokonce JINÝ model (~1,5 GB), a to při
-    # startu na hlavním vlákně. Načítání se proto bez modelu vůbec nespustí.
-    body = src[src.index("def _load_model(self) -> None:"):]
-    body = body[:body.index("\n    @property")]
-    guard = body[:body.index('if self.backend == "mlx"')]
-    assert "models.is_ready()" in guard and "return" in guard, (
-        "_load_model musí bez modelu skončit dřív, než sáhne na kterýkoli backend"
-    )
-
-    # A chybějící model nesmí vést k fallbacku na CPU — ten stahuje jiný model.
-    init = src[src.index("self._weights_absent = not models.is_ready()"):]
-    init = init[:init.index("def _mlx_ok")]
-    assert re.search(r"not self\._weights_absent and not self\._mlx_ok\(\)", init), (
-        "chybějící model se nesmí zaměnit za poruchu mlx"
-    )
-
-
-def test_startup_health_check_cannot_hang_the_app():
-    import pathlib
-
-    src = pathlib.Path("src/spillway/transcribe.py").read_text(encoding="utf-8")
-    body = src[src.index("def _mlx_ok"):]
-    body = body[:body.index("\n    def ")]
-    # `__init__` běží na hlavním vlákně — zatuhlé GPU vlákno by zabránilo startu.
-    assert "timeout=" in body and "TimeoutError" in body
-
-
 def test_blocking_subprocesses_have_timeouts():
     import pathlib
     import re
@@ -2338,28 +2248,6 @@ def test_late_llm_result_is_billed_exactly_once():
     assert billed == [1], f"náklad se měl zaúčtovat právě jednou, ne {len(billed)}×"
 
 
-def test_mlx_queue_counts_the_job_it_is_running():
-    import threading
-
-    from spillway.transcribe import _MlxWorker
-
-    # `qsize()` je nula od chvíle, kdy si vlákno práci vyzvedne — sám o sobě by
-    # tvrdil „nic se neděje" i uprostřed dlouhého přepisu a streaming by za něj
-    # dál sypal segmenty.
-    w = _MlxWorker()
-    running = threading.Event()
-    release = threading.Event()
-
-    def job():
-        running.set()
-        release.wait(5.0)
-
-    threading.Thread(target=lambda: w.submit(job), daemon=True).start()
-    running.wait(5.0)
-    assert w.pending() == 1, "právě běžící práce se musí počítat"
-    release.set()
-
-
 def test_settings_are_not_reread_on_every_get(monkeypatch, tmp_path):
     import builtins
 
@@ -2393,32 +2281,6 @@ def test_settings_cache_does_not_hide_a_write(monkeypatch, tmp_path):
     assert settings.get("language") == "cs"
     settings.set("language", "en")
     assert settings.get("language") == "en"
-
-
-def test_unload_never_waits_for_the_model_to_finish_loading():
-    import threading
-    import time
-
-    from spillway.transcribe import Transcriber
-
-    # `unload_if_idle` volá UI časovač na HLAVNÍM vlákně a `preload()` drží
-    # tentýž zámek po celou dobu načítání modelu (změřeno 1,45 s). Čekat na něj
-    # znamená zmrazit ikonu, okénko i popover.
-    t = Transcriber.__new__(Transcriber)
-    t._lock = threading.Lock()
-    t._model = True
-    t._last_used = 0.0
-    t.backend = "faster"
-    t._mlx = None
-    t._lock.acquire()          # jako by zrovna běželo načítání
-    try:
-        t0 = time.perf_counter()
-        assert t.unload_if_idle(0.01) is False
-        assert time.perf_counter() - t0 < 0.1, "nesmí se čekat na zámek"
-    finally:
-        t._lock.release()
-    # Bez souběhu se uvolnit musí.
-    assert t.unload_if_idle(0.01) is True
 
 
 def test_recorder_publishes_the_stream_under_the_open_lock():
@@ -2846,3 +2708,438 @@ def test_tap_dropout_is_never_silent():
     head = src[:src.index("CGEventTapEnable")]
     assert "print(" in head, "výpadek event tapu se musí objevit v logu"
     assert "Secure Input" in src, "u ByUserInput má log říct, co to obvykle je"
+
+
+def test_unload_never_blocks_main_thread_when_gpu_busy():
+    # Regrese k zamrznutí appky: `unload_if_idle` volá UI časovač na HLAVNÍM
+    # vlákně. Ukončení workeru proto nesmí na nic čekat — zavírání si musí
+    # odnést na vlastní vlákno, jinak ztuhne celé UI a appka jde vypnout jen
+    # natvrdo.
+    import threading
+    import time
+
+    from spillway.transcribe import Transcriber
+
+    t = Transcriber.__new__(Transcriber)  # bez načítání modelu
+    t.backend = "mlx"
+    t._lock = threading.Lock()
+    t._last_used = time.monotonic() - 999
+    t._inflight = 0
+    t._starting = False
+    t._ready = True
+
+    closing = threading.Event()
+
+    class _SlowPool:
+        """Zavírání, které se zasekne — přesně to nesmí zdržet volajícího."""
+
+        def stop(self):
+            closing.set()
+            time.sleep(30)
+
+        def join(self, timeout=None):
+            time.sleep(30)
+
+    t._pool = _SlowPool()
+
+    t0 = time.monotonic()
+    assert t.unload_if_idle(0.001) is True
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 0.5, f"unload blokoval hlavní vlákno ({elapsed:.1f}s)"
+    assert t._pool is None            # model je označený jako uvolněný
+    assert t.is_loaded is False
+    assert closing.wait(2.0), "zavírání se mělo rozjet na vlákně na pozadí"
+
+
+def test_busy_is_true_while_the_worker_is_still_starting():
+    # Streaming se přiškrcuje podle `busy` (viz `_stream_loop`). Kdyby `busy`
+    # koukalo jen na běžící přepisy, během startu workeru a načítání modelu by
+    # hlásilo „volno" a smyčka by do fronty nasypala úseky, které GPU nestíhá —
+    # přesně to, čemu má brzdění zabránit.
+    import threading
+
+    from spillway.transcribe import Transcriber
+
+    t = Transcriber.__new__(Transcriber)
+    t._lock = threading.Lock()
+    t._inflight = 0
+    t._starting = False
+    assert t.busy is False
+
+    t._starting = True                 # worker se právě zakládá / načítá model
+    assert t.busy is True, "během startu workeru se streaming musí přiškrtit"
+
+    t._starting = False
+    t._inflight = 1                    # běží přepis
+    assert t.busy is True
+
+
+def test_transcribe_deadline_grows_with_audio_and_fits_the_pipeline_budget():
+    # Jeden pevný limit nemůže sedět krátkému „zbytku" po streamování (pár sekund)
+    # i celé 300s nahrávce bez pauzy. Zároveň se musí i s opakováním vejít pod
+    # absolutní strop pipeline, jinak si dva watchdogy berou práci navzájem.
+    from spillway.app import PIPELINE_BUDGET_S, STAGE_BUDGET_S
+    from spillway.transcribe import transcribe_deadline
+
+    short = transcribe_deadline(5, "mlx")
+    long_ = transcribe_deadline(300, "mlx")
+    assert short < long_, "limit musí růst s délkou nahrávky"
+
+    # Změřená rychlost: mlx RTF ~0,08, CPU ~0,22. Limit musí nechat poctivému
+    # přepisu násobnou rezervu, jinak by se zabíjela zdravá práce.
+    assert long_ > 300 * 0.08 * 2, "mlx: málo rezervy nad měřenou rychlostí"
+    assert transcribe_deadline(300, "faster") > 300 * 0.22 * 2, "CPU: málo rezervy"
+
+    # Nejhorší legitimní součet (nejdelší přepis + jeden další krok) se musí vejít.
+    worst = transcribe_deadline(300, "faster") + STAGE_BUDGET_S
+    assert worst < PIPELINE_BUDGET_S, (
+        f"nejdelší poctivý diktát ({worst:.0f}s) přeroste absolutní strop "
+        f"({PIPELINE_BUDGET_S:.0f}s) → odsekne se sám"
+    )
+
+
+def test_no_backend_downloads_a_model_on_its_own():
+    import pathlib
+
+    src = pathlib.Path("src/spillway/transcribe.py").read_text(encoding="utf-8")
+    worker = pathlib.Path("src/spillway/gpuworker.py").read_text(encoding="utf-8")
+
+    # REGRESE (dvakrát): bez modelu si ho oba backendy uměly tiše stáhnout —
+    # mlx z HF hubu, faster-whisper dokonce JINÝ model (~1,5 GB). Váhy se proto
+    # berou výhradně z `models.path_for_transcribe()`, které bez staženého
+    # modelu vyhodí `ModelMissing` — žádná „záchrana" jménem repozitáře.
+    assert "path_for_transcribe" in src
+    assert "mlx-community" not in worker and "Systran" not in worker, (
+        "worker nesmí znát jméno repozitáře — stáhl by model sám"
+    )
+
+    # A hlavní proces nesmí sáhnout na těžké backendy vůbec: import mlx stojí
+    # 1,57 s a `faster_whisper` přitáhne torch (+199 MB), obojí do procesu, který
+    # od přestavby na podproces s GPU nemá co dělat.
+    assert "find_spec" in src, "dostupnost mlx se zjišťuje bez skutečného importu"
+    assert "import mlx_whisper" not in src and "from faster_whisper" not in src, (
+        "těžké backendy patří výhradně do podprocesu (gpuworker)"
+    )
+
+
+def test_startup_health_check_cannot_hang_the_app():
+    import pathlib
+
+    src = pathlib.Path("src/spillway/transcribe.py").read_text(encoding="utf-8")
+    body = src[src.index("def _warmup"):]
+    body = body[:body.index("\n    def ")]
+    # Načtení modelu je přesně ta operace, co se zasekává. Limit si musí hlídat
+    # volající přes `result(timeout=)`: `schedule(timeout=)` z pebble běží až od
+    # chvíle, kdy úlohu převezme worker, takže zaseklý start by nehlídal nikdo.
+    assert "result(timeout=" in body, "na přípravu workeru musí být vlastní limit"
+    assert "_drop_pool" in body, "když se worker nepřipraví, musí se zahodit"
+
+
+def test_stuck_worker_is_killed_and_reported_not_silently_reused():
+    # Jádro celé přestavby: zaseklý přepis se nesmí „počkat do konce" (dřív
+    # zablokoval každý další diktát až do restartu appky). Worker se zabije,
+    # pool zahodí a volající dostane `TranscribeFailed`, ne prázdný text —
+    # prázdný text by pipeline vyhodnotila jako „nebylo co přepsat".
+    import threading
+
+    import numpy as np
+    import pytest as _pytest
+
+    from spillway.transcribe import TranscribeFailed, Transcriber
+
+    t = Transcriber.__new__(Transcriber)
+    t.backend = "mlx"
+    t.language = "cs"
+    t._lock = threading.Lock()
+    t._last_used = 0.0
+    t._inflight = 0
+    t._starting = False
+    t._ready = True
+    t._recycle_due = False
+    t._dictations = 0
+    t.on_needs_restart = lambda reason: reasons.append(reason)
+    reasons = []
+
+    class _StuckFuture:
+        def result(self, timeout=None):
+            from concurrent.futures import TimeoutError as _FT
+
+            raise _FT()
+
+    class _StuckPool:
+        active = True
+
+        def schedule(self, fn, args=(), timeout=None):
+            return _StuckFuture()
+
+        def stop(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    t._pool = _StuckPool()
+
+    audio = np.full(16000 * 3, 0.2, dtype=np.float32)  # 3 s „řeči", ne ticho
+    with _pytest.raises(TranscribeFailed):
+        t.transcribe(audio, language="cs")
+
+    assert t._pool is None, "zaseklý worker se musí zahodit, ne použít znovu"
+    assert reasons, "appka se má dozvědět, že si zásek žádá restart"
+
+
+def test_worker_is_recycled_after_enough_dictations():
+    # mlx roste ~10 MB na volání (mlx-examples#1254). Při souvislém používání se
+    # appka nemusí dostat na klidovou pauzu (a tím na uvolnění workeru) celé
+    # hodiny, takže se worker po N DIKTÁTECH vymění i bez zaseknutí.
+    # Diktáty, ne úlohy: streaming pošle za jeden dlouhý diktát klidně 100 úseků.
+    import threading
+
+    from spillway.transcribe import _RECYCLE_AFTER_DICTATIONS, Transcriber
+
+    t = Transcriber.__new__(Transcriber)
+    t._lock = threading.Lock()
+    t._dictations = 0
+    t._recycle_due = False
+
+    for _ in range(_RECYCLE_AFTER_DICTATIONS - 1):
+        t.note_dictation_done()
+    assert t._recycle_due is False, "výměna nesmí přijít dřív, než je potřeba"
+
+    t.note_dictation_done()
+    assert t._recycle_due is True, "po N diktátech si worker říká o výměnu"
+
+
+def test_recording_survives_a_microphone_that_will_not_close():
+    # Jádro opravy zaseknutého mikrofonu: nahraný diktát je v paměti od audio
+    # callbacku, takže se musí vrátit i tehdy, když se hardware odmítá zavřít.
+    # Dřív se na zavření čekalo bez limitu — a s ním zamrzla celá appka
+    # (`sounddevice#394`, `portaudio#367`; obojí upstream neopravené).
+    import threading
+    import time
+
+    import numpy as np
+
+    from spillway.audio import Recorder
+
+    r = Recorder()
+    stuck = threading.Event()
+
+    class _StuckStream:
+        def stop(self):
+            stuck.set()
+            time.sleep(30)      # zaseklé nativní volání
+
+        def close(self):
+            time.sleep(30)
+
+    r._stream = _StuckStream()
+    r._frames = [np.full(16000, 0.3, dtype=np.float32)]  # 1 s „řeči"
+
+    t0 = time.monotonic()
+    audio = r.stop()
+    elapsed = time.monotonic() - t0
+
+    assert audio.size == 16000, "nahrané audio se nesmí ztratit kvůli zavírání"
+    assert elapsed < 3.0, f"stop() čekal na zaseklý mikrofon {elapsed:.1f}s"
+    assert stuck.is_set(), "zavírání se mělo aspoň pokusit proběhnout"
+
+
+def test_next_recording_fails_loudly_when_the_old_stream_never_closed():
+    # Když se předchozí stream nedozavřel, nové nahrávání NESMÍ jen tak začít:
+    # starý callback pořád píše do `_frames`, které `start()` nuluje — do nového
+    # diktátu by prosákly kusy starého. A hlavně: dřív se tvářilo, že nahrává,
+    # a nezachytilo nic. Teď je z toho hlasitá chyba.
+    import pytest as _pytest
+
+    from spillway.audio import MicrophoneUnavailable, Recorder
+
+    r = Recorder()
+    r._teardown_done.clear()          # jako by staré zavírání pořád běželo
+
+    with _pytest.raises(MicrophoneUnavailable):
+        r.start()
+
+
+def test_watchdog_measures_each_stage_separately_not_the_whole_dictation():
+    # Kroky mají různě dlouhou LEGITIMNÍ dobu: přepis roste s délkou nahrávky,
+    # volání Clauda má vlastní 30s limit a jedno opakování (~61 s). Jeden
+    # společný rozpočet by proto buď zabíjel poctivé dlouhé diktáty, nebo by
+    # u krátkých čekal zbytečně dlouho.
+    import threading
+    import time
+
+    from spillway.app import PROCESSING, Controller
+
+    c = Controller.__new__(Controller)
+    c._lock = threading.Lock()
+    c.state = PROCESSING
+    c._begin_processing()
+
+    start = c._processing_since
+    time.sleep(0.02)
+    c._stage("přepis", 42.0)
+
+    assert c._processing_since > start, "nový krok musí posunout krokový časovač"
+    assert c._stage_budget == 42.0, "krok si smí nastavit vlastní strop"
+    assert c._pipeline_since == start, (
+        "celkový časovač se posouvat NESMÍ — jinak by se kroky poskládaly "
+        "do několika minut, po které appka odmítá nové diktáty"
+    )
+
+
+def test_single_instance_lock_is_released_only_when_it_was_really_held(tmp_path, monkeypatch):
+    # Tichý restart pouští zámek dřív, než spustí svou náhradu — jinak by nová
+    # instance narazila na obsazený zámek a `main()` ji rovnou ukončí (žádné
+    # opakování tam není), takže by po „restartu" neběželo nic.
+    # Když se ale zámek nikdy nezískal, `release()` nesmí sahat na cizí handle.
+    from spillway import lifecycle
+
+    # Vlastní cesta k zámku: jinak test závisí na tom, jestli zrovna neběží
+    # skutečná appka — a padal by z úplně jiného důvodu, než co ověřuje.
+    monkeypatch.setattr(lifecycle, "_LOCK", str(tmp_path / "spillway.lock"))
+    monkeypatch.setattr(lifecycle, "_DIR", str(tmp_path))
+    monkeypatch.setattr(lifecycle, "_handle", None)
+
+    lifecycle.release()               # bez drženého zámku = tichý no-op
+    assert lifecycle._handle is None
+
+    handle = lifecycle.acquire()
+    assert handle is not None, "na volné cestě musí jít zámek získat"
+    assert lifecycle._handle is handle
+    lifecycle.release()
+    assert lifecycle._handle is None, "po uvolnění si zámek nesmí nic držet"
+
+    # A po uvolnění ho musí dostat další instance — to je celý smysl `release()`.
+    again = lifecycle.acquire()
+    assert again is not None, "uvolněný zámek musí jít získat znovu"
+    lifecycle.release()
+
+
+def test_transcription_worker_never_pulls_the_app_into_the_subprocess():
+    # Podproces se startuje přes „spawn", takže se jeho modul importuje znovu.
+    # Kdyby přitáhl `spillway.app`, přišel by s ním i `sounddevice`, který volá
+    # `Pa_Initialize()` už při importu — každý worker by si otevřel klienta
+    # CoreAudia a držel ho až do svého zabití. Stejně tak `faster_whisper`
+    # přitáhne torch (+199 MB) i při jízdě na mlx.
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path("src/spillway/gpuworker.py").read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+
+    forbidden = {"spillway", "sounddevice", "rumps", "AppKit", "Foundation",
+                 "Quartz", "WebKit", "keyring", "anthropic"}
+    assert not (imported & forbidden), (
+        f"worker importuje, co nemá: {sorted(imported & forbidden)}"
+    )
+
+    # Těžké backendy smí worker importovat jen UVNITŘ funkcí, ne na úrovni modulu —
+    # jinak by je natáhl i worker, který je zrovna nepotřebuje.
+    top_level = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            top_level.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            top_level.add(node.module.split(".")[0])
+    assert not (top_level & {"mlx", "mlx_whisper", "faster_whisper", "numpy"}), (
+        f"těžký import na úrovni modulu: {sorted(top_level)}"
+    )
+
+    runner = pathlib.Path("run_spillway.py").read_text(encoding="utf-8")
+    # `freeze_support()` musí být PŘED importem appky: v zabalené .app se
+    # podproces spustí s `__name__ == "__main__"`, takže sama podmínka nestačí.
+    assert runner.index("freeze_support()") < runner.index("from spillway.app import main")
+    # `sys.path.insert` naopak musí zůstat na úrovni modulu — projekt není
+    # instalovatelný balíček, bez něj by podproces `spillway.gpuworker` nenašel.
+    assert runner.index("sys.path.insert") < runner.index('if __name__ == "__main__":')
+
+
+def test_silent_restart_waits_for_open_windows_and_pending_paste():
+    # Tichý restart nesmí spolknout rozdělanou práci. REGRESE: podmínky se ptaly
+    # přes `getattr(okno, "is_open", False)` s vymyšleným jménem atributu —
+    # vycházely tedy vždycky nepravdivě a restart by mohl přijít uprostřed
+    # psaní API klíče, bez jediné chybové hlášky. Ptáme se skutečnými metodami.
+    from spillway.app import IDLE, PROCESSING, RESTART_IDLE_S
+    from spillway.tray import SpillwayTray
+
+    class _Ctl:
+        state = IDLE
+        awaiting_paste = False
+        _needs_restart = True
+
+        def __init__(self):
+            self.restarted = False
+
+        def restart_now(self):
+            self.restarted = True
+
+    class _Win:
+        def __init__(self, shown):
+            self._shown = shown
+
+        def is_visible(self):
+            return self._shown
+
+        is_shown = is_visible
+
+    t = SpillwayTray.__new__(SpillwayTray)
+    t.controller = _Ctl()
+    t._settings = None
+    t._popover = None
+    t._idle_since = 0.0          # klid trvá „odjakživa"
+    late = RESTART_IDLE_S + 1
+
+    # 1) otevřené nastavení restart zdrží
+    t._settings = _Win(True)
+    assert t._check_restart(now=late) is False, "restart nesmí přijít s otevřeným nastavením"
+    assert t._idle_since is None, "aktivita musí odpočet vynulovat"
+
+    # 2) otevřený popover taky
+    t._settings, t._popover, t._idle_since = None, _Win(True), 0.0
+    assert t._check_restart(now=late) is False, "restart nesmí přijít s otevřeným popoverem"
+
+    # 3) text čekající na vložení taky (jinak lístek tiše zmizí i s textem)
+    t._popover, t._idle_since = None, 0.0
+    t.controller.awaiting_paste = True
+    assert t._check_restart(now=late) is False, "restart nesmí zahodit čekající text"
+
+    # 4) probíhající diktát taky
+    t.controller.awaiting_paste, t._idle_since = False, 0.0
+    t.controller.state = PROCESSING
+    assert t._check_restart(now=late) is False, "restart nesmí přijít uprostřed diktátu"
+
+    # 5) v úplném klidu — ale teprve po uplynutí čekací doby
+    t.controller.state, t._idle_since = IDLE, 0.0
+    assert t._check_restart(now=RESTART_IDLE_S - 1) is False, "nesmí restartovat předčasně"
+    assert t.controller.restarted is False
+    assert t._check_restart(now=late) is True, "po dostatečném klidu se restartovat má"
+    assert t.controller.restarted is True
+
+
+def test_no_restart_is_scheduled_when_nothing_got_stuck():
+    # Pojistka proti restartům „jen tak": bez zaznamenaného záseku se appka
+    # nesmí restartovat nikdy, ať je v klidu jakkoli dlouho.
+    from spillway.app import IDLE, RESTART_IDLE_S
+    from spillway.tray import SpillwayTray
+
+    class _Ctl:
+        state = IDLE
+        awaiting_paste = False
+        _needs_restart = False       # nic se nezaseklo
+
+        def restart_now(self):
+            raise AssertionError("restart bez záseku se nesmí spustit")
+
+    t = SpillwayTray.__new__(SpillwayTray)
+    t.controller = _Ctl()
+    t._settings = None
+    t._popover = None
+    t._idle_since = 0.0
+    assert t._check_restart(now=RESTART_IDLE_S * 10) is False

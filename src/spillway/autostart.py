@@ -53,6 +53,16 @@ def _launch_command() -> str:
     return f'cd "{_project_dir()}" && exec "{_uv()}" run python run_spillway.py'
 
 
+def relaunch_command() -> str:
+    """Příkaz, kterým se appka umí spustit znovu (tichý restart po zaseknutí).
+
+    Schválně tentýž příkaz jako pro LaunchAgent — jedno místo pravdy. Kdyby si
+    restart skládal spouštění po svém, rozešel by se s automatickým startem po
+    přihlášení hned při první změně (a projevilo by se to až v provozu).
+    """
+    return _launch_command()
+
+
 def is_enabled() -> bool:
     return os.path.exists(_PLIST)
 

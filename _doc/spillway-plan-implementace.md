@@ -1,7 +1,14 @@
+---
+title: Spillway — Plán implementace
+created: 2026-08-05
+tags:
+  - spillway
+---
+
 # Spillway — plán implementace
 
 > Živý dokument: aktuální stav a otevřená rozhodnutí. **Hotové věci žijí v git historii, ne tady.**
-> Vychází z [spillway-analyza.md](spillway-analyza.md). Aktualizováno: 5. 8. 2026 (v1.2).
+> Vychází z [spillway-analyza.md](spillway-analyza.md). Aktualizováno: 13. 8. 2026 (v1.2).
 
 ---
 
@@ -33,13 +40,16 @@ Osobní diktovací nástroj pro macOS. Lokální přepis řeči (mlx-whisper na 
 
 - **Python 3.12 + PyObjC** (AppKit / Quartz / WebKit / ApplicationServices). Menu-bar app (`LSUIElement`), bundle přes **PyInstaller**.
 - **CGEventTap** na vlastním run-loopu, callback triviální. F5 = keycode **176**, `return None` potlačí nativní diktování. Watchdog na ztracený key-up, re-enable po timeoutu.
-- **Přepis** (`transcribe.py`): dva backendy (přepínač `SPILLWAY_WHISPER_BACKEND`). Výchozí **mlx-whisper na Apple GPU** (`large-v3-turbo`, float16) s **energetickou bránou proti tichu** (mlx nemá VAD). Fallback **faster-whisper CPU** (má VAD, `beam_size=5`) při selhání mlx health-checku. ⚠️ **Všechny mlx GPU operace (načtení / přepis / uvolnění) běží na JEDNOM vyhrazeném vlákně** (`_MlxWorker`) — mlx drží GPU stream per-vlákno, jinak „There is no Stream(gpu, N) in current thread" a spadlý (ztracený) diktát. Model se drží v `ModelHolder`, načte se jednou, přepis ho převezme.
+- **Přepis** (`transcribe.py` + `gpuworker.py`): dva backendy (přepínač `SPILLWAY_WHISPER_BACKEND`). Výchozí **mlx-whisper na Apple GPU** (`large-v3-turbo`, float16) s **energetickou bránou proti tichu** (mlx nemá VAD). Fallback **faster-whisper CPU** (má VAD, `beam_size=5`), když mlx v podprocesu neprojde health-checkem. ⚠️ **Veškerý přepis běží v samostatném PODPROCESU** (`gpuworker.py`, pool z knihovny `pebble`, kontext `spawn`), ne na vlákně uvnitř appky. Důvod: `mlx_whisper.transcribe()` se občas zasekne v nativním volání (upstream `ml-explore/mlx-examples#1373`, neopravené, bez API na zrušení) a zaseklé **vlákno** nejde z Pythonu ukončit — jen opustit, čímž navždy drží GPU paměť a blokuje každý další přepis (mlx váže GPU stream na vlákno). Zaseklý **proces** se zabít dá: změřeno, že SIGKILL vrátí ~1 GB za 43 ms. Hlavní proces mlx vůbec neimportuje (`find_spec`, ne `import` — skutečný import stojí 1,57 s); `faster_whisper` už vůbec ne, přitáhne torch (+199 MB).
 - **Kontext** (`context.py`): na `AXFocusedUIElement` sahá **jediná funkce** (`_focused_element`), všechno ostatní z ní odvozuje přes `focus_snapshot()`, který čte jen to, co si volající vyžádá. Dřív se ptaly čtyři funkce nezávisle a mohly se rozejít — okénko pak viselo jinde, než kam text šel. AX čtení má **messaging timeout 1 s** — nereagující cílová appka jinak zablokuje hlavní vlákno (freeze). Kontext pole se posílá Claudovi vždy (pomoc s tónem/navázáním), ale prompt přísně zakazuje zkopírovat ho do výstupu.
-- **Paste** (`paste.py`): nativně schránka (+ Transient/Concealed typy) → `⌘V` → ~250 ms → obnova schránky. **RDP/AVD** (`context.is_windows_target`): text se **naťuká** znak po znaku přes `CGEventKeyboardSetUnicodeString` (klient zahazuje modifikátory ze syntetických událostí → `⌘/Ctrl+V` selhává; vyžaduje Keyboard Mode = Unicode).
-- **Odseknutí zásеku:** watchdog v tray sleduje délku PROCESSING — po 90 s soft-cancel (jako Escape), po 120 s tvrdý reset do IDLE + notifikace. Claude volání má timeout 30 s.
+- **Paste** (`paste.py`): nativně schránka (+ Transient/Concealed typy) → `⌘V` → ~250 ms → obnova schránky. **RDP/AVD** (`context.is_windows_target`): text se **naťuká** znak po znaku přes `CGEventKeyboardSetUnicodeString` (klient zahazuje modifikátory ze syntetických událostí → `⌘/Ctrl+V` selhává; vyžaduje Keyboard Mode = Unicode). **Zalomení se u RDP/AVD nahrazují mezerou** (`_LINEBREAK_CHARS`: `\n`, `\r`, U+2028/U+2029, U+000B/U+000C) — RDP klient přeposílá znaky, ne modifikátory, takže `\n` uvnitř naťukaného textu projde jako skutečný Enter a v chatovací appce odešle rozepsanou zprávu (viz log vývoje, incident 13. 8.).
+- **Odseknutí zásеku:** watchdog v tray hlídá **jednotlivé KROKY** pipeline, ne celý diktát — kroky mají různě dlouhou legitimní dobu (přepis roste s délkou nahrávky, volání Clauda má vlastní 30s limit a jedno opakování, tedy ~61 s samo o sobě). Nad tím je absolutní strop `PIPELINE_BUDGET_S` (420 s), aby se kroky nesložily do několika minut, po které appka odmítá nové diktáty. Limit přepisu počítá `transcribe.transcribe_deadline()` z délky audia — **jedno místo pravdy** sdílené s časovačem podprocesu, ať si dva limity neodporují.
+- **Zavírání mikrofonu** (`audio.py`): ohraničené na ~800 ms, pak se vrací nahrané audio bez ohledu na hardware a úklid dobíhá na pozadí (na TÉMŽE vlákně — dva thready nad jedním CoreAudio handle nesmí). Další nahrávání čeká na potvrzené dozavření; když nepřijde, je z toho hlasitá chyba `MicrophoneUnavailable`, ne tiché nahrávání do prázdna. Zásek je upstream známý (`sounddevice#394`, `portaudio#367`).
+- **Tichý restart** (`app.Controller.restart_now`): po zaseknutí, ze kterého zbylo něco neuklizitelného zevnitř procesu (systémová vlákna z restartu PortAudia — `sounddevice#140`), se appka po 5 minutách **nečinnosti** sama restartuje. Pořadí je závazné: uvolnit zámek jedné instance → spustit náhradu → skončit. Obráceně by nová instance našla zámek obsazený a `main()` ji rovnou ukončí (nemá opakování) → neběželo by nic.
 - **Cmd+C/V/A** v oknech aplikace zajišťuje vložené **Edit menu** (bez něj neměla zkratka kam poslat akci).
 - **Ikona** (`baricon.py`): snímky se generují líně a cachují; animaci řídí existující `rumps.Timer` v trayi, takže v klidu nestojí nic. Ikona je *template* — macOS ji obarví podle motivu.
-- **Moduly** `src/spillway/`: hotkey, audio, transcribe, context, llm, paste, tray, hud, popover, settings(_window), stats, config, settings, diag, lifecycle, autostart, baricon, keymap, design.
+- **Moduly** `src/spillway/`: hotkey, audio, transcribe, **gpuworker**, context, llm, paste, tray, hud, popover, settings(_window), stats, config, settings, diag, lifecycle, autostart, baricon, keymap, design.
+- **⚠️ `run_spillway.py` má závazné pořadí:** `sys.path.insert` zůstává na úrovni modulu (projekt není instalovatelný balíček), ale `from spillway.app import main` musí být **až za** `multiprocessing.freeze_support()`. V zabalené `.app` se podproces spustí s `__name__ == "__main__"`, takže samotná podmínka nestačí — bez toho by si každý worker natáhl `sounddevice` a otevřel klienta CoreAudia.
 - **⚠️ Podpis je kritický:** TCC granty (Accessibility/Input Monitoring) i Keychain ACL se vážou na code signature. Řeší **stabilní self-signed cert „Spillway Self-Signed"** — designated requirement je konstantní napříč rebuildy. Privátní klíč v login keychainu + záloha `codesign-identity.p12` (mimo git).
 
 ---
@@ -80,18 +90,10 @@ Log: `~/Library/Logs/Spillway/spillway.log` (obsahuje `AXIsProcessTrusted`, stav
 
 ## Směr produktu (v1.3+)
 
-Rozhodnuto: aplikace se bude **monetizovat** (viz [rozvoj a nápady](spillway-rozvoj-a-napady.md), oblast Monetizace).
-Model: **roční licence (~1 000 Kč) + vlastní API klíč uživatele.** Nulový variabilní
-náklad, žádný proxy v cestě diktátu. Licence je podepsaný klíč ověřovaný **offline**
-(Ed25519), prodejna typu Lemon Squeezy generuje klíče i řeší DPH — vlastní server zatím
-netřeba. Před prodejem: **notarizace**, ověřování licence, automatické aktualizace,
-export diagnostiky, průvodce oprávněními, anglické UI. Repozitář musí přestat být veřejný.
-
-Největší nová funkce v plánu je **režim schůzka** — dlouhý přepis čistě lokálně, bez AI
-a bez sítě. Dělí se na dva scénáře: **Mac na stole** (mikrofon slyší všechny — žádné zachytávání
-zvuku systému, snadná půlka) a **online hovor** (nutné zachytit zvuk systému; macOS 14.4+
-to umí bez ovladače). Otevřené: běh přes hodinové nahrávky (dnešní strop je 5 minut v RAM)
-a rozlišení mluvčích přes ONNX modely, bez tažení PyTorch do bundlu.
+Rozhodnuto: aplikace se bude **monetizovat**. Plné rozpracování (licenční model, cena,
+technická cesta k prodeji, největší plánovaná funkce — režim schůzka) je v
+[rozvoj a nápady](spillway-rozvoj-a-napady.md), oblast Monetizace — tady jen odkaz,
+ať se stejné rozhodnutí neudržuje na dvou místech.
 
 ---
 

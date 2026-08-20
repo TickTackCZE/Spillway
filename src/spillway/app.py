@@ -13,24 +13,41 @@ Vyžaduje oprávnění: Microphone, Input Monitoring, Accessibility.
 
 from __future__ import annotations
 
+import os
 import signal
+import subprocess
 import sys
 import threading
 import time
 
 from . import config, context, diag, models, stats
-from .audio import Recorder
+from .audio import MicrophoneUnavailable, Recorder
 from .hotkey import HotkeyListener
 from .llm import Cleaner, basic_cleanup
 from .paste import copy_to_clipboard, paste_text
 from .transcribe import (
+    TranscribeFailed,
     Transcriber,
     level_summary,
     next_segment_boundary,
+    transcribe_deadline,
     voiced_seconds,
 )
 
 IDLE, RECORDING, PROCESSING = "IDLE", "RECORDING", "PROCESSING"
+
+# Výchozí strop na JEDEN krok pipeline. Přepis si ho nastavuje sám podle délky
+# audia; tohle platí pro kroky s víceméně konstantní dobou (sběr audia, AI
+# úprava, vložení). AI úprava je z nich nejdelší — 30 s timeout + jedno
+# opakování v `llm.py`, tedy ~61 s ve špatném případě.
+STAGE_BUDGET_S = 90.0
+# Absolutní strop na celé zpracování jednoho diktátu, bez ohledu na kroky. Je to
+# POJISTKA proti skládání kroků, ne běžný limit — musí zůstat nad součtem všech
+# legitimních kroků v nejhorším případě (nejdelší přepis ~188 s + AI úprava ~61 s
+# + režie), jinak by odsekával poctivou práci.
+PIPELINE_BUDGET_S = 420.0
+# Jak dlouho musí být appka bez práce, než se po zaseknutí sama restartuje.
+RESTART_IDLE_S = 300.0
 
 # Minimální doba, po kterou „Ruším" zůstane v HUD i poté, co pipeline doběhne.
 # Jen proti probliknutí u okamžitého zrušení — hlavní podmínkou je běžící stav
@@ -143,8 +160,28 @@ class Controller:
         # sleepům). Escape po něm nesmí spolknout klávesu ani označit hotový
         # diktát za zrušený.
         self._pasting = False
-        # Kdy (monotonic) začalo PROCESSING — pro watchdog zaseklého zpracování.
+        # Kdy (monotonic) začal AKTUÁLNÍ KROK pipeline — watchdog hlídá krok, ne
+        # celý diktát. Jeden společný rozpočet nešel nastavit rozumně: přepis
+        # roste s délkou nahrávky (300 s zvuku = desítky sekund práce), kdežto
+        # volání Clauda má vlastní limit 30 s a jedno opakování (llm.py) — tedy
+        # až ~61 s samo o sobě. Posouvá se na hranici každého kroku (`_stage`).
         self._processing_since = 0.0
+        # Kdy začalo zpracování jako CELEK. Krokový rozpočet sám o sobě nestačí:
+        # bez tohohle by se čtyři kroky po 120 s poskládaly do osmi minut, po
+        # které appka odmítá nové diktáty (`on_press`).
+        self._pipeline_since = 0.0
+        # Jak dlouho smí běžet právě probíhající krok. Přepis si ho přepíše podle
+        # délky audia (`transcribe.transcribe_deadline`), ať si dva limity neodporují.
+        self._stage_budget = STAGE_BUDGET_S
+        self._stage_name = ""
+        # Appka narazila na zásek, ze kterého se sice zotavila, ale zůstalo po něm
+        # něco, co uvnitř procesu uklidit nejde (uvízlé systémové vlákno v CoreAudiu,
+        # osiřelá paměť). Restart to spraví; udělá se, až uživatel nebude nic dělat.
+        self._needs_restart = False
+        self._restart_reason = ""
+        # Zaseklý worker přepisu appka umí nahradit sama, ale osiřelý proces po
+        # sobě nechá paměť, kterou zevnitř neuklidíme — proto si řekne o restart.
+        self.transcriber.on_needs_restart = self.request_restart
         # Text skončil ve schránce (odešel jsi z pole / přepnul appku) a čeká, až
         # si ho vložíš. Drží lístek „Připraveno k vložení" u ikony v liště.
         self.awaiting_paste = False
@@ -266,8 +303,7 @@ class Controller:
             # zrušit"). Převezmeme řízení od `on_release`.
             take_over = self.state == RECORDING
             if take_over:
-                self.state = PROCESSING
-                self._processing_since = time.monotonic()
+                self._begin_processing()
         self._cancel.set()
         self._cancel_min_until = time.monotonic() + CANCEL_MIN_VISIBLE_S
         print("🚫 ruším… (nic se nevloží)")
@@ -430,8 +466,16 @@ class Controller:
         except Exception as exc:  # noqa: BLE001 — [O6] viditelná chyba, ne tichý pád
             print(f"❌ mikrofon se nepodařilo spustit: {exc}")
             notify("Mikrofon nedostupný", "Nahrávání se nepodařilo spustit.")
+            # Předchozí nahrávání se nedozavřelo → uvnitř procesu už to nespravíme
+            # (zaseklé nativní volání nejde přerušit). Restart ano.
+            if isinstance(exc, MicrophoneUnavailable):
+                self.request_restart("mikrofon se nepodařilo uvolnit")
             with self._lock:
-                self.state = IDLE
+                # Jen když stav pořád patří TOMUHLE nahrávání. Po opravě zavírání
+                # mikrofonu je tahle větev běžná cesta, ne jen havárie — a to
+                # znamená, že mezitím mohl začít další diktát nebo jeho zpracování.
+                if self.state == RECORDING:
+                    self.state = IDLE
             self._cancel_watchdog()
 
     def _stream_loop(self, dictation_id: int) -> None:
@@ -508,12 +552,34 @@ class Controller:
         print("⚠️  watchdog: ztracený key-up → vynucené ukončení nahrávky.")
         self.on_release()
 
+    def _begin_processing(self) -> None:
+        """Přechod do PROCESSING. Volá se POD `self._lock`.
+
+        Jedno místo, kde se nastavují oba časovače — krokový i celkový. Kdyby se
+        to psalo na každém přechodu zvlášť, dřív nebo později se někde nastaví
+        jen jeden a watchdog přestane hlídat, aniž by to bylo poznat.
+        """
+        self.state = PROCESSING
+        now = time.monotonic()
+        self._processing_since = now
+        self._pipeline_since = now
+        self._stage_budget = STAGE_BUDGET_S
+        self._stage_name = "start"
+
+    def _stage(self, name: str, budget: float = STAGE_BUDGET_S) -> None:
+        """Začal další krok pipeline → posunout krokový časovač a jeho strop."""
+        with self._lock:
+            if self.state != PROCESSING:
+                return
+            self._processing_since = time.monotonic()
+            self._stage_budget = budget
+            self._stage_name = name
+
     def on_release(self) -> None:
         with self._lock:
             if self.state != RECORDING:
                 return
-            self.state = PROCESSING
-            self._processing_since = time.monotonic()
+            self._begin_processing()
         self._cancel_watchdog()
         # [B9] recorder.stop() dělá gc.collect() + restart PortAudia (stovky ms).
         # Nesmí běžet na vlákně event tapu (timeout tapu → nepotlačené F5). Přesuň
@@ -656,6 +722,35 @@ class Controller:
         th.start()
         return th, ctx
 
+    def _transcribe_with_retry(self, chunk, **kw):
+        """Přepis s JEDNÍM opakováním na čerstvém workeru, když se ten první zasekl.
+
+        Opakuje se tady, ne uvnitř `Transcriber`: jen pipeline ví, kolik z rozpočtu
+        diktátu ještě zbývá. Druhý pokus se pouští jen tehdy, když se do rozpočtu
+        vejde — jinak by diktát přerostl vlastní watchdog appky a odsekl by se
+        uprostřed práce, kterou by jinak dokončil.
+        """
+        secs = chunk.size / 16000.0
+        budget = transcribe_deadline(secs, self.transcriber.backend)
+        # +10 s: `Transcriber` musí stihnout poznat zásek a zabít worker dřív, než
+        # do toho vlítne watchdog appky — jinak by si dva limity braly práci navzájem.
+        self._stage("přepis", budget + 10.0)
+        def run():
+            return self._run_cancellable(
+                lambda: self.transcriber.transcribe(chunk, **kw)
+            )
+
+        try:
+            return run()
+        except TranscribeFailed as exc:
+            spent = time.monotonic() - (self._pipeline_since or time.monotonic())
+            if spent + budget >= PIPELINE_BUDGET_S:
+                print(f"⚠️  přepis selhal ({exc}) — na druhý pokus už není čas.")
+                raise
+            print(f"⚠️  přepis selhal ({exc}) → druhý pokus na čerstvém workeru.")
+            self._stage("přepis (2. pokus)", budget + 10.0)
+            return run()
+
     def _transcribe_audio(self, audio, streaming: bool) -> str:
         """Audio → text. Zruší-li uživatel, vyhodí `_Abort`.
 
@@ -677,9 +772,7 @@ class Controller:
             tail = audio[committed:] if 0 <= committed < audio.size else audio[:0]
             print(f"⏳ přepisuji zbytek {tail.size / 16000.0:.1f} s "
                   f"(streaming: {len(segments)} segm. za mluvení)…")
-            tail_text = self._run_cancellable(
-                lambda: self.transcriber.transcribe(tail, language=self.language)
-            )
+            tail_text = self._transcribe_with_retry(tail, language=self.language)
             if tail_text is _CANCELLED:
                 raise _Abort("cancelled")
             parts = segments + ([tail_text] if tail_text else [])
@@ -687,11 +780,11 @@ class Controller:
         else:
             print(f"⏳ přepisuji {len(audio) / 16000.0:.1f} s audia…")
             # Cancellable: Escape během přepisu ho okamžitě opustí.
-            raw = self._run_cancellable(lambda: self.transcriber.transcribe(
+            raw = self._transcribe_with_retry(
                 audio,
                 language=self.language,
                 hotwords=self.glossary if config.whisper_hotwords() else None,
-            ))
+            )
             if raw is _CANCELLED:
                 raise _Abort("cancelled")
         dt = time.perf_counter() - t0
@@ -888,6 +981,7 @@ class Controller:
         outcome = "error"  # přepíše se, jakmile víme, jak to dopadlo
         llm_cost = 0.0  # cena AI úpravy tohoto diktátu (0, když se Claude nevolal)
         try:
+            self._stage("sběr audia")
             audio, streaming = self._collect_audio()
             audio_secs = len(audio) / 16000.0
             speech_secs = voiced_seconds(audio)  # bez ticha/pauz → tempo řeči
@@ -905,13 +999,21 @@ class Controller:
             text = raw  # od téhle chvíle má i zrušený běh co zapsat do historie
             ctx = self._read_context(ctx_thread, ctx)
 
+            self._stage("AI úprava")
             text, llm_cost = self._apply_ai(raw, ctx, audio_secs)
+            self._stage("vložení")
             text = self._apply_separator(text, ctx)
             outcome = self._deliver(text, ctx)
         except _Abort as stop:
             # Řízený konec se známým výsledkem (zrušeno / prázdný přepis) —
             # není to chyba a nesmí spustit notifikaci o pádu.
             outcome = stop.outcome
+        except TranscribeFailed as exc:
+            # Přepis se zasekl i po opakování. Vlastní hláška, ne „chyba při
+            # vkládání" — vkládat nebylo co a uživatel má vědět, co zkusit.
+            print(f"❌ přepis se nepodařil: {exc}")
+            notify("Přepis se nepodařil", "Zkus prosím diktát zopakovat.")
+            outcome = "error"
         except Exception as exc:  # noqa: BLE001
             print(f"❌ chyba v pipeline: {exc}")
             notify("Chyba při vkládání", "Diktát se nepodařilo zpracovat/vložit.")
@@ -944,6 +1046,10 @@ class Controller:
                 f"raw={len(raw)}zn final={len(text)}zn app={app_name} pole={self._focus_field} "
                 f"cena=${llm_cost:.4f} celkem={total:.1f}s"
             )
+            # Diktát doběhl (ať dopadl jakkoli) — počítadlo pro obměnu workeru.
+            # Výměna se udělá až při dalším startu, ne teď: načtení modelu se tak
+            # schová do doby, kdy uživatel teprve mluví.
+            _call_safely(self.transcriber.note_dictation_done)
             with self._lock:
                 self._pasting = False
                 # Reset stavu jen když pořád „patří" tomuhle běhu. Kdyby
@@ -952,29 +1058,48 @@ class Controller:
                 if self.state == PROCESSING:
                     self.state = IDLE
                     self._processing_since = 0.0
+                    self._pipeline_since = 0.0
 
 
     def watchdog_check(self) -> None:
         """Odseknutí zaseklého zpracování — volá se z main-thread časovače v trayi.
 
-        Většina zásеků je uvnitř přepisu/volání Clauda (obojí je `_run_cancellable`),
+        Hlídá se KROK, ne celý diktát: kroky mají různě dlouhou legitimní dobu
+        (přepis roste s délkou nahrávky, volání Clauda má vlastní 30s limit
+        a jedno opakování), takže jeden společný rozpočet by buď zabíjel poctivé
+        dlouhé diktáty, nebo by u krátkých čekal zbytečně dlouho. Nad tím pořád
+        platí absolutní strop `PIPELINE_BUDGET_S` — bez něj by se kroky poskládaly
+        do několika minut, po které appka odmítá nové diktáty.
+
+        Většina záseků je uvnitř přepisu/volání Clauda (obojí je `_run_cancellable`),
         takže stačí „soft" cancel jako Escape. Kdyby to nepomohlo (zásek jinde),
         po delší době stav tvrdě vrátíme do IDLE, ať appka nezůstane zmrzlá.
         """
+        now = time.monotonic()
         with self._lock:
             if self.state != PROCESSING:
                 return
             since = self._processing_since
-        stuck = time.monotonic() - since if since > 0 else 0.0
-        if stuck < 90:
+            budget = self._stage_budget
+            name = self._stage_name
+            total_since = self._pipeline_since
+        stuck = now - since if since > 0 else 0.0
+        total = now - total_since if total_since > 0 else 0.0
+        over_stage = stuck >= budget
+        over_total = total >= PIPELINE_BUDGET_S
+        if not (over_stage or over_total):
             return
-        if stuck < 120:
+        hard = stuck >= budget * 1.35 or over_total
+        if not hard:
             if not self._cancel.is_set():
-                print(f"⏱️ zpracování {stuck:.0f}s → soft cancel (odseknutí).")
+                print(f"⏱️ krok „{name}“ {stuck:.0f}s (limit {budget:.0f}s) "
+                      f"→ soft cancel (odseknutí).")
                 self._cancel.set()
-                self._cancel_min_until = time.monotonic() + CANCEL_MIN_VISIBLE_S
+                self._cancel_min_until = now + CANCEL_MIN_VISIBLE_S
             return
-        print(f"⏱️ zpracování {stuck:.0f}s → TVRDÝ reset do IDLE.")
+        why = (f"celkem {total:.0f}s" if over_total
+               else f"krok „{name}“ {stuck:.0f}s")
+        print(f"⏱️ {why} → TVRDÝ reset do IDLE.")
         notify("Spillway se odseknul", "Zpracování trvalo moc dlouho — vráceno do klidu.")
         # Nastavit i cancel: kdyby zaseklý worker později ožil, jeho kontrola před
         # vložením ho zastaví, aby nevložil text opožděně do (teď už jiného) pole.
@@ -983,6 +1108,52 @@ class Controller:
             self._pasting = False
             self.state = IDLE
             self._processing_since = 0.0
+            self._pipeline_since = 0.0
+        self.request_restart("zpracování se zaseklo a muselo se odseknout")
+
+    # ---- zotavení restartem ------------------------------------------------
+
+    def request_restart(self, reason: str) -> None:
+        """Po zaseknutí si říct o restart appky. Restart proběhne, až bude klid.
+
+        Proč vůbec: co po zaseknutí zůstane viset v nativní vrstvě (systémová
+        vlákna z restartu PortAudia — viz `sounddevice#140` —, neuvolněné
+        zařízení), se uvnitř běžícího procesu uklidit nedá. Ukončení procesu ano.
+        """
+        if self._needs_restart:
+            return
+        self._needs_restart = True
+        self._restart_reason = reason
+        print(f"🔁 naplánován tichý restart po zaseknutí ({reason})")
+
+    def restart_now(self) -> None:
+        """Spustí novou instanci a tuhle ukončí. Běží na hlavním vlákně (z traye).
+
+        Pořadí je závazné: nejdřív uvolnit zámek jedné instance, teprve pak
+        spustit nový proces. Obráceně by nová instance našla zámek obsazený,
+        `main()` na to nemá opakování — a tiše by skončila. Výsledek by byl, že
+        appka po „restartu" neběží vůbec.
+        """
+        from . import autostart, lifecycle
+
+        reason = self._restart_reason or "neznámý důvod"
+        print(f"🔁 tichý restart appky po zaseknutí (důvod: {reason})")
+        # Event tap i mikrofon pustit PŘED spuštěním nové instance — dva tapy nad
+        # jednou klávesou by si braly stisky navzájem.
+        listener = getattr(self, "hotkey_listener", None)
+        if listener is not None:
+            _call_safely(listener.stop)
+        _call_safely(self.transcriber.shutdown)
+        _call_safely(self.recorder.stop)
+        lifecycle.release()
+        try:
+            subprocess.Popen(["/bin/sh", "-c", autostart.relaunch_command()],
+                             start_new_session=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"❌ restart se nepodařilo spustit: {exc}")
+            notify("Spillway potřebuje restart", "Ukonči a spusť appku prosím ručně.")
+            return
+        os._exit(0)
 
 
 def main() -> None:
@@ -1000,7 +1171,10 @@ def main() -> None:
     _log_permission_diagnostics()
 
     raw_mode = "--raw" in sys.argv
-    print(f"Spillway — načítám model (chvíli to trvá)…{'  [raw režim]' if raw_mode else ''}")
+    # Model se při startu UŽ NENAČÍTÁ — od přesunu přepisu do podprocesu se
+    # načte líně až při prvním stisku klávesy (a schová se za mluvení). Start
+    # je proto okamžitý; hláška „načítám model, chvíli to trvá" by lhala.
+    print(f"Spillway — startuji…{'  [raw režim]' if raw_mode else ''}")
     controller = Controller(raw_mode=raw_mode)
     keycode, key_label = config.get_hotkey()
 

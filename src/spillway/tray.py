@@ -15,7 +15,7 @@ from __future__ import annotations
 import rumps
 
 from . import config, models, settings, status
-from .app import IDLE, PROCESSING, RECORDING
+from .app import IDLE, PROCESSING, RECORDING, RESTART_IDLE_S
 
 _BAR_ICON = "🎙️"  # placeholder; Spillway logo přijde s .app bundlem (ikonové assety)
 
@@ -101,6 +101,9 @@ class SpillwayTray(rumps.App):
         # odsekne, ať appka nezůstane viset na „Zpracovávám" a nemusí se vypínat.
         self._stuck_timer = rumps.Timer(self._check_stuck, 5)
         self._stuck_timer.start()
+
+        # Od kdy je appka bez práce — pro tichý restart po zaseknutí (`_check_restart`).
+        self._idle_since = None
 
     def _maybe_welcome(self) -> None:
         """Po instalaci si poznamená, že uvítání ještě neproběhlo.
@@ -291,6 +294,45 @@ class SpillwayTray(rumps.App):
             self.controller.watchdog_check()
         except Exception:  # noqa: BLE001
             pass
+        try:
+            self._check_restart()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _check_restart(self, now=None) -> bool:  # noqa: ANN001
+        """Tichý restart po zaseknutí — až když uživatel opravdu nic nedělá.
+
+        Podmínky jsou schválně přísné: restart nesmí spolknout rozdělanou práci
+        (otevřené nastavení, text čekající na vložení) ani přijít uprostřed
+        diktátu. Odpočet se resetuje při jakékoli aktivitě, takže se appka
+        restartuje v přirozené pauze — uživatel uvidí nanejvýš bliknutí ikony.
+        """
+        import time
+
+        c = self.controller
+        if not getattr(c, "_needs_restart", False):
+            return False
+        now = time.monotonic() if now is None else now
+        # Otevřená okna se ptáme SKUTEČNÝMI metodami (`is_visible` / `is_shown`).
+        # Přes `getattr(..., False)` s vymyšleným jménem by podmínka mlčky vycházela
+        # vždycky nepravdivě a restart by spolkl rozepsaný API klíč nebo slovník —
+        # bez jediné chybové hlášky.
+        busy = (
+            getattr(c, "state", IDLE) != IDLE
+            or getattr(c, "awaiting_paste", False)
+            or (self._settings is not None and self._settings.is_visible())
+            or (self._popover is not None and self._popover.is_shown())
+        )
+        if busy:
+            self._idle_since = None
+            return False
+        if self._idle_since is None:
+            self._idle_since = now
+            return False
+        if now - self._idle_since < RESTART_IDLE_S:
+            return False
+        c.restart_now()
+        return True
 
     def _install_edit_menu(self) -> None:
         """Přidá do hlavního menu položku Úpravy s Kopírovat/Vložit/… → teprve tím
@@ -509,10 +551,14 @@ class SpillwayTray(rumps.App):
     def quit_app(self, _sender) -> None:  # noqa: ANN001
         # [B19] Uvolnit event tap a mikrofon PŘED ukončením — rumps.quit_application()
         # ukončí proces uvnitř run(), takže finally v app.main() se nespustí.
+        # Ze stejného důvodu se tu musí ukončit i podproces přepisu: ukončení jde
+        # mimo běžný úklid Pythonu, takže `atexit` v multiprocessing neproběhne
+        # a worker by osiřel i s celým modelem v paměti (~2 GB).
         try:
             listener = getattr(self.controller, "hotkey_listener", None)
             if listener is not None:
                 listener.stop()
+            self.controller.transcriber.shutdown()
             self.controller.recorder.stop()
         except Exception:  # noqa: BLE001
             pass

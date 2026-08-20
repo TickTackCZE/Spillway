@@ -24,7 +24,11 @@ if ! security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
 fi
 
 echo "▶︎ PyInstaller build…"
-uv run pyinstaller build/spillway.spec --noconfirm --distpath build/dist --workpath build/work
+# `python -m PyInstaller`, ne `uv run pyinstaller`: konzolový skript v .venv má
+# shebang s absolutní cestou z doby, kdy vznikl. Po přesunu projektu (nebo po
+# přejmenování složky nad ním) ukazuje jinam a build spadne na „No such file or
+# directory" ještě před prvním řádkem. Spuštění přes modul je na cestě nezávislé.
+uv run python -m PyInstaller build/spillway.spec --noconfirm --distpath build/dist --workpath build/work
 
 echo "▶︎ Podepisuji stabilním certifikátem '$IDENTITY'…"
 # --deep podepíše i vnořené .so/.dylib (PyInstaller jich má stovky).

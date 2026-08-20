@@ -1,14 +1,22 @@
+---
+title: Spillway — Log rozhodnutí
+created: 2026-08-05
+tags:
+  - spillway
+---
+
 # Spillway — log rozhodnutí
 
 > Archiv. **Co je tady, se nevrací do návrhů.** Hotové funkce, uzavřená rozhodnutí
 > a poučení z provozu. Aktivní věci žijí v [rozvoj a nápady](spillway-rozvoj-a-napady.md).
-> Aktualizováno: 6. 8. 2026
+> Aktualizováno: 13. 8. 2026
 
 ---
 
 ## ✅ Hotovo — už to není nápad, ale funkce
 
 **Diktování a přepis**
+- Přepis běží v samostatném, zabitelném podprocesu — zásek GPU už nepoloží celou appku
 - Streaming přepisu (segmentuje se v tichu, přepisuje už během mluvení)
 - Zrušení diktátu klávesou před placeným voláním AI
 - Uvolnění modelu z paměti po nastavitelné nečinnosti (10–600 s)
@@ -61,6 +69,13 @@ nová data nebo změněné zadání, ne opakování téhož nápadu.
 
 ## Poznámky z provozu (ať se to neopakuje)
 
+- **Zaseklé vlákno nejde zabít, zaseklý proces ano — a na tom stojí odolnost celého přepisu.** (20. 8.) Appka se opakovaně zasekla tak, že nešlo zrušit diktát a **každý další diktát pak tiše nevrátil nic**, dokud se ručně nerestartovala. Příčina byly dvě nativní volání bez limitu: zavírání mikrofonu (`sounddevice`/PortAudio) a `mlx_whisper.transcribe()`. Obojí je **známý neopravený upstream bug** — `sounddevice#394` („reset seems to hang"), `portaudio#367`, `mlx-examples#1373` (Whisper large-v3 stojí 200+ s na 10s audiu, a mlx žádné API na zrušení nemá). Nejde je opravit, jen obalit.
+  Klíčové poučení: dokud přepis běžel na **vlákně**, nedal se zásek nijak odstranit — Python vlákno zvenku ukončit neumí, jde ho jen opustit, čímž navždy drží GPU paměť *a* blokuje všechny další přepisy (mlx váže GPU stream na vlákno). Přesun do **podprocesu** to mění na jednoduchý `SIGKILL`. **Změřeno:** kill vrátí ~1 GB sjednocené paměti za 43 ms, nový worker s načteným modelem naskočí za ~1,9 s — tedy stejná cena, jakou appka platila už dřív po každém uvolnění modelu z paměti.
+- **Vlastní mašinérie kolem podprocesů se nevyplatila — hotová knihovna ano.** Ruční verze (vlákno na odesílání, vlákno na příjem, hlídač limitu, generační stráž, disciplína zavírání roury) prošla pěti koly nezávislé revize a **v každém se našla další blokující chyba** — mj. že zavření roury zvenku uvolní číslo deskriptoru, které si hned vezme další roura, a zaseklý zápis pak poškodí cizí data. Nahrazeno knihovnou `pebble` (`ProcessPool(max_workers=1)`), u které je ověřeno, že pozdní výsledek po timeoutu zahodí a workera nikdy nezabije uprostřed přenosu. **Ověřeno testem:** pebble pouští inicializaci i úlohy na tomtéž vlákně téhož procesu, což je přesně to, co mlx vyžaduje.
+- **Timeout musí být úměrný vstupu, ne pevný.** Jedno číslo nemůže sedět krátkému „zbytku" po streamování (2–11 s) i celé 300s nahrávce bez pauzy — sedne-li na krátký případ, zabíjí poctivé dlouhé diktáty. Proto `transcribe_deadline()` počítá limit z délky audia a **tutéž funkci** používá watchdog appky jako strop kroku; dva nezávisle nastavené limity si dřív braly práci navzájem.
+- **Nepřepínat na CPU zálohu kvůli občasnému záseku.** Zvažováno a zamítnuto: zásek je náhodný (upstream bug), ne trvalý stav, kdežto CPU je ~4,5× pomalejší — 5minutový diktát by tam trval přes vlastní watchdog appky i **bez** jakéhokoli zaseknutí. Počítadlo selhání proto spustí tichý restart, ne degradaci režimu. CPU fallback zůstává jen pro původní účel: mlx v bundlu vůbec nefunguje (chybějící Metal shadery).
+
+- **AVD/RDP nevidí, jaká appka je uvnitř zaměřená — zalomení v textu se tam umí samo odeslat jako Enter.** Diktát do Teams přes vzdálenou plochu (13. 8.) se vložil celý, ale zalomení uvnitř AI-zformátovaného textu prošlo jako skutečný Enter (RDP klient přeposílá znaky, ne modifikátory) a odeslalo rozepsanou zprávu. Kód hlídal `\n` jen jako oddělovač PŘED diktovaným textem, tělo textu vůbec ne. Oprava: `_LINEBREAK_CHARS` teď nahrazuje mezerou všech šest typů zalomení (`\n`, `\r`, U+2028/U+2029, U+000B/U+000C), ne jen holé `\n`; počet nahrazení se loguje, aby šel příští podobný incident rekonstruovat z historie, ne dohadovat. **Zvažováno a zamítnuto:** Shift+Enter / skutečné keyDown-keyUp eventy pro modifikátor u Ctrl+V — věrohodně by fungovalo líp (zachovalo by formátování, nulové riziko Enteru), ale otestovat se to dá jen v živé RDP session a omyl by poslal rozepsanou zprávu živému kolegovi — nasazeno naslepo nebude.
 - **Ikony si macOS cachuje podle cesty A NÁZVU souboru.** Po překreslení ikony nestačí
   přeinstalovat ani vyčistit systémové cache — nejjistější je změnit název `.icns`.
   Vlastní cache mají navíc nástroje třetích stran, které ikony zobrazují (alternativní

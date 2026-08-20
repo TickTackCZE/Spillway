@@ -50,6 +50,9 @@ a = Analysis(
         "objc",
         "rumps",
         "keyring.backends.macOS",
+        "pebble",
+        # podproces přepisu se startuje přes spawn → musí být v bundlu
+        "spillway.gpuworker",
         "faster_whisper",
         "ctranslate2",
     ] + _mlx_hidden,

@@ -819,6 +819,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pebble"
+version = "5.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/6b/fba8cb6ca12e6bbcfac48da790b6a9d262d5beb6f34dc1b63fccc32a9ff8/pebble-5.2.1.tar.gz", hash = "sha256:9743537aa0e40751a1cbf297928e141bd2202a24624a7c0f9fc14818a7f227b1", size = 40496, upload-time = "2026-07-19T20:18:17.044Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ad/cf/f838e54b229bb202575daf7542d39da3c38434959d7a9252d4be66cb7d9a/pebble-5.2.1-py3-none-any.whl", hash = "sha256:154feb48f187ffff842cbc2fe0768ed1524d6fa72e90577a78bcea21a2f929f9", size = 34984, upload-time = "2026-07-19T20:18:15.692Z" },
+]
+
+[[package]]
 name = "pefile"
 version = "2024.8.26"
 source = { registry = "https://pypi.org/simple" }
@@ -1300,6 +1309,7 @@ dependencies = [
     { name = "keyring" },
     { name = "mlx-whisper", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "numpy" },
+    { name = "pebble" },
     { name = "pyobjc-framework-applicationservices" },
     { name = "pyobjc-framework-cocoa" },
     { name = "pyobjc-framework-quartz" },
@@ -1321,6 +1331,7 @@ requires-dist = [
     { name = "keyring", specifier = ">=25.0" },
     { name = "mlx-whisper", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.4" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "pebble", specifier = ">=5.0" },
     { name = "pyobjc-framework-applicationservices", specifier = ">=10.3" },
     { name = "pyobjc-framework-cocoa", specifier = ">=10.3" },
     { name = "pyobjc-framework-quartz", specifier = ">=10.3" },
