@@ -4,6 +4,9 @@ created: 2026-08-05
 tags:
   - spillway
 ---
+> [!abstract] O čem to je
+> **Analýza projektu [[Spillway]]** — proč nástroj vzniknul, jak funguje as-built, kde bolí čeština, náklady a známá omezení.
+> Plán a stav: [[spillway-plan-implementace]] · Rozhodnutí: [[spillway-log]]
 
 # Spillway — analýza
 

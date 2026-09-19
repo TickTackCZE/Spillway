@@ -4,6 +4,9 @@ created: 2026-08-05
 tags:
   - spillway
 ---
+> [!abstract] O čem to je
+> **Nápady na rozvoj [[Spillway]]** — prodej, nové funkce, monetizace. Zatím záměry, ne hotové věci; co je hotové, vlastní [[spillway-plan-implementace]].
+> Zamítnuté nápady: [[spillway-log]]
 
 # Spillway — rozvoj a nápady
 

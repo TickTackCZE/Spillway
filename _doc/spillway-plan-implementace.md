@@ -4,6 +4,9 @@ created: 2026-08-05
 tags:
   - spillway
 ---
+> [!abstract] O čem to je
+> **Plán implementace a současný stav [[Spillway]]** (v1.2, nasazeno) — architektura, build, nasazení, konfigurace a směr na v1.3+.
+> Proč to vzniklo: [[spillway-analyza]] · Rozhodnutí: [[spillway-log]]
 
 # Spillway — plán implementace
 
