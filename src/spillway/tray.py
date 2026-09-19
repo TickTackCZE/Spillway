@@ -15,7 +15,13 @@ from __future__ import annotations
 import rumps
 
 from . import config, models, settings, status
-from .app import IDLE, PROCESSING, RECORDING, RESTART_IDLE_S
+from .app import (
+    IDLE,
+    PROCESSING,
+    RECORDING,
+    RESTART_IDLE_BROKEN_S,
+    RESTART_IDLE_S,
+)
 
 _BAR_ICON = "🎙️"  # placeholder; Spillway logo přijde s .app bundlem (ikonové assety)
 
@@ -329,7 +335,10 @@ class SpillwayTray(rumps.App):
         if self._idle_since is None:
             self._idle_since = now
             return False
-        if now - self._idle_since < RESTART_IDLE_S:
+        # Rozbitý mikrofon nemá na co čekat — viz `RESTART_IDLE_BROKEN_S`.
+        wait_s = (RESTART_IDLE_BROKEN_S
+                  if getattr(c, "_restart_urgent", False) else RESTART_IDLE_S)
+        if now - self._idle_since < wait_s:
             return False
         c.restart_now()
         return True
@@ -510,7 +519,13 @@ class SpillwayTray(rumps.App):
             # Výzva ke stažení drží, dokud na ni uživatel neklikne — i po
             # návratu do klidu. Přeskočit ji na „Zpracovávám" nedává smysl,
             # protože bez modelu se nic nezpracovává.
-            if (getattr(self.controller, "model_missing", False)
+            # Nedostupný mikrofon je nejvýš: bez něj neplatí ani „Chybí model"
+            # (nemá se co přepisovat) a hlavně nesmí okénko dál hlásit
+            # „Nahrávám" — kvůli tomu vypadal výpadek jako bliknutí okénka.
+            if (getattr(self.controller, "mic_unavailable", False)
+                    and not getattr(self.controller, "mic_notice_hidden", False)):
+                self.hud.show("nomic", at_icon=True)
+            elif (getattr(self.controller, "model_missing", False)
                     and not getattr(self.controller, "model_notice_hidden", False)):
                 self.hud.show("nomodel")
             elif state == RECORDING:

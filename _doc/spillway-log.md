@@ -4,12 +4,15 @@ created: 2026-08-05
 tags:
   - spillway
 ---
+> [!abstract] O čem to je
+> **Log rozhodnutí u [[Spillway]]** — co je hotové, co bylo zamítnuté a proč, plus poznámky z provozu. Vlastní historii „proč to je takhle“.
+> Analýza: [[spillway-analyza]] · Nápady dál: [[spillway-rozvoj-a-napady]]
 
 # Spillway — log rozhodnutí
 
 > Archiv. **Co je tady, se nevrací do návrhů.** Hotové funkce, uzavřená rozhodnutí
 > a poučení z provozu. Aktivní věci žijí v [rozvoj a nápady](spillway-rozvoj-a-napady.md).
-> Aktualizováno: 13. 8. 2026
+> Aktualizováno: 19. 9. 2026
 
 ---
 
@@ -68,6 +71,13 @@ nová data nebo změněné zadání, ne opakování téhož nápadu.
 ---
 
 ## Poznámky z provozu (ať se to neopakuje)
+
+- **Zotavení, které se nikdy nespustí, je stejné jako žádné zotavení.** (19. 9.) Z provozního logu: „funguje, chvíli nediktuju, pak už to nejde — okénko vyskočí a po chvilce zmizí". Appka měla na tenhle stav dvě pojistky a **ani jedna se nikdy nespustila** — `🔁 naplánován tichý restart` je v logu dvakrát, `🔁 tichý restart appky` ani jednou. Tři nezávislé díry, každá sama o sobě stačila:
+  1. **Zotavení, kam se nikdo nedostane.** Zvuková vrstva (`Pa_Terminate`+`Pa_Initialize`) se obnovovala JEN v úklidu *po* nahrávání. Když selže **otevření** mikrofonu, žádný úklid nepřijde — takže rozbitý PortAudio (zastaralý seznam zařízení → `PaErrorCode -9986`) zůstal rozbitý až do ručního restartu. V logu jedenáct stisků po sobě se stejnou chybou. Oprava: po selhaném otevření se zvuková vrstva oživí a otevření se jednou zopakuje.
+  2. **Chyba, kterou nikdo nepoznal.** O restart si appka říkala jen při `MicrophoneUnavailable`, což tehdy znamenalo pouze „zaseklé dozavírání". Selhané `sd.InputStream()` propadlo jako obyčejná výjimka. Oprava: rozhodnutí „jde to ještě spravit zevnitř?" patří k PortAudiu, ne do `Controller` — `Recorder.start()` vyhazuje `MicrophoneUnavailable` pro **všechna** nezotavitelná selhání.
+  3. **Marný pokus se počítal jako práce.** Po zaseknutém dozavírání čekal každý další stisk znovu 3 s a stav po tu dobu visel na `RECORDING`. Tichý restart přitom vyžaduje 300 s úplného klidu a při jakékoli „aktivitě" si odpočet nuluje — takže **čím víc to uživatel zkoušel, tím jistěji se appka nerestartovala**. Oprava: od druhého pokusu se selhává okamžitě (zaseklé nativní volání si to nerozmyslí) a s rozbitým mikrofonem stačí krátká pauza (`RESTART_IDLE_BROKEN_S`), protože appka do restartu stejně nic neudělá.
+  Čtvrté poučení navíc: **okénko celou dobu lhalo.** Hlásilo „Nahrávám" po celé tři sekundy, než se stisk vzdal — proto to vypadalo jako bliknutí, ne jako chyba. Teď je na to vlastní stav „Mikrofon nedostupný". A restart se **nevyžádá**, když mikrofon v tom procesu nenaběhl ani jednou: to není zásek, ale chybějící oprávnění nebo zařízení, a relaunch po každém stisku by byl nekonečná smyčka.
+  **Co z logu zjistit nešlo:** které nativní volání se zasekne (`stop`, `close`, nebo `Pa_Terminate`) — řádky logu nemají čas a diagnostika `audio` je standardně vypnutá. Až to přijde znovu, chce to běh se `SPILLWAY_DIAG=audio`.
 
 - **Zaseklé vlákno nejde zabít, zaseklý proces ano — a na tom stojí odolnost celého přepisu.** (20. 8.) Appka se opakovaně zasekla tak, že nešlo zrušit diktát a **každý další diktát pak tiše nevrátil nic**, dokud se ručně nerestartovala. Příčina byly dvě nativní volání bez limitu: zavírání mikrofonu (`sounddevice`/PortAudio) a `mlx_whisper.transcribe()`. Obojí je **známý neopravený upstream bug** — `sounddevice#394` („reset seems to hang"), `portaudio#367`, `mlx-examples#1373` (Whisper large-v3 stojí 200+ s na 10s audiu, a mlx žádné API na zrušení nemá). Nejde je opravit, jen obalit.
   Klíčové poučení: dokud přepis běžel na **vlákně**, nedal se zásek nijak odstranit — Python vlákno zvenku ukončit neumí, jde ho jen opustit, čímž navždy drží GPU paměť *a* blokuje všechny další přepisy (mlx váže GPU stream na vlákno). Přesun do **podprocesu** to mění na jednoduchý `SIGKILL`. **Změřeno:** kill vrátí ~1 GB sjednocené paměti za 43 ms, nový worker s načteným modelem naskočí za ~1,9 s — tedy stejná cena, jakou appka platila už dřív po každém uvolnění modelu z paměti.

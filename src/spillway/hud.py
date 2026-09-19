@@ -72,7 +72,8 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     transform:translateX(-50%) rotate(45deg);
   }
   .dot.ready { background:#4ADE80; }
-  .dot.nomodel { background:#E11D48; animation:pulse 1.5s infinite; }
+  /* Chybí model i nedostupný mikrofon = appka nediktuje → stejný signál. */
+  .dot.nomodel, .dot.nomic { background:#E11D48; animation:pulse 1.5s infinite; }
   .kbd {
     font-size:11px; font-weight:600; color:#F5F5F7; padding:2px 6px; border-radius:5px;
     background:rgba(255,255,255,0.14); border:0.5px solid rgba(255,255,255,0.18);
@@ -109,6 +110,8 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
         k.textContent='⌘V';k.style.display='inline-block';}
       else if(s==='nomodel'){c.style.display='inline-flex';d.className='dot nomodel';
         l.textContent='Chybí model pro přepis';}
+      else if(s==='nomic'){c.style.display='inline-flex';d.className='dot nomic';
+        l.textContent='Mikrofon nedostupný';}
       else {c.style.display='none';}
     }
     // `off` = vzdálenost středu ikony od levého okraje okénka (v px), nebo null
@@ -374,13 +377,14 @@ class StatusHUD:
         — používá se, když uživatel odejde z cílové aplikace (jinak by okénko
         zůstalo viset u kurzoru v cizí appce, kam se nic vkládat nebude)."""
         self._set_state(state)
-        # Lístek „Připraveno k vložení" i výzva ke stažení visí u ikony a dá se
-        # na ně kliknout. Panel je neaktivační, takže klik NEPŘEPNE aplikaci a
-        # tvoje pole nepřijde o kurzor (jinak by následné ⌘V vložilo text jinam).
-        self._at_icon = state in ("ready", "nomodel") or at_icon
+        # Lístek „Připraveno k vložení", výzva ke stažení i hláška o nedostupném
+        # mikrofonu visí u ikony a dá se na ně kliknout. Panel je neaktivační,
+        # takže klik NEPŘEPNE aplikaci a tvoje pole nepřijde o kurzor (jinak by
+        # následné ⌘V vložilo text jinam).
+        self._at_icon = state in ("ready", "nomodel", "nomic") or at_icon
         self._place()
-        # Klikat jde jen na lístek a na výzvu — a teprve až okno sedí na kartě.
-        clickable = state in ("ready", "nomodel") and self._measured
+        # Klikat jde jen na lístek a na obě výzvy — a teprve až okno sedí na kartě.
+        clickable = state in ("ready", "nomodel", "nomic") and self._measured
         self.panel.setIgnoresMouseEvents_(not clickable)
         if not self._visible:
             self.panel.orderFrontRegardless()

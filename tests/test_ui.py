@@ -289,6 +289,64 @@ def test_hud_tells_the_user_the_model_is_missing():
     assert ".dot.nomodel" in html, "výzva musí mít vlastní barvu tečky"
 
 
+def test_hud_says_the_microphone_is_unavailable_instead_of_faking_recording():
+    # REGRESE: když nešel otevřít mikrofon, okénko po celou dobu marného pokusu
+    # hlásilo „Nahrávám" a pak zmizelo — výpadek tak vypadal jako bliknutí, ne
+    # jako chyba, a uživatel neměl podle čeho poznat, co se děje.
+    from spillway import hud
+
+    html = hud._HTML
+    assert ".dot.nomic" in html, "výzva musí mít vlastní barvu tečky"
+    # Větev se hledá podle stavu, kterým ji `tray` opravdu volá — samotné
+    # „je někde v HTML slovo nomic" projde i tehdy, když se stav přejmenuje
+    # a okénko na něj přestane reagovat.
+    branch = html[html.index("s==='nomic'"):]
+    branch = branch[:branch.index("else")]
+    assert "Mikrofon nedostupný" in branch
+    assert "dot nomic" in branch
+
+
+def test_unavailable_microphone_outranks_every_other_hud_state():
+    # Bez mikrofonu neplatí ani „Chybí model" (nemá se co přepisovat) a hlavně
+    # nesmí okénko ukazovat „Nahrávám" — stav RECORDING v tu chvíli jen čeká,
+    # až se pokus o otevření vzdá.
+    from conftest import controller_stub
+
+    from spillway.app import RECORDING
+    from spillway.tray import SpillwayTray
+
+    shown = []
+    tray = SpillwayTray.__new__(SpillwayTray)
+    tray._popover_ready = True
+    tray._welcome_checked = True
+    tray._popover = None
+    tray._settings = None
+    tray.hud = type("H", (), {
+        "show": lambda s, state, at_icon=False: shown.append(state),
+        "hide": lambda s: shown.append("hide")})()
+    tray._broadcast_status = lambda: None
+    tray._update_notice = lambda: None
+    tray._refresh_stats_when_done = lambda: None
+    tray._update_icon = lambda *_a: None
+    tray._left_target_app = lambda: False
+
+    ctl = controller_stub(RECORDING)
+    ctl.model_missing = True          # i tohle má ustoupit
+    ctl.mic_unavailable = True
+    ctl.no_field = False
+    ctl.is_cancelling = lambda: False
+    tray.controller = ctl
+
+    SpillwayTray._tick(tray, None)
+    assert shown == ["nomic"]
+
+    # Jakmile mikrofon zase jede, vrátí se obvyklé pořadí.
+    shown.clear()
+    ctl.mic_unavailable = False
+    SpillwayTray._tick(tray, None)
+    assert shown == ["nomodel"]
+
+
 def test_clickable_hud_states_are_not_transparent_to_mouse():
     from spillway.hud import StatusHUD
 
@@ -306,7 +364,7 @@ def test_clickable_hud_states_are_not_transparent_to_mouse():
     hud.panel = type("P", (), {
         "setIgnoresMouseEvents_": lambda s, v: ignored.__setitem__("v", bool(v)),
         "orderFrontRegardless": lambda s: None})()
-    for state, clickable in (("ready", True), ("nomodel", True),
+    for state, clickable in (("ready", True), ("nomodel", True), ("nomic", True),
                              ("rec", False), ("proc", False), ("cancel", False)):
         StatusHUD.show(hud, state)
         assert ignored["v"] is not clickable, f"stav {state}: myš má být {clickable}"

@@ -693,22 +693,7 @@ def test_stats_empty_summary_does_not_crash(_stats_tmp):
 # --- Zrušení diktátu (Escape) -------------------------------------------------
 
 
-def _controller_stub(state):
-    """Controller bez __init__ (nechceme načítat Whisper model)."""
-    import threading
-
-    from spillway.app import Controller
-
-    c = Controller.__new__(Controller)
-    c.state = state
-    c._lock = threading.Lock()
-    c._cancel = threading.Event()
-    c._cancel_min_until = 0.0  # [F10] skutečné jméno atributu, ne staré cancel_notice_until
-    c._pasting = False
-    c.model_missing = False
-    c.model_notice_hidden = False
-    c.awaiting_paste = False
-    return c
+from conftest import controller_stub as _controller_stub
 
 
 def test_run_cancellable_returns_immediately_on_cancel():
@@ -2283,19 +2268,31 @@ def test_settings_cache_does_not_hide_a_write(monkeypatch, tmp_path):
     assert settings.get("language") == "en"
 
 
-def test_recorder_publishes_the_stream_under_the_open_lock():
+def test_recorder_publishes_the_stream_under_the_open_lock(monkeypatch):
     import inspect
 
-    from spillway.audio import Recorder
+    from spillway import audio
 
     # [B2] `stop()`, který přijde uprostřed otevírání, musí počkat — jinak
-    # neuvidí nic k zavření a mikrofon zůstane otevřený do restartu.
-    src = inspect.getsource(Recorder.start)
-    assert "_open_lock" in src, "start() musí držet _open_lock"
-    assert src.index("_open_lock") < src.index("sd.InputStream"), (
-        "stream se smí vytvářet až pod zámkem"
-    )
-    assert "_open_lock" in inspect.getsource(Recorder.stop)
+    # neuvidí nic k zavření a mikrofon zůstane otevřený do restartu. Ptáme se
+    # na CHOVÁNÍ (drží se zámek ve chvíli otevírání?), ne na text zdrojáku:
+    # ten se s každým přeskládáním `start()` rozbije, aniž by se chování hnulo.
+    r = audio.Recorder()
+    locked_while_opening = []
+
+    class _Stream:
+        def start(self):
+            pass
+
+    def _fake_input_stream(**_kwargs):
+        locked_while_opening.append(r._open_lock.locked())
+        return _Stream()
+
+    monkeypatch.setattr(audio.sd, "InputStream", _fake_input_stream)
+    r.start()
+
+    assert locked_while_opening == [True], "stream se smí vytvářet až pod zámkem"
+    assert "_open_lock" in inspect.getsource(audio.Recorder.stop)
 
 
 def test_startup_never_reads_the_keychain_on_the_main_thread():
@@ -2332,15 +2329,13 @@ def test_status_does_not_block_on_a_pending_keychain_prompt(monkeypatch):
 
 # --- Skrývatelná výzva „Chybí model" ----------------------------------------
 def test_model_notice_can_be_dismissed_without_breaking_the_pipeline():
-    from spillway.app import Controller
+    from spillway.app import IDLE
 
     # Výzva musí jít schovat (klik i rušicí klávesa), ale `model_missing` je
     # stav pipeline — přepsat ho jen kvůli tomu, aby okénko zmizelo, dřív
     # znamenalo, že se rozjela pipeline bez modelu a skončila „Chybou".
-    c = Controller.__new__(Controller)
+    c = _controller_stub(IDLE)
     c.model_missing = True
-    c.model_notice_hidden = False
-    c.awaiting_paste = False
     assert c.dismiss_notice() is True
     assert c.model_notice_hidden is True
     assert c.model_missing is True, "schování okénka nesmí sáhnout na stav pipeline"
@@ -2353,19 +2348,12 @@ def test_model_notice_can_be_dismissed_without_breaking_the_pipeline():
 
 
 def test_cancel_key_hides_the_model_notice_but_is_not_swallowed():
-    import threading
-
-    from spillway.app import IDLE, Controller
+    from spillway.app import IDLE
 
     # Escape má výzvu schovat, ale nesmí se spolknout — jinak by v ostatních
     # aplikacích přestal fungovat.
-    c = Controller.__new__(Controller)
-    c._lock = threading.Lock()
-    c._cancel = threading.Event()
-    c._pasting = False
-    c.state = IDLE
+    c = _controller_stub(IDLE)
     c.model_missing = True
-    c.model_notice_hidden = False
     c.awaiting_paste = True
     assert c.request_cancel() is False, "Escape se nesmí spolknout, když se nic neruší"
     assert c.model_notice_hidden is True
@@ -3143,3 +3131,337 @@ def test_no_restart_is_scheduled_when_nothing_got_stuck():
     t._popover = None
     t._idle_since = 0.0
     assert t._check_restart(now=RESTART_IDLE_S * 10) is False
+
+
+# --- mikrofon: zotavení z rozbité zvukové vrstvy ----------------------------
+def _recorder_with_stub_stream(monkeypatch, opens):
+    """`Recorder`, jehož `sd.InputStream` postupně vrací/vyhazuje `opens`.
+
+    Prvek seznamu je buď výjimka (otevření selže), nebo cokoli jiného (vrátí se
+    jako stream). Vrací dvojici (recorder, seznam skutečných pokusů).
+    """
+    from spillway import audio
+
+    attempts = []
+
+    class _Stream:
+        def start(self):
+            pass
+
+        def close(self):
+            pass
+
+    def _fake_input_stream(**kwargs):
+        attempts.append(kwargs)
+        nxt = opens.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return _Stream()
+
+    monkeypatch.setattr(audio.sd, "InputStream", _fake_input_stream)
+    return audio.Recorder(), attempts
+
+
+def test_broken_audio_layer_is_revived_and_the_open_retried(monkeypatch):
+    # REGRESE: `sd.InputStream()` skončilo `PaErrorCode -9986` (zastaralý seznam
+    # zařízení po odpojení vstupu) a appka se z toho nedostala — PortAudio se
+    # obnovovalo JEN v úklidu po nahrávání, který se po selhaném otevření
+    # nespustí. V logu je jedenáct stisků po sobě se stejnou chybou.
+    from spillway import audio
+
+    revived = []
+    monkeypatch.setattr(audio, "_restart_portaudio",
+                        lambda: revived.append(True) or True)
+    r, attempts = _recorder_with_stub_stream(
+        monkeypatch, [RuntimeError("Internal PortAudio error [PaErrorCode -9986]"), None]
+    )
+
+    r.start()
+
+    assert revived == [True], "po selhaném otevření se musí oživit zvuková vrstva"
+    assert len(attempts) == 2, "po oživení musí přijít druhý pokus o otevření"
+    assert r._stream is not None
+
+
+def test_microphone_that_stays_broken_raises_the_domain_error(monkeypatch):
+    # Když ani oživení nepomůže, musí ven `MicrophoneUnavailable` — podle ní
+    # (a jen podle ní) appka pozná, že má ukázat „Mikrofon nedostupný" a
+    # naplánovat restart. Obyčejná výjimka tudy dřív propadla bez povšimnutí.
+    import pytest as _pytest
+
+    from spillway import audio
+
+    monkeypatch.setattr(audio, "_restart_portaudio", lambda: True)
+    r, attempts = _recorder_with_stub_stream(
+        monkeypatch, [RuntimeError("nejde"), RuntimeError("pořád nejde")]
+    )
+
+    with _pytest.raises(audio.MicrophoneUnavailable):
+        r.start()
+    assert len(attempts) == 2, "zkouší se právě dvakrát, ne donekonečna"
+
+
+def test_failed_start_does_not_leave_the_device_open(monkeypatch):
+    # Když selže až `stream.start()`, je zařízení otevřené, ale `self._stream`
+    # se přiřazuje až po návratu — bez úklidu na místě by ho nikdo nezavřel
+    # a oranžová tečka by svítila do restartu.
+    import pytest as _pytest
+
+    from spillway import audio
+
+    closed = []
+
+    class _Stream:
+        def start(self):
+            raise RuntimeError("start selhal")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(audio.sd, "InputStream", lambda **kw: _Stream())
+    monkeypatch.setattr(audio, "_restart_portaudio", lambda: True)
+    r = audio.Recorder()
+
+    with _pytest.raises(audio.MicrophoneUnavailable):
+        r.start()
+    assert closed == [True, True], "oba neúspěšné pokusy musí zařízení zavřít"
+
+
+def test_stuck_teardown_fails_the_next_start_without_waiting_again(monkeypatch):
+    # REGRESE: po zaseknutém dozavírání čekal KAŽDÝ další stisk znovu 3 s —
+    # okénko po tu dobu hlásilo „Nahrávám", nic se nenahrálo, a protože stav
+    # visel na RECORDING, tichý restart si pokaždé vynuloval odpočet klidu.
+    import time
+
+    import pytest as _pytest
+
+    from spillway import audio
+
+    monkeypatch.setattr(audio, "_REOPEN_BUDGET_S", 0.05)
+    r = audio.Recorder()
+    r._teardown_done.clear()          # dozavírání běží a nikdy nedoběhne
+
+    t0 = time.monotonic()
+    with _pytest.raises(audio.MicrophoneUnavailable):
+        r.start()
+    first = time.monotonic() - t0
+    assert first >= 0.05, "první pokus na pomalé dozavření ještě počkat musí"
+    assert r._teardown_stuck is True
+
+    t0 = time.monotonic()
+    with _pytest.raises(audio.MicrophoneUnavailable):
+        r.start()
+    assert time.monotonic() - t0 < 0.05, "druhý pokus už čekat nesmí"
+
+
+def test_late_teardown_reopens_the_gate(monkeypatch):
+    # Zaseknutí nemusí být trvalé. Když dozavírání nakonec doběhne, musí se
+    # brána vrátit do normálu — jinak by appka zůstala „rozbitá" i poté, co se
+    # mikrofon sám uvolnil, a restartovala by se úplně zbytečně.
+    import pytest as _pytest
+
+    from spillway import audio
+
+    monkeypatch.setattr(audio, "_REOPEN_BUDGET_S", 0.05)
+    monkeypatch.setattr(audio, "_restart_portaudio", lambda: True)
+    r, _ = _recorder_with_stub_stream(monkeypatch, [None])
+    r._teardown_done.clear()
+    with _pytest.raises(audio.MicrophoneUnavailable):
+        r.start()
+
+    r._teardown_stuck = False         # to, co udělá `_teardown` ve `finally`
+    r._teardown_done.set()
+
+    r.start()                         # znovu projde, bez výjimky
+    assert r._stream is not None
+
+
+# --- tichý restart po rozbitém mikrofonu ------------------------------------
+def _tray_with_controller(ctl):
+    from spillway.tray import SpillwayTray
+
+    t = SpillwayTray.__new__(SpillwayTray)
+    t.controller = ctl
+    t._settings = None
+    t._popover = None
+    t._idle_since = 0.0
+    return t
+
+
+class _RestartCtl:
+    """Minimální Controller pro `_check_restart` — jen to, na co se ptá."""
+
+    def __init__(self, *, urgent):
+        from spillway.app import IDLE as _IDLE
+
+        self.state = _IDLE
+        self.awaiting_paste = False
+        self._needs_restart = True
+        self._restart_urgent = urgent
+        self.restarted = False
+
+    def restart_now(self):
+        self.restarted = True
+
+
+def test_broken_microphone_restarts_after_a_short_pause_not_five_minutes():
+    # REGRESE: `🔁 naplánován tichý restart` je v provozním logu dvakrát,
+    # `🔁 tichý restart appky` ani jednou. S nepoužitelným mikrofonem appka do
+    # restartu nic neudělá, takže čekat pět minut na klid znamená jen držet ji
+    # pět minut rozbitou.
+    from spillway.app import RESTART_IDLE_BROKEN_S, RESTART_IDLE_S
+
+    assert RESTART_IDLE_BROKEN_S < RESTART_IDLE_S
+
+    t = _tray_with_controller(_RestartCtl(urgent=True))
+    assert t._check_restart(now=RESTART_IDLE_BROKEN_S - 1) is False
+    assert t._check_restart(now=RESTART_IDLE_BROKEN_S + 1) is True
+    assert t.controller.restarted is True
+
+
+def test_ordinary_stuck_still_waits_for_real_quiet():
+    # Zkrácené čekání platí JEN pro rozbitý mikrofon. Po záseku, ze kterého se
+    # appka zotavila, restart pořád nesmí spolknout rozdělanou práci.
+    from spillway.app import RESTART_IDLE_BROKEN_S, RESTART_IDLE_S
+
+    t = _tray_with_controller(_RestartCtl(urgent=False))
+    assert t._check_restart(now=RESTART_IDLE_BROKEN_S + 1) is False
+    assert t.controller.restarted is False
+    assert t._check_restart(now=RESTART_IDLE_S + 1) is True
+
+
+def test_urgency_escalates_an_already_scheduled_restart():
+    # Zásek přepisu, který se ohlásil první, nesmí držet rozbitý mikrofon pět
+    # minut ve frontě — proto se naléhavost nastavuje před kontrolou duplicity.
+    from spillway.app import Controller
+
+    c = Controller.__new__(Controller)
+    c._needs_restart = False
+    c._restart_urgent = False
+    c._restart_reason = ""
+    c.request_restart("zaseknutý přepis")
+    assert c._restart_urgent is False
+
+    c.request_restart("mikrofon nejde otevřít", urgent=True)
+    assert c._restart_urgent is True
+    assert c._restart_reason == "zaseknutý přepis", "důvod prvního záseku zůstává"
+
+
+def _controller_for_mic_notice(*, mic_worked):
+    """Stub s jediným rozdílem: naběhl v tomhle procesu někdy mikrofon?"""
+    from spillway.app import IDLE
+
+    c = _controller_stub(IDLE)
+    c._mic_worked = mic_worked
+    c.mic_notice_hidden = True     # uživatel předchozí výzvu zavřel
+    return c
+
+
+def test_unavailable_microphone_shows_up_and_notifies_only_once(monkeypatch):
+    # Okénko musí hlásit „Mikrofon nedostupný", ne dál „Nahrávám" — kvůli tomu
+    # vypadal výpadek jako bliknutí okénka. A notifikace smí přijít JEDNA za
+    # výpadek: v logu je jedenáct selhání po sobě, tedy jedenáct notifikací.
+    from spillway import app
+
+    sent = []
+    monkeypatch.setattr(app, "notify", lambda t, m: sent.append(t))
+    c = _controller_for_mic_notice(mic_worked=True)
+
+    c._note_mic_unavailable()
+    c._note_mic_unavailable()
+    c._note_mic_unavailable()
+
+    assert c.mic_unavailable is True
+    assert c.mic_notice_hidden is False, \
+        "výzva se musí ukázat, i když ji uživatel zavřel dřív"
+    assert len(sent) == 1, "notifikace jen při vstupu do výpadku"
+    assert c._needs_restart is True and c._restart_urgent is True
+
+
+def test_microphone_that_never_worked_does_not_trigger_a_restart_loop(monkeypatch):
+    # Když mikrofon v tomhle procesu nenaběhl ani jednou, není co obnovovat —
+    # je to chybějící oprávnění nebo zařízení. Restart by se opakoval po každém
+    # stisku, tak místo něj hláška s návodem, kam se podívat ([[MAC-2]]).
+    from spillway import app
+
+    sent = []
+    monkeypatch.setattr(app, "notify", lambda t, m: sent.append(m))
+    c = _controller_for_mic_notice(mic_worked=False)
+
+    c._note_mic_unavailable()
+
+    assert c.mic_unavailable is True, "uživatel to musí vidět i tak"
+    assert c._needs_restart is False, "restart by se jen zacyklil"
+    assert "Nastavení systému" in sent[0]
+
+
+def test_closing_the_notice_hides_the_microphone_warning_too():
+    # Okénko jde zavřít klikem i rušicí klávesou — obě cesty vedou přes
+    # `dismiss_notice`, takže o mikrofonní výzvě musí vědět taky.
+    c = _controller_for_mic_notice(mic_worked=True)
+    c.mic_unavailable = True
+    c.mic_notice_hidden = False
+
+    assert c.dismiss_notice() is True
+    assert c.mic_notice_hidden is True
+    assert c.dismiss_notice() is False, "podruhé už není co zavírat"
+
+
+def _run_start_recording(monkeypatch, c, recorder_start):
+    """Pustí `Controller._start_recording` bez Accessibility a bez mikrofonu."""
+    import types
+
+    from spillway import app as app_mod
+    from spillway import context
+
+    monkeypatch.setattr(context, "frontmost_app", lambda: ("App", "com.test.app"))
+    monkeypatch.setattr(context, "focus_snapshot",
+                        lambda: types.SimpleNamespace(
+                            ok=True, is_input=True, description="pole"))
+    monkeypatch.setattr(app_mod, "notify", lambda *_a: None)
+
+    class _Rec:
+        def start(self):
+            recorder_start()
+
+    c.recorder = _Rec()
+    c._cancel_watchdog = lambda: None
+    c._start_recording()
+
+
+def test_a_working_microphone_takes_the_hurry_out_of_the_restart(monkeypatch):
+    # Zkrácené čekání platí, dokud je mikrofon rozbitý. Jakmile zase nahrává,
+    # uklidit po sobě je pořád na místě — ale restart po deseti sekundách klidu
+    # by uživateli, který právě zase diktuje, spolknul chystaný stisk.
+    from spillway.app import RECORDING
+
+    c = _controller_stub(RECORDING)
+    c.mic_unavailable = True
+    c._needs_restart = True
+    c._restart_urgent = True
+
+    _run_start_recording(monkeypatch, c, lambda: None)
+
+    assert c.mic_unavailable is False, "povedený diktát musí výzvu sundat"
+    assert c._mic_worked is True
+    assert c._restart_urgent is False, "naléhavost padá, jakmile mikrofon zase jede"
+    assert c._needs_restart is True, "uklidit po sobě je pořád na místě"
+
+
+def test_a_failed_start_hands_the_state_back_and_asks_for_a_restart(monkeypatch):
+    # Celá cesta pohromadě: selhané otevření musí vrátit stav do klidu (jinak
+    # appka odmítá další diktáty), ukázat výzvu a říct si o rychlý restart.
+    from spillway.app import IDLE, RECORDING
+    from spillway.audio import MicrophoneUnavailable
+
+    c = _controller_stub(RECORDING)
+    c._mic_worked = True          # v tomhle procesu už mikrofon jel
+
+    def _boom():
+        raise MicrophoneUnavailable("předchozí nahrávání zůstalo zaseknuté v systému")
+
+    _run_start_recording(monkeypatch, c, _boom)
+
+    assert c.state == IDLE, "stav musí spadnout zpátky do klidu"
+    assert c.mic_unavailable is True and c.mic_notice_hidden is False
+    assert c._needs_restart is True and c._restart_urgent is True

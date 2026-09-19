@@ -48,6 +48,11 @@ STAGE_BUDGET_S = 90.0
 PIPELINE_BUDGET_S = 420.0
 # Jak dlouho musí být appka bez práce, než se po zaseknutí sama restartuje.
 RESTART_IDLE_S = 300.0
+# Totéž, ale když je rozbitý mikrofon. Pět minut má smysl u záseku, po kterém
+# appka dál funguje — restart tam jen uklízí a nesmí spolknout rozdělanou
+# práci. S nepoužitelným mikrofonem ale appka do restartu neudělá vůbec nic,
+# takže dlouhé čekání jen prodlužuje dobu, kdy nejde diktovat.
+RESTART_IDLE_BROKEN_S = 10.0
 
 # Minimální doba, po kterou „Ruším" zůstane v HUD i poté, co pipeline doběhne.
 # Jen proti probliknutí u okamžitého zrušení — hlavní podmínkou je běžící stav
@@ -179,6 +184,18 @@ class Controller:
         # osiřelá paměť). Restart to spraví; udělá se, až uživatel nebude nic dělat.
         self._needs_restart = False
         self._restart_reason = ""
+        # Nestačí restart „až bude dlouho klid"? Viz `RESTART_IDLE_BROKEN_S`.
+        self._restart_urgent = False
+        # Otevřel se v TOMHLE procesu mikrofon aspoň jednou? Podmínka pro tichý
+        # restart kvůli mikrofonu: když nenaběhl ani jednou, není co obnovovat
+        # (chybí oprávnění, chybí zařízení) a restart by se jen opakoval dokola
+        # při každém stisku. Takový stav patří uživateli na oči, ne do smyčky.
+        self._mic_worked = False
+        # Mikrofon nejde otevřít a uvnitř procesu se to spravit nedá. Drží
+        # okénko „Mikrofon nedostupný", dokud se nepovede nahrát nebo dokud ho
+        # uživatel nezavře.
+        self.mic_unavailable = False
+        self.mic_notice_hidden = False
         # Zaseklý worker přepisu appka umí nahradit sama, ale osiřelý proces po
         # sobě nechá paměť, kterou zevnitř neuklidíme — proto si řekne o restart.
         self.transcriber.on_needs_restart = self.request_restart
@@ -331,6 +348,9 @@ class Controller:
         if self.model_missing and not self.model_notice_hidden:
             self.model_notice_hidden = True
             hidden = True
+        if self.mic_unavailable and not self.mic_notice_hidden:
+            self.mic_notice_hidden = True
+            hidden = True
         if self.awaiting_paste:
             self.awaiting_paste = False
             hidden = True
@@ -463,13 +483,21 @@ class Controller:
                 why = "chyba zjišťování fokusu"
             diag.log("focus", f"{why} → okénko {'u ikony' if self.no_field else 'u pole'}")
             self.recorder.start()
+            # Mikrofon naběhl → výzva „Mikrofon nedostupný" je pryč a tichý
+            # restart kvůli mikrofonu má od téhle chvíle co obnovovat.
+            self._mic_worked = True
+            self.mic_unavailable = False
+            # Naléhavost padá. Uklidit po sobě je pořád na místě (v nativní
+            # vrstvě zůstalo viset vlákno), ale spěchat s tím už ne — a restart
+            # po deseti sekundách klidu by uživateli, který zase diktuje, klidně
+            # spolknul právě chystaný stisk.
+            self._restart_urgent = False
         except Exception as exc:  # noqa: BLE001 — [O6] viditelná chyba, ne tichý pád
             print(f"❌ mikrofon se nepodařilo spustit: {exc}")
-            notify("Mikrofon nedostupný", "Nahrávání se nepodařilo spustit.")
-            # Předchozí nahrávání se nedozavřelo → uvnitř procesu už to nespravíme
-            # (zaseklé nativní volání nejde přerušit). Restart ano.
             if isinstance(exc, MicrophoneUnavailable):
-                self.request_restart("mikrofon se nepodařilo uvolnit")
+                self._note_mic_unavailable()
+            else:
+                notify("Mikrofon nedostupný", "Nahrávání se nepodařilo spustit.")
             with self._lock:
                 # Jen když stav pořád patří TOMUHLE nahrávání. Po opravě zavírání
                 # mikrofonu je tahle větev běžná cesta, ne jen havárie — a to
@@ -477,6 +505,32 @@ class Controller:
                 if self.state == RECORDING:
                     self.state = IDLE
             self._cancel_watchdog()
+
+    def _note_mic_unavailable(self) -> None:
+        """Mikrofon nejde otevřít a `Recorder` to sám nespraví — co s tím.
+
+        Jedno místo pro všechny tři důsledky, ať se nerozejdou: viditelný stav
+        v okénku, JEDNA notifikace za celý výpadek a žádost o restart. Dřív se
+        notifikace posílala při každém stisku (v logu je jedenáct selhání po
+        sobě) a okénko u toho hlásilo „Nahrávám".
+
+        Restart se vyžádá, jen když mikrofon v tomhle procesu už někdy naběhl.
+        Když nenaběhl nikdy, je to chybějící oprávnění nebo zařízení —
+        restartem se to nespraví a appka by se relaunchovala po každém stisku.
+        Proto tehdy jen srozumitelná hláška s návodem, kam se podívat.
+        """
+        first = not self.mic_unavailable
+        self.mic_unavailable = True
+        self.mic_notice_hidden = False
+        if self._mic_worked:
+            self.request_restart("mikrofon nejde otevřít", urgent=True)
+            if first:
+                notify("Mikrofon nedostupný",
+                       "Spillway se sám restartuje, jakmile chvíli nebudeš diktovat.")
+        elif first:
+            notify("Mikrofon nedostupný",
+                   "Zkontroluj povolení mikrofonu v Nastavení systému → "
+                   "Soukromí a zabezpečení → Mikrofon.")
 
     def _stream_loop(self, dictation_id: int) -> None:
         """Během nahrávání segmentuje řeč v tichu a přepisuje segmenty průběžně.
@@ -1113,13 +1167,21 @@ class Controller:
 
     # ---- zotavení restartem ------------------------------------------------
 
-    def request_restart(self, reason: str) -> None:
+    def request_restart(self, reason: str, *, urgent: bool = False) -> None:
         """Po zaseknutí si říct o restart appky. Restart proběhne, až bude klid.
 
         Proč vůbec: co po zaseknutí zůstane viset v nativní vrstvě (systémová
         vlákna z restartu PortAudia — viz `sounddevice#140` —, neuvolněné
         zařízení), se uvnitř běžícího procesu uklidit nedá. Ukončení procesu ano.
+
+        `urgent` zkracuje čekání na klid (`RESTART_IDLE_BROKEN_S`) — pro případy,
+        kdy appka do restartu stejně nic neudělá. Naléhavost smí přijít i k už
+        naplánovanému restartu, proto se nastavuje PŘED kontrolou duplicity:
+        jinak by zásek přepisu, který se stihl ohlásit první, držel rozbitý
+        mikrofon pět minut ve frontě.
         """
+        if urgent:
+            self._restart_urgent = True
         if self._needs_restart:
             return
         self._needs_restart = True
